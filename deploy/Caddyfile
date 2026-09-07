@@ -1,0 +1,19 @@
+{$PUSHDOCS_ADDRESS::80} {
+	encode zstd gzip
+
+	handle /events* {
+		reverse_proxy realtime:4100 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+}

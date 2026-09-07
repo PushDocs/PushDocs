@@ -1,0 +1,45 @@
+{
+  "name": "pushdocs",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "yarn@4.17.1",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "architecture:check": "node scripts/check-architecture.mjs",
+    "build": "turbo run build",
+    "check": "yarn lint && yarn architecture:check && yarn typecheck && yarn test && yarn build",
+    "db:migrate": "yarn workspace @pushdocs/db migrate",
+    "dev": "yarn workspace @pushdocs/web dev",
+    "dev:all": "turbo run dev --parallel",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome check .",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "dependenciesMeta": {
+    "argon2": {
+      "built": true
+    },
+    "esbuild": {
+      "built": true
+    },
+    "sharp": {
+      "built": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@types/node": "20.19.24",
+    "turbo": "2.10.7",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,8 @@
+.git
+.next
+.turbo
+coverage
+data
+docs/design
+node_modules
+*.log

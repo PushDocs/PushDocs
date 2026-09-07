@@ -1,0 +1,293 @@
+"use server";
+
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+import {
+  acceptInvitationSchema,
+  bootstrapSchema,
+  createCommentSchema,
+  createComponentSchema,
+  createConnectionSchema,
+  createDocumentSchema,
+  createProjectSchema,
+  inviteMemberSchema,
+  loginSchema,
+  resolveConflictSchema,
+  saveDraftSchema,
+  submitChangeSetSchema,
+} from "@pushdocs/contracts";
+import {
+  createOpaqueToken,
+  decryptSecret,
+  encryptSecret,
+  hashInvitationToken,
+  hashOpaqueToken,
+  RevisionConflictError,
+} from "@pushdocs/db";
+import { createProvider, normalizeRepositoryLocator } from "@pushdocs/providers";
+import argon2 from "argon2";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import {
+  actor,
+  application,
+  optionalUser,
+  repository,
+  requireOperator,
+  requireUser,
+  sessionCookieName,
+} from "@/lib/server";
+
+async function createBrowserSession(userId: string): Promise<void> {
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  await repository().createSession(userId, hashOpaqueToken(token), expiresAt);
+  (await cookies()).set(sessionCookieName, token, {
+    expires: expiresAt,
+    httpOnly: true,
+    path: "/",
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
+}
+
+export async function bootstrapAction(formData: FormData): Promise<void> {
+  if (await optionalUser()) redirect("/projects");
+  const input = bootstrapSchema.parse(Object.fromEntries(formData));
+  const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
+  const user = await repository().createOperator({ ...input, passwordHash });
+  await createBrowserSession(user.id);
+  redirect("/projects");
+}
+
+export async function loginAction(formData: FormData): Promise<void> {
+  const input = loginSchema.parse(Object.fromEntries(formData));
+  const user = await repository().findUserByEmail(input.email);
+  if (!user || !(await argon2.verify(user.password_hash, input.password))) {
+    redirect("/login?error=credentials");
+  }
+  await createBrowserSession(user.id);
+  redirect("/projects");
+}
+
+export async function logoutAction(): Promise<void> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(sessionCookieName)?.value;
+  if (token) await repository().deleteSession(hashOpaqueToken(token));
+  cookieStore.delete(sessionCookieName);
+  redirect("/login");
+}
+
+export async function createConnectionAction(formData: FormData): Promise<void> {
+  const user = await requireOperator();
+  const input = createConnectionSchema.parse(Object.fromEntries(formData));
+  await application().createConnection(actor(user), {
+    baseUrl: input.baseUrl,
+    kind: input.kind,
+    name: input.name,
+    secretEncrypted: encryptSecret(input.token),
+  });
+  revalidatePath("/settings/connections");
+}
+
+export async function createProjectAction(formData: FormData): Promise<void> {
+  const user = await requireOperator();
+  const input = createProjectSchema.parse(Object.fromEntries(formData));
+  const connection = await repository().getConnection(input.connectionId);
+  if (!connection) throw new Error("CONNECTION_NOT_FOUND");
+  const provider = createProvider({
+    baseUrl: connection.base_url,
+    kind: connection.kind,
+    token: decryptSecret(connection.secret_encrypted),
+  });
+  const remote = await provider.getRepository(
+    normalizeRepositoryLocator(connection.kind, input.repositoryProviderId),
+  );
+  const created = (await application().createProject(actor(user), {
+    ...input,
+    defaultBranch: input.defaultBranch || remote.defaultBranch,
+    repositoryFullName: remote.fullName,
+    repositoryProviderId: remote.id,
+    repositoryUrl: remote.cloneUrl,
+  })) as { id: string };
+  redirect(`/projects/${created.id}/documents`);
+}
+
+export async function saveDraftAction(
+  formData: FormData,
+): Promise<{ error?: "conflict"; revision?: number }> {
+  const user = await requireUser();
+  const input = saveDraftSchema.parse({
+    ...Object.fromEntries(formData),
+    expectedRevision: Number(formData.get("expectedRevision")),
+  });
+  const projectId = String(formData.get("projectId"));
+  try {
+    const result = await application().saveDraft(actor(user), { ...input, projectId });
+    revalidatePath(`/projects/${projectId}/documents`);
+    return { revision: result.revision };
+  } catch (error) {
+    if (error instanceof RevisionConflictError) {
+      return { error: "conflict" };
+    }
+    throw error;
+  }
+}
+
+export async function createCommentAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = createCommentSchema.parse(Object.fromEntries(formData));
+  const projectId = String(formData.get("projectId"));
+  await application().createComment(actor(user), { ...input, projectId });
+  revalidatePath(`/projects/${projectId}/documents`);
+}
+
+export async function inviteMemberAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = inviteMemberSchema.parse(Object.fromEntries(formData));
+  const projectId = String(formData.get("projectId"));
+  const invitation = createOpaqueToken();
+  await application().inviteMember(actor(user), {
+    ...input,
+    projectId,
+    tokenHash: invitation.hash,
+  });
+  redirect(`/projects/${projectId}/members?invitation=${encodeURIComponent(invitation.token)}`);
+}
+
+export async function acceptInvitationAction(formData: FormData): Promise<void> {
+  const input = acceptInvitationSchema.parse(Object.fromEntries(formData));
+  const tokenHash = hashInvitationToken(input.token);
+  const invitation = await repository().getInvitation(tokenHash);
+  if (!invitation) redirect("/login?error=invitation");
+  const current = await optionalUser();
+  let userId: string;
+  if (current) {
+    if (current.email !== invitation.email) redirect("/login?error=invitation-account");
+    userId = current.id;
+  } else {
+    const existing = await repository().findUserByEmail(invitation.email);
+    if (existing) {
+      if (!(await argon2.verify(existing.password_hash, input.password))) {
+        redirect(`/invite/${encodeURIComponent(input.token)}?error=credentials`);
+      }
+      userId = existing.id;
+    } else {
+      const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
+      const created = await repository().createUser({
+        displayName: input.displayName,
+        email: invitation.email,
+        passwordHash,
+      });
+      userId = created.id;
+    }
+  }
+  const accepted = await repository().acceptInvitation(tokenHash, userId);
+  if (!current) await createBrowserSession(userId);
+  redirect(`/projects/${accepted.projectId}/documents`);
+}
+
+export async function uploadAttachmentAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const branch = String(formData.get("branch"));
+  await repository().requireProjectAccess(user.id, projectId, "document:write");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) throw new Error("FILE_REQUIRED");
+  if (file.size > 10 * 1024 * 1024) throw new Error("FILE_TOO_LARGE");
+  const allowed = new Set([
+    "image/avif",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/svg+xml",
+    "image/webp",
+    "application/pdf",
+  ]);
+  if (!allowed.has(file.type)) throw new Error("FILE_TYPE_NOT_ALLOWED");
+  const contents = Buffer.from(await file.arrayBuffer());
+  const sha256 = createHash("sha256").update(contents).digest("hex");
+  const extension = path
+    .extname(file.name)
+    .toLowerCase()
+    .replace(/[^.a-z0-9]/g, "");
+  const safeName = path
+    .basename(file.name, path.extname(file.name))
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const repositoryPath = `static/img/${sha256.slice(0, 10)}-${safeName || "asset"}${extension}`;
+  const storageKey = `${projectId}/${randomBytes(16).toString("hex")}${extension}`;
+  const attachmentsRoot = path.resolve(
+    /* turbopackIgnore: true */
+    process.env.PUSHDOCS_ATTACHMENTS_DIR ?? "./data/attachments",
+  );
+  const destination = path.join(attachmentsRoot, storageKey);
+  const temporary = `${destination}.uploading`;
+  await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+  await writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
+  await rename(temporary, destination);
+  await repository().recordAttachment({
+    branch,
+    mediaType: file.type,
+    originalName: path.basename(file.name),
+    projectId,
+    repositoryPath,
+    sha256,
+    sizeBytes: file.size,
+    storageKey,
+  });
+  revalidatePath(`/projects/${projectId}/files`);
+}
+
+export async function synchronizeBranchAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const branch = String(formData.get("branch"));
+  await repository().requireProjectAccess(user.id, projectId, "project:read");
+  await repository().enqueueBranchSync(projectId, branch);
+  revalidatePath(`/projects/${projectId}/documents`);
+}
+
+export async function submitChangeSetAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = submitChangeSetSchema.parse({
+    ...Object.fromEntries(formData),
+    createReview: formData.get("createReview") === "on",
+  });
+  await repository().requireProjectAccess(user.id, input.projectId, "branch:push");
+  await repository().queueChangeSetSubmission(input);
+  revalidatePath(`/projects/${input.projectId}/changes`);
+}
+
+export async function resolveConflictAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = resolveConflictSchema.parse(Object.fromEntries(formData));
+  await repository().requireProjectAccess(user.id, input.projectId, "document:write");
+  await repository().resolveConflict(input);
+  revalidatePath(`/projects/${input.projectId}/changes`);
+}
+
+export async function createProjectComponentAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const input = createComponentSchema.parse(Object.fromEntries(formData));
+  await repository().requireProjectAccess(user.id, projectId, "project:configure");
+  await repository().createProjectComponent({ ...input, projectId });
+  revalidatePath(`/projects/${projectId}/settings`);
+}
+
+export async function createDocumentAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const input = createDocumentSchema.parse(Object.fromEntries(formData));
+  await repository().requireProjectAccess(user.id, projectId, "document:write");
+  const content = `---\ntitle: ${JSON.stringify(input.title)}\n---\n\n# ${input.title}\n`;
+  await repository().createDraftDocument({ ...input, content, projectId, userId: user.id });
+  redirect(
+    `/projects/${projectId}/documents?branch=${encodeURIComponent(input.branch)}&path=${encodeURIComponent(input.path)}`,
+  );
+}

@@ -1,0 +1,142 @@
+name: pushdocs
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: pushdocs:local
+  environment: &app-environment
+    DATABASE_URL: postgres://pushdocs:pushdocs@postgres:5432/pushdocs
+    PUSHDOCS_ATTACHMENTS_DIR: /data/attachments
+    PUSHDOCS_ENCRYPTION_KEY: ${PUSHDOCS_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+    PUSHDOCS_SESSION_PEPPER: ${PUSHDOCS_SESSION_PEPPER:-development-only-pepper-change-me-1234567890}
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    image: postgres:17.6-alpine3.22
+    environment:
+      POSTGRES_DB: pushdocs
+      POSTGRES_PASSWORD: pushdocs
+      POSTGRES_USER: pushdocs
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --data-checksums
+    restart: unless-stopped
+    shm_size: 256mb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pushdocs -d pushdocs"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - database
+
+  migrate:
+    <<: *app
+    command: ["yarn", "db:migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    tmpfs:
+      - /tmp:rw,exec,mode=1777
+    networks:
+      - database
+
+  web:
+    <<: *app
+    command: ["node", "apps/web/.next/standalone/apps/web/server.js"]
+    environment:
+      <<: *app-environment
+      HOSTNAME: "0.0.0.0"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,exec,mode=1777
+      - /app/apps/web/.next/cache
+    volumes:
+      - attachments:/data/attachments
+    networks:
+      - default
+      - database
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    <<: *app
+    command: ["yarn", "workspace", "@pushdocs/worker", "start"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,exec,mode=1777
+    volumes:
+      - attachments:/data/attachments
+    networks:
+      - default
+      - database
+
+  realtime:
+    <<: *app
+    command: ["yarn", "workspace", "@pushdocs/realtime", "start"]
+    environment:
+      <<: *app-environment
+      PORT: "4100"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,exec,mode=1777
+    networks:
+      - default
+      - database
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    depends_on:
+      realtime:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      PUSHDOCS_ADDRESS: ${PUSHDOCS_ADDRESS:-:80}
+    ports:
+      - "${PUSHDOCS_HTTP_PORT:-8080}:80"
+      - "${PUSHDOCS_HTTPS_PORT:-8443}:443"
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /config
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+volumes:
+  attachments:
+  caddy_data:
+  postgres_data:
+
+networks:
+  database:
+    internal: true

@@ -1,0 +1,24 @@
+{
+  "name": "@pushdocs/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run src --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pushdocs/content": "workspace:*",
+    "@pushdocs/db": "workspace:*",
+    "@pushdocs/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.24",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}
