@@ -61,7 +61,11 @@ The web application listens on port 3000, and the realtime process listens on po
 ## Checks
 
 ~~~sh
+yarn test
+yarn test:coverage
 yarn check
 ~~~
+
+The coverage check includes domain rules, content import, provider adapters, database repositories, server actions, background services, and shared interface components. It requires 100 percent line coverage, 99 percent statement and function coverage, and 95 percent branch coverage.
 
 Architecture decisions are in [the ADR](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).

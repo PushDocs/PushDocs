@@ -1,0 +1,45 @@
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  oxc: {
+    jsx: "automatic",
+  },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./apps/web/src", import.meta.url)),
+    },
+  },
+  test: {
+    clearMocks: true,
+    coverage: {
+      exclude: ["**/*.test.{ts,tsx}", "**/migrate.ts", "**/migrations.ts", "**/schema.ts"],
+      include: [
+        "packages/{content,contracts,core,domain,providers}/src/index.ts",
+        "packages/db/src/{crypto,database,events,repository}.ts",
+        "packages/ui/src/index.tsx",
+        "apps/worker/src/service.ts",
+        "apps/realtime/src/service.ts",
+        "apps/web/src/app/actions.ts",
+        "apps/web/src/app/api/health/route.ts",
+        "apps/web/src/lib/server.ts",
+        "apps/web/src/components/*.tsx",
+      ],
+      provider: "v8",
+      reporter: ["text", "json-summary", "lcov"],
+      reportsDirectory: "coverage",
+      thresholds: {
+        branches: 95,
+        functions: 99,
+        lines: 100,
+        statements: 99,
+      },
+    },
+    environment: "node",
+    exclude: ["**/.next/**", "**/dist/**", "**/node_modules/**"],
+    include: ["{apps,packages}/**/src/**/*.test.{ts,tsx}"],
+    restoreMocks: true,
+    unstubEnvs: true,
+    unstubGlobals: true,
+  },
+});
