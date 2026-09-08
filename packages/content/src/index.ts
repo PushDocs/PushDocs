@@ -5,6 +5,15 @@ import type { DocumentSummary } from "@pushdocs/contracts";
 import glob from "fast-glob";
 import matter from "gray-matter";
 
+export {
+  assetLocation,
+  isEditableFile,
+  parseProjectConfig,
+  planDocument,
+  planTemplate,
+  safePath,
+} from "./config";
+
 export interface ImportedDocument extends DocumentSummary {
   content: string;
   contentHash: string;
@@ -21,7 +30,10 @@ export interface DocusaurusProfile {
 const componentPattern = /<([A-Z][A-Za-z0-9.]*)\b/g;
 
 function titleFromContent(content: string, documentPath: string): string {
-  const parsed = matter(content);
+  // Repository content may use gray-matter's executable engines. Only plain YAML fences are accepted.
+  const parsed = /^\uFEFF?---[ \t]*\r?\n/.test(content)
+    ? matter(content)
+    : { data: {} as Record<string, unknown>, content };
   if (typeof parsed.data.title === "string" && parsed.data.title.trim()) {
     return parsed.data.title.trim();
   }
@@ -39,7 +51,9 @@ function localeForPath(documentPath: string): string {
 }
 
 function versionForPath(documentPath: string): string {
-  const match = documentPath.match(/(?:^|\/)versioned_docs\/version-([^/]+)\//);
+  const match = documentPath.match(
+    /(?:^|\/)(?:versioned_docs|i18n\/[^/]+\/docusaurus-plugin-content-docs[^/]*)\/version-([^/]+)\//,
+  );
   return match?.[1] ?? "current";
 }
 
@@ -114,3 +128,4 @@ export async function discoverDocusaurusProject(root: string): Promise<Docusauru
   );
   return { ...analyzeDocusaurusFiles(contents), root: absoluteRoot };
 }
+export { isMediaFile, mediaCatalog } from "./media";

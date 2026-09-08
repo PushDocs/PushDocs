@@ -15,6 +15,7 @@
       "!**/coverage",
       "!**/dist",
       "!**/node_modules",
+      "!output",
       "!**/yarn.lock",
       "!docs/design/prompts.json"
     ]

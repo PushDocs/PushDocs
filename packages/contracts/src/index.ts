@@ -1,5 +1,85 @@
 import { z } from "zod";
 
+export const metadataFieldSchema = z.object({
+  name: z
+    .string()
+    .regex(/^[a-zA-Z][a-zA-Z0-9_]*$/)
+    .refine((value) => !["constructor", "prototype"].includes(value)),
+  label: z.string().min(1).max(100),
+  type: z.enum(["string", "number", "boolean"]),
+});
+export type MetadataField = z.infer<typeof metadataFieldSchema>;
+
+export const projectConfigSchema = z
+  .object({
+    version: z.literal(1),
+    defaultLocale: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/)
+      .default("ru"),
+    documentRoots: z.array(z.string().min(1)).min(1).default(["docs", "versioned_docs", "i18n"]),
+    editableFiles: z
+      .array(z.string())
+      .default(["sidebars.js", "sidebars.ts", ".pushdocs/config.json"]),
+    metadata: z
+      .array(metadataFieldSchema)
+      .max(50)
+      .refine((fields) => new Set(fields.map((field) => field.name)).size === fields.length)
+      .default([
+        { name: "title", label: "Заголовок", type: "string" },
+        { name: "description", label: "Описание", type: "string" },
+        { name: "slug", label: "URL статьи", type: "string" },
+        { name: "sidebar_position", label: "Позиция в меню", type: "number" },
+        { name: "draft", label: "Черновик Docusaurus", type: "boolean" },
+      ]),
+    media: z
+      .object({
+        directory: z.string().default("static/img"),
+        publicUrl: z.string().default("/img"),
+      })
+      .default({ directory: "static/img", publicUrl: "/img" }),
+    templates: z
+      .array(
+        z.object({
+          id: z.string().regex(/^[a-z0-9-]+$/),
+          label: z.string().min(1),
+          path: z.string(),
+          content: z.string(),
+          companions: z.array(z.object({ path: z.string(), content: z.string() })).default([]),
+          updates: z
+            .array(
+              z.object({
+                path: z.string().min(1).max(1000),
+                find: z.string().min(1).max(100_000),
+                replace: z.string().max(100_000),
+              }),
+            )
+            .max(50)
+            .optional(),
+        }),
+      )
+      .default([]),
+    preview: z
+      .object({
+        runtime: z
+          .string()
+          .regex(/^[a-zA-Z0-9_-]+$/)
+          .default("default"),
+        install: z.array(z.string()).min(1).default(["yarn", "install", "--frozen-lockfile"]),
+        build: z.array(z.string()).min(1).default(["yarn", "build"]),
+        output: z.string().default("build"),
+      })
+      .default({
+        runtime: "default",
+        install: ["yarn", "install", "--frozen-lockfile"],
+        build: ["yarn", "build"],
+        output: "build",
+      }),
+  })
+  .strict();
+
+export type ProjectConfig = z.infer<typeof projectConfigSchema>;
+
 export const roleSchema = z.enum(["admin", "editor", "reader"]);
 export type ProjectRole = z.infer<typeof roleSchema>;
 

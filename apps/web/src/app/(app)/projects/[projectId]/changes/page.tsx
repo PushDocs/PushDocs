@@ -2,7 +2,11 @@ import { Status } from "@pushdocs/ui";
 import { AlertTriangle, FileImage, FileText, GitBranch, Send, UserRound } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { resolveConflictAction, submitChangeSetAction } from "@/app/actions";
+import {
+  resolveConflictAction,
+  retryChangeSetSubmissionAction,
+  submitChangeSetAction,
+} from "@/app/actions";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Изменения" };
@@ -43,6 +47,8 @@ export default async function ChangesPage({
   const conflicts = await repository().listConflicts(projectId, branch);
   const changeSetId = drafts[0]?.change_set_id ?? attachments[0]?.change_set_id;
   const changeSet = drafts[0];
+  const changeSetStatus = changeSet?.status ?? attachments[0]?.change_set_status;
+  const submission = await repository().getSubmissionStatus(projectId, branch);
   const fileCount = drafts.length + attachments.length;
   const files = fileCountText(fileCount);
 
@@ -163,14 +169,36 @@ export default async function ChangesPage({
               disabled={
                 access.role === "reader" ||
                 !changeSetId ||
-                changeSet?.status === "submitting" ||
+                changeSetStatus === "submitting" ||
                 conflicts.length > 0
               }
               type="submit"
             >
               <Send aria-hidden size={16} />
-              {changeSet?.status === "submitting" ? "Отправляем…" : "Отправить в ветку"}
+              {changeSetStatus === "submitting"
+                ? "Изменения заблокированы на время отправки"
+                : "Отправить в ветку"}
             </button>
+            {submission ? (
+              <div role="status" className="panel-note">
+                <p>
+                  {submission.status === "failed"
+                    ? "Отправка остановлена. Результат записи в Git будет проверен при повторе."
+                    : "Отправка в очереди или выполняется. Черновики сохранены."}
+                </p>
+                {submission.last_error ? <p>{submission.last_error}</p> : null}
+                {submission.status === "failed" && access.role !== "reader" ? (
+                  <button
+                    className="pd-button"
+                    type="submit"
+                    formAction={retryChangeSetSubmissionAction}
+                    formNoValidate
+                  >
+                    Проверить результат и повторить
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <p className="panel-note">
               Ветка обновляется только относительно проверенного SHA. Если Git изменился, PushDocs
               остановит отправку и покажет конфликт.
@@ -192,29 +220,87 @@ export default async function ChangesPage({
               <input name="conflictId" type="hidden" value={conflict.id} />
               <input name="projectId" type="hidden" value={projectId} />
               <h3>{conflict.path}</h3>
-              <details className="conflict-base">
-                <summary>Показать базовую версию</summary>
-                <pre>{conflict.base_content ?? "[файла не было]"}</pre>
-              </details>
-              <div className="conflict-columns">
-                <label>
-                  Версия из Git
-                  <textarea readOnly value={conflict.theirs_content ?? "[файл удалён]"} />
-                </label>
-                <label>
-                  Версия PushDocs
-                  <textarea readOnly value={conflict.ours_content ?? "[удалить файл]"} />
-                </label>
-                <label>
-                  Итог
-                  <textarea
-                    name="resolvedContent"
-                    defaultValue={conflict.ours_content ?? conflict.theirs_content ?? ""}
-                  />
-                </label>
-              </div>
+              {conflict.resolution ? (
+                <p role="status">Решение сохранено. Осталось разрешить другие конфликты.</p>
+              ) : null}
+              {conflict.kind === "binary" ? (
+                <div className="conflict-columns">
+                  <figure>
+                    <figcaption>Версия из Git</figcaption>
+                    {conflict.theirs_content ? (
+                      <a
+                        href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: conflict.path, version: "git" })}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Открыть файл из Git
+                      </a>
+                    ) : (
+                      <p>Файл удалён</p>
+                    )}
+                    {conflict.theirs_content &&
+                    /\.(png|jpe?g|gif|webp|avif)$/i.test(conflict.path) ? (
+                      // biome-ignore lint/performance/noImgElement: authenticated images must not pass through the public image optimizer
+                      <img
+                        alt="Версия изображения из Git"
+                        src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: conflict.path, version: "git" })}`}
+                        style={{ maxWidth: "100%", maxHeight: 280, objectFit: "contain" }}
+                      />
+                    ) : null}
+                  </figure>
+                  <figure>
+                    <figcaption>Версия PushDocs</figcaption>
+                    {conflict.ours_content ? (
+                      <a
+                        href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: conflict.path })}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Открыть загруженный файл
+                      </a>
+                    ) : (
+                      <p>Файл удалён</p>
+                    )}
+                    {conflict.ours_content &&
+                    /\.(png|jpe?g|gif|webp|avif)$/i.test(conflict.path) ? (
+                      // biome-ignore lint/performance/noImgElement: authenticated images must not pass through the public image optimizer
+                      <img
+                        alt="Версия изображения PushDocs"
+                        src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: conflict.path })}`}
+                        style={{ maxWidth: "100%", maxHeight: 280, objectFit: "contain" }}
+                      />
+                    ) : null}
+                  </figure>
+                  <input name="resolvedContent" type="hidden" value="" />
+                </div>
+              ) : (
+                <>
+                  <details className="conflict-base">
+                    <summary>Показать базовую версию</summary>
+                    <pre>{conflict.base_content ?? "[файла не было]"}</pre>
+                  </details>
+                  <div className="conflict-columns">
+                    <label>
+                      Версия из Git
+                      <textarea readOnly value={conflict.theirs_content ?? "[файл удалён]"} />
+                    </label>
+                    <label>
+                      Версия PushDocs
+                      <textarea readOnly value={conflict.ours_content ?? "[удалить файл]"} />
+                    </label>
+                    <label>
+                      Итог
+                      <textarea
+                        name="resolvedContent"
+                        defaultValue={conflict.ours_content ?? conflict.theirs_content ?? ""}
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
               <div className="conflict-actions">
                 <button
+                  disabled={access.role === "reader" || !!conflict.resolution}
                   className="pd-button pd-button--secondary"
                   name="resolution"
                   type="submit"
@@ -223,6 +309,7 @@ export default async function ChangesPage({
                   Взять из Git
                 </button>
                 <button
+                  disabled={access.role === "reader" || !!conflict.resolution}
                   className="pd-button pd-button--secondary"
                   name="resolution"
                   type="submit"
@@ -231,6 +318,9 @@ export default async function ChangesPage({
                   Взять из PushDocs
                 </button>
                 <button
+                  disabled={
+                    access.role === "reader" || !!conflict.resolution || conflict.kind === "binary"
+                  }
                   className="pd-button pd-button--primary"
                   name="resolution"
                   type="submit"

@@ -869,6 +869,7 @@ __metadata:
     gray-matter: "npm:4.0.3"
     typescript: "npm:5.9.3"
     vitest: "npm:4.1.10"
+    yaml: "npm:2.9.0"
   languageName: unknown
   linkType: soft
 
@@ -918,6 +919,20 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@pushdocs/preview@workspace:apps/preview":
+  version: 0.0.0-use.local
+  resolution: "@pushdocs/preview@workspace:apps/preview"
+  dependencies:
+    "@pushdocs/content": "workspace:*"
+    "@pushdocs/db": "workspace:*"
+    "@pushdocs/providers": "workspace:*"
+    "@types/node": "npm:20.19.24"
+    tsx: "npm:4.20.6"
+    typescript: "npm:5.9.3"
+    vitest: "npm:4.1.10"
+  languageName: unknown
+  linkType: soft
+
 "@pushdocs/providers@workspace:*, @pushdocs/providers@workspace:packages/providers":
   version: 0.0.0-use.local
   resolution: "@pushdocs/providers@workspace:packages/providers"
@@ -959,6 +974,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@pushdocs/web@workspace:apps/web"
   dependencies:
+    "@pushdocs/content": "workspace:*"
     "@pushdocs/contracts": "workspace:*"
     "@pushdocs/core": "workspace:*"
     "@pushdocs/db": "workspace:*"
@@ -4826,6 +4842,15 @@ __metadata:
   version: 5.0.0
   resolution: "yallist@npm:5.0.0"
   checksum: 10c0/a499c81ce6d4a1d260d4ea0f6d49ab4da09681e32c3f0472dee16667ed69d01dae63a3b81745a24bd78476ec4fcf856114cb4896ace738e01da34b2c42235416
+  languageName: node
+  linkType: hard
+
+"yaml@npm:2.9.0":
+  version: 2.9.0
+  resolution: "yaml@npm:2.9.0"
+  bin:
+    yaml: bin.mjs
+  checksum: 10c0/f340718df45e97a9551b9bf9dac61c80050bc464513b710debfb5067c380c8472e3b67809cffacb4ab5ffb5e66ef9310816c88b05f371cec60abfedd8c88e0a2
   languageName: node
   linkType: hard
 

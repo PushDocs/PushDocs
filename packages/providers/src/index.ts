@@ -11,6 +11,7 @@ export interface ProviderRepository {
 export interface ProviderBranch {
   name: string;
   sha: string;
+  protected?: boolean;
 }
 
 export interface ProviderChangeRequest {
@@ -35,6 +36,7 @@ export class ProviderConflictError extends Error {
 
 export interface GitProvider {
   readonly kind: ProviderKind;
+  createBranch(repositoryId: string, name: string, ref: string): Promise<ProviderBranch>;
   commitFiles(input: {
     branch: string;
     changes: ProviderFileChange[];
@@ -54,6 +56,40 @@ export interface GitProvider {
   listChecks(repositoryId: string, sha: string): Promise<CheckRunSummary[]>;
   listFiles(repositoryId: string, ref: string): Promise<string[]>;
   readFile(repositoryId: string, ref: string, path: string): Promise<string>;
+  readBinary(repositoryId: string, ref: string, path: string): Promise<Uint8Array>;
+}
+
+export function validateBranchName(name: string): void {
+  if (
+    !name ||
+    name.length > 255 ||
+    name === "@" ||
+    /[\s~^:?*[\\]/.test(name) ||
+    [...name].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+    name.includes("..") ||
+    name.includes("@{") ||
+    name
+      .split("/")
+      .some(
+        (part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"),
+      ) ||
+    name.startsWith("-")
+  ) {
+    throw new Error("Invalid branch name");
+  }
+}
+
+async function paginate<T>(
+  request: (path: string) => Promise<Response>,
+  path: string,
+): Promise<T[]> {
+  const result: T[] = [];
+  for (let page = 1; page <= 1000; page += 1) {
+    const rows = await readJson<T[]>(await request(`${path}${page === 1 ? "" : `&page=${page}`}`));
+    result.push(...rows);
+    if (rows.length < 100) return result;
+  }
+  throw new Error("Provider pagination limit exceeded");
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -64,8 +100,36 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function readBytes(response: Response, limit = 64 * 1024 * 1024): Promise<Uint8Array> {
+  if (!response.ok) throw new Error(`Provider file request failed with ${response.status}`);
+  if (!response.body || Number(response.headers.get("content-length")) > limit)
+    throw new Error("Provider file exceeds size limit");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) throw new Error("Provider file exceeds size limit");
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks, size);
+  } finally {
+    await reader.cancel();
+  }
+}
+
 export class GitLabProvider implements GitProvider {
   readonly kind = "gitlab" as const;
+  async readBinary(repositoryId: string, ref: string, filePath: string): Promise<Uint8Array> {
+    return readBytes(
+      await this.request(
+        `projects/${encodeURIComponent(repositoryId)}/repository/files/${encodeURIComponent(filePath)}/raw?${new URLSearchParams({ ref })}`,
+      ),
+    );
+  }
   private readonly apiUrl: string;
 
   constructor(
@@ -196,12 +260,26 @@ export class GitLabProvider implements GitProvider {
   }
 
   async listBranches(repositoryId: string): Promise<ProviderBranch[]> {
-    const rows = await readJson<Array<{ commit: { id: string }; name: string }>>(
-      await this.request(
-        `projects/${encodeURIComponent(repositoryId)}/repository/branches?per_page=100`,
-      ),
+    const rows = await paginate<{ commit: { id: string }; name: string; protected?: boolean }>(
+      (url) => this.request(url),
+      `projects/${encodeURIComponent(repositoryId)}/repository/branches?per_page=100`,
     );
-    return rows.map((row) => ({ name: row.name, sha: row.commit.id }));
+    return rows.map((row) => ({
+      name: row.name,
+      sha: row.commit.id,
+      ...(typeof row.protected === "boolean" ? { protected: row.protected } : {}),
+    }));
+  }
+
+  async createBranch(repositoryId: string, name: string, ref: string): Promise<ProviderBranch> {
+    validateBranchName(name);
+    const row = await readJson<{ name: string; commit: { id: string } }>(
+      await this.request(`projects/${encodeURIComponent(repositoryId)}/repository/branches`, {
+        method: "POST",
+        body: JSON.stringify({ branch: name, ref }),
+      }),
+    );
+    return { name: row.name, sha: row.commit.id };
   }
 
   async listChangeRequests(repositoryId: string): Promise<ProviderChangeRequest[]> {
@@ -304,6 +382,14 @@ export class GitLabProvider implements GitProvider {
 
 export class GitHubProvider implements GitProvider {
   readonly kind = "github" as const;
+  async readBinary(repositoryId: string, ref: string, filePath: string): Promise<Uint8Array> {
+    return readBytes(
+      await this.request(
+        `repos/${repositoryId}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
+        { headers: { Accept: "application/vnd.github.raw+json" } },
+      ),
+    );
+  }
   private readonly apiUrl: string;
 
   constructor(
@@ -448,10 +534,26 @@ export class GitHubProvider implements GitProvider {
   }
 
   async listBranches(repositoryId: string): Promise<ProviderBranch[]> {
-    const rows = await readJson<Array<{ commit: { sha: string }; name: string }>>(
-      await this.request(`repos/${repositoryId}/branches?per_page=100`),
+    const rows = await paginate<{ commit: { sha: string }; name: string; protected?: boolean }>(
+      (url) => this.request(url),
+      `repos/${repositoryId}/branches?per_page=100`,
     );
-    return rows.map((row) => ({ name: row.name, sha: row.commit.sha }));
+    return rows.map((row) => ({
+      name: row.name,
+      sha: row.commit.sha,
+      ...(typeof row.protected === "boolean" ? { protected: row.protected } : {}),
+    }));
+  }
+
+  async createBranch(repositoryId: string, name: string, ref: string): Promise<ProviderBranch> {
+    validateBranchName(name);
+    const row = await readJson<{ object: { sha: string } }>(
+      await this.request(`repos/${repositoryId}/git/refs`, {
+        method: "POST",
+        body: JSON.stringify({ ref: `refs/heads/${name}`, sha: ref }),
+      }),
+    );
+    return { name, sha: row.object.sha };
   }
 
   async listChangeRequests(repositoryId: string): Promise<ProviderChangeRequest[]> {

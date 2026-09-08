@@ -128,3 +128,22 @@ describe("Docusaurus project discovery", () => {
     });
   });
 });
+it("never executes a JavaScript front matter engine while importing repository files", () => {
+  const marker = "pushdocsFrontMatterExecuted";
+  const source = `---javascript\n({ title: (globalThis.${marker} = true, 'Executed') })\n---\n# Safe title\n`;
+  const profile = analyzeDocusaurusFiles(new Map([["docs/untrusted.mdx", source]]));
+  expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+  expect(profile.documents[0]?.title).toBe("Safe title");
+});
+it("identifies localized documentation versions separately from Git branches", () => {
+  const profile = analyzeDocusaurusFiles(
+    new Map([
+      ["i18n/en/docusaurus-plugin-content-docs/version-1.0/intro.md", "# Old guide"],
+      ["i18n/en/docusaurus-plugin-content-docs/current/intro.md", "# Current guide"],
+    ]),
+  );
+  expect(profile.documents.map((document) => [document.locale, document.version])).toEqual([
+    ["en", "current"],
+    ["en", "1.0"],
+  ]);
+});

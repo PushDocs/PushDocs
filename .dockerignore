@@ -6,3 +6,13 @@ data
 docs/design
 node_modules
 *.log
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/data
+output
+.playwright-cli
+.env
+.env.*
+!.env.example

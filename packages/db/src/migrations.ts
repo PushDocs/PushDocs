@@ -280,6 +280,76 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
           "001-initial": initialMigration,
           "002-conflict-resolution": conflictResolutionMigration,
           "003-component-catalog": componentCatalogMigration,
+          "004-repository-paths": {
+            async up(database) {
+              await sql`alter table branch_contexts add column repository_paths jsonb not null default '[]'::jsonb`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table branch_contexts drop column repository_paths`.execute(database);
+            },
+          },
+          "006-prepared-commits": {
+            async up(database) {
+              await sql`alter table change_sets add column prepared_commit jsonb`.execute(database);
+            },
+            async down(database) {
+              await sql`alter table change_sets drop column prepared_commit`.execute(database);
+            },
+          },
+          "007-binary-conflicts": {
+            async up(database) {
+              await sql`alter table change_set_conflicts add column kind text not null default 'text' check (kind in ('text', 'binary'))`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table change_set_conflicts drop column kind`.execute(database);
+            },
+          },
+          "008-upload-leases": {
+            async up(database) {
+              await sql`create table upload_leases (
+                id uuid primary key default gen_random_uuid(),
+                project_id uuid not null references projects(id) on delete cascade,
+                branch_context_id uuid not null references branch_contexts(id) on delete cascade,
+                expires_at timestamptz not null
+              )`.execute(database);
+              await sql`create index upload_leases_branch_idx on upload_leases(branch_context_id, expires_at)`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`drop table upload_leases`.execute(database);
+            },
+          },
+          "009-branch-protection": {
+            async up(database) {
+              await sql`alter table branch_contexts add column is_protected boolean not null default false`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table branch_contexts drop column is_protected`.execute(database);
+            },
+          },
+          "005-preview-builds": {
+            async up(database) {
+              await sql`create table preview_builds (
+                id uuid primary key default gen_random_uuid(), project_id uuid not null references projects(id) on delete cascade,
+                branch text not null, sha text not null, revision integer not null, snapshot jsonb not null,
+                status text not null default 'queued' check (status in ('queued','building','ready','failed')),
+                log text not null default '', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+              )`.execute(database);
+              await sql`create index preview_builds_project_idx on preview_builds(project_id, created_at)`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await database.schema.dropTable("preview_builds").execute();
+            },
+          },
         };
       },
     },

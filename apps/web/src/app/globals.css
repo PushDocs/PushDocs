@@ -2287,10 +2287,24 @@ textarea:focus {
   .sidebar-label,
   .project-switcher > span:nth-child(2),
   .project-switcher > svg,
-  .sidebar-nav a,
   .sidebar-hint,
-  .sidebar-all {
+  .sidebar-all > span {
     display: none;
+  }
+
+  .sidebar-nav a,
+  .sidebar-all,
+  .sidebar-system {
+    display: flex;
+    justify-content: center;
+    font-size: 0;
+    min-height: 42px;
+  }
+
+  .project-switch-menu {
+    left: 56px;
+    right: auto;
+    width: min(240px, calc(100vw - 90px));
   }
 
   .sidebar-brand {
@@ -2352,6 +2366,16 @@ textarea:focus {
 }
 
 @media (max-width: 640px) {
+  .setting-sections article {
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .setting-sections article > :last-child {
+    grid-column: 2;
+    justify-self: start;
+  }
+
   .auth-page {
     display: block;
   }
@@ -2439,4 +2463,89 @@ textarea:focus {
   .component-list article {
     grid-template-columns: 1fr;
   }
+}
+.media-library {
+  min-width: 0;
+}
+.media-upload .media-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.media-upload input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  margin: 2px 0 0;
+}
+.media-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.media-toolbar label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.media-toolbar input,
+.media-toolbar select,
+.media-upload input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+}
+.media-upload,
+.media-confirm {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+.media-upload label {
+  display: block;
+  margin: 12px 0;
+}
+.media-upload progress {
+  width: min(100%, 320px);
+  margin-right: 12px;
+}
+.media-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+.media-card strong,
+.media-confirm h2,
+.media-confirm li {
+  overflow-wrap: anywhere;
+}
+.media-card img,
+.media-placeholder {
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+  background: var(--surface);
+  border-radius: 6px;
+}
+.media-placeholder {
+  display: grid;
+  place-items: center;
+}
+.media-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+.media-confirm button {
+  margin: 8px 8px 0 0;
 }

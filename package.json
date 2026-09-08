@@ -24,6 +24,7 @@
     "lint": "biome check .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
     "typecheck": "turbo run typecheck"
   },
   "dependenciesMeta": {

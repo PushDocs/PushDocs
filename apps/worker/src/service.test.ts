@@ -1,14 +1,57 @@
 import type { GitProvider } from "@pushdocs/providers";
 import { describe, expect, it, vi } from "vitest";
+import type { GitTransport } from "./git-transport";
 import {
   booleanFromPayload,
-  createWorkerService,
+  createWorkerService as createService,
   loadTextOrNull,
   projectIdFromPayload,
   repositoryPath,
   stringFromPayload,
   type WorkerRepository,
+  type WorkerServiceOptions,
 } from "./service";
+
+function createWorkerService(options: WorkerServiceOptions) {
+  const service = createService({
+    ...options,
+    createGitTransport: () => {
+      let preparedInput: Parameters<GitTransport["prepare"]>[0];
+      return {
+        prepare: async (input) => {
+          preparedInput = input;
+          return { branch: input.branch, parentSha: input.baseSha, sha: "commit-sha" };
+        },
+        publish: async () => {
+          const client = options.createProvider?.({
+            baseUrl: "https://gitlab.test",
+            kind: "gitlab",
+            token: "token",
+          });
+          if (!client) throw new Error("Missing Git fixture");
+          const result = await client.commitFiles({
+            branch: preparedInput.branch,
+            changes: preparedInput.changes,
+            expectedHeadSha: preparedInput.baseSha,
+            message: preparedInput.message,
+            repositoryId: "42",
+          });
+          return { sha: result.sha, alreadyApplied: false };
+        },
+      };
+    },
+  });
+  return {
+    ...service,
+    submitChangeSet: (payload: unknown) =>
+      service.submitChangeSet({
+        userId: "actor",
+        operationId: "attempt",
+        createdAt: "2026-09-08T00:00:00Z",
+        ...(payload as Record<string, unknown>),
+      }),
+  };
+}
 
 function provider(): GitProvider {
   return {
@@ -21,18 +64,24 @@ function provider(): GitProvider {
     listChecks: vi.fn().mockResolvedValue([]),
     listFiles: vi.fn().mockResolvedValue([]),
     readFile: vi.fn().mockResolvedValue("# Document"),
+    readBinary: vi.fn().mockResolvedValue(Buffer.from("original image")),
   } as unknown as GitProvider;
 }
 
 function repository(): WorkerRepository {
   return {
     claimNextJob: vi.fn().mockResolvedValue(undefined),
+    heartbeatJob: vi.fn().mockResolvedValue(true),
     completeJob: vi.fn(),
     ensureBranches: vi.fn(),
     ensureProjectComponents: vi.fn(),
     failJob: vi.fn(),
     getChangeSetSubmission: vi.fn(),
-    getProjectSyncTarget: vi.fn(),
+    getProjectSyncTarget: vi.fn().mockResolvedValue(syncTarget),
+    requireProjectAccess: vi.fn().mockResolvedValue({ role: "editor" }),
+    savePreparedCommit: vi.fn(),
+    discardRejectedCommit: vi.fn(),
+    withGitRefLock: vi.fn(async (_key, operation) => operation()),
     listActiveProjectIds: vi.fn().mockResolvedValue([]),
     markChangeSetConflicted: vi.fn(),
     markChangeSetSubmitted: vi.fn(),
@@ -55,6 +104,8 @@ const syncTarget = {
 
 const submissionTarget = {
   ...syncTarget,
+  clone_url: "https://gitlab.test/demo/docs.git",
+  prepared_commit: null,
   attachments: [] as Array<{ repository_path: string; storage_key: string }>,
   base_commit_sha: "base",
   branch: "docs/update",
@@ -129,6 +180,7 @@ describe("branch and review synchronization", () => {
         expect.objectContaining({ path: "docs/intro.md", title: "Intro" }),
         expect.objectContaining({ path: "docs/component.mdx", title: "Component" }),
       ]),
+      ["docs/intro.md", "docs/component.mdx", "static/img/a.png"],
     );
     expect(port.ensureProjectComponents).toHaveBeenCalledWith("project", ["Callout"]);
     expect(client.readFile).toHaveBeenCalledTimes(2);
@@ -148,11 +200,13 @@ describe("branch and review synchronization", () => {
       "main",
       "head",
       expect.any(Array),
+      Array.from({ length: 13 }, (_, index) => `docs/${index}.md`),
     );
   });
 
   it("rejects unavailable projects and missing branches", async () => {
     const port = repository();
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(undefined);
     const worker = createWorkerService({ repository: port });
     await expect(worker.synchronizeBranch("project", "main")).rejects.toThrow(
       "Project sync target is unavailable",
@@ -221,12 +275,305 @@ describe("branch and review synchronization", () => {
 });
 
 describe("change set submission", () => {
+  it("never forwards a provider credential to a different clone origin", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      clone_url: "https://unrelated.invalid/docs.git",
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    await expect(
+      createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+      }).submitChangeSet({ changeSetId: "change", projectId: "project", message: "Edit" }),
+    ).rejects.toThrow("origin");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("uses the native Git transport and rejects an invalid provider SHA before writing", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    await expect(
+      createService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+      }).submitChangeSet({
+        changeSetId: "change",
+        projectId: "project",
+        userId: "actor",
+        operationId: "native",
+        createdAt: "2026-09-08T00:00:00Z",
+        message: "Edit",
+        createReview: false,
+      }),
+    ).rejects.toThrow("Invalid Git object id");
+  });
+  it("stops when project access is revoked before publishing", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(port.getProjectSyncTarget)
+      .mockResolvedValueOnce(syncTarget as never)
+      .mockResolvedValueOnce(undefined);
+    await expect(
+      createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+      }).submitChangeSet({
+        changeSetId: "change",
+        projectId: "project",
+        message: "Edit",
+        createReview: false,
+      }),
+    ).rejects.toThrow("revoked");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("recognizes an already completed submission", async () => {
+    const port = repository();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      status: "submitted",
+    } as never);
+    await createWorkerService({ repository: port }).submitChangeSet({
+      changeSetId: "change",
+      projectId: "project",
+      message: "Edit",
+    });
+    expect(port.savePreparedCommit).not.toHaveBeenCalled();
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValueOnce(undefined);
+    await expect(
+      createWorkerService({ repository: port }).submitChangeSet({
+        changeSetId: "change",
+        projectId: "project",
+        message: "Edit",
+      }),
+    ).rejects.toThrow("no longer granted");
+  });
+  it("rebases independent text operations onto an advanced head without rewriting identical files", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [
+        { path: "docs/edit.md", ours_content: "# Ours", operation: "modify" },
+        { path: "docs/new.md", ours_content: "# New", operation: "add" },
+        { path: "docs/delete.md", ours_content: null, operation: "delete" },
+        { path: "docs/same.md", ours_content: "# Same", operation: "modify" },
+      ],
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "upstream" }]);
+    vi.mocked(client.readFile).mockImplementation(async (_repo, _ref, file) => {
+      if (file === "docs/new.md") throw new Error("404");
+      return file === "docs/same.md" ? "# Same" : "# Base";
+    });
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).submitChangeSet({ changeSetId: "change", projectId: "project", message: "Edit" });
+    expect(client.commitFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changes: [
+          expect.objectContaining({ path: "docs/edit.md", operation: "update" }),
+          expect.objectContaining({ path: "docs/new.md", operation: "create" }),
+          expect.objectContaining({ path: "docs/delete.md", operation: "delete" }),
+        ],
+      }),
+    );
+  });
+  it("treats missing binary files as deletions but propagates provider failures", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [{ path: "static/gone.png", operation: "delete", ours_content: null }],
+      attachments: [],
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "upstream" }]);
+    vi.mocked(client.readBinary).mockRejectedValue(new Error("404"));
+    const worker = createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    });
+    const input = {
+      changeSetId: "change",
+      projectId: "project",
+      message: "Delete",
+      createReview: false,
+    };
+    await worker.submitChangeSet(input);
+    expect(client.commitFiles).toHaveBeenCalledWith(expect.objectContaining({ changes: [] }));
+    vi.mocked(client.readBinary).mockRejectedValueOnce(new Error("403"));
+    await expect(worker.submitChangeSet(input)).rejects.toThrow("403");
+  });
+  it("compares original bytes before deleting a binary file", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [{ path: "static/image.png", operation: "delete", ours_content: null }],
+      attachments: [],
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "upstream" }]);
+    vi.mocked(client.readBinary).mockImplementation(async (_repo, ref) =>
+      Buffer.from(ref === "base" ? [255] : [254]),
+    );
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "token",
+    }).submitChangeSet({
+      changeSetId: "change",
+      projectId: "project",
+      message: "Delete",
+      createReview: false,
+    });
+    expect(port.markChangeSetConflicted).toHaveBeenCalledWith("change", "project", "upstream", [
+      expect.objectContaining({ kind: "binary", oursContent: null }),
+    ]);
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("does not overwrite a binary file changed by another author", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [],
+      attachments: [{ repository_path: "static/image.png", storage_key: "image" }],
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "upstream" }]);
+    vi.mocked(client.readBinary).mockImplementation(async (_repo, ref) =>
+      Buffer.from(ref === "base" ? "original" : "theirs"),
+    );
+    const worker = createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      readAttachment: async () => Buffer.from("ours"),
+    });
+    await worker.submitChangeSet({
+      changeSetId: "change",
+      projectId: "project",
+      message: "Image",
+      createReview: false,
+    });
+    expect(port.markChangeSetConflicted).toHaveBeenCalledWith("change", "project", "upstream", [
+      expect.objectContaining({ kind: "binary", path: "static/image.png" }),
+    ]);
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("bounds the total binary submission before preparing or publishing a commit", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [],
+      attachments: Array.from({ length: 5 }, (_, index) => ({
+        repository_path: `static/${index}.png`,
+        storage_key: String(index),
+      })),
+    } as never);
+    const bytes = new Uint8Array(64 * 1024 * 1024);
+    const worker = createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      readAttachment: async () => bytes,
+    });
+    await expect(
+      worker.submitChangeSet({
+        changeSetId: "change",
+        projectId: "project",
+        message: "Media",
+        createReview: false,
+      }),
+    ).rejects.toThrow("256 MiB");
+    expect(port.savePreparedCommit).not.toHaveBeenCalled();
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("rejects an oversized attachment and an oversized text change set without a Git write", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      files: [],
+      attachments: [{ repository_path: "static/a.png", storage_key: "a" }],
+    } as never);
+    const worker = createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      readAttachment: async () => new Uint8Array(64 * 1024 * 1024 + 1),
+    });
+    const payload = {
+      changeSetId: "change",
+      projectId: "project",
+      message: "Media",
+      createReview: false,
+    };
+    await expect(worker.submitChangeSet(payload)).rejects.toThrow("64 MiB");
+    const text = "x".repeat(5_000_000);
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      attachments: [],
+      files: Array.from({ length: 54 }, (_, index) => ({
+        path: `docs/${index}.md`,
+        operation: "add",
+        ours_content: text,
+      })),
+    } as never);
+    await expect(worker.submitChangeSet(payload)).rejects.toThrow("256 MiB");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("imports configured technical files at the immutable SHA", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(syncTarget as never);
+    vi.mocked(client.listFiles).mockResolvedValue([
+      ".pushdocs/config.json",
+      "sidebars.js",
+      "docs/_category_.json",
+    ]);
+    vi.mocked(client.readFile).mockImplementation(async (_repo, ref, file) => {
+      expect(ref).toBe("head");
+      return file === ".pushdocs/config.json"
+        ? '{"version":1}'
+        : file.endsWith(".json")
+          ? '{"label":"Guides"}'
+          : "module.exports = {}";
+    });
+    await createWorkerService({ repository: port }).synchronizeBranch("project", "main", client);
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "main",
+      "head",
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "sidebars.js",
+          contentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      ]),
+      expect.any(Array),
+    );
+  });
   it("stops and records conflicts when upstream content diverged", async () => {
     const port = repository();
     const client = provider();
     vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
     vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "upstream" }]);
-    vi.mocked(client.readFile).mockResolvedValue("# Theirs");
+    vi.mocked(client.readFile).mockImplementation(async (_repository, ref) =>
+      ref === "base" ? "# Base" : "# Theirs",
+    );
     const worker = createWorkerService({
       createProvider: () => client,
       decryptSecret: () => "token",
@@ -310,7 +657,7 @@ describe("change set submission", () => {
     expect(port.markChangeSetSubmitted).toHaveBeenCalledWith({
       changeSetId: "change",
       commitSha: "commit-sha",
-      commitUrl: "commit-url",
+      commitUrl: "https://gitlab.test/demo/docs/-/commit/commit-sha",
       projectId: "project",
     });
     expect(port.replaceChangeRequests).toHaveBeenCalled();
@@ -393,6 +740,76 @@ describe("change set submission", () => {
 });
 
 describe("job execution and review polling", () => {
+  it("does not process a job after losing its lease", async () => {
+    const port = repository();
+    vi.mocked(port.claimNextJob).mockResolvedValue({ id: "job", attempts: 2 } as never);
+    vi.mocked(port.heartbeatJob).mockResolvedValue(false);
+    await expect(createWorkerService({ repository: port }).runJob()).resolves.toBe(true);
+    expect(port.completeJob).not.toHaveBeenCalled();
+  });
+  it("releases a definitively rejected write instead of retrying the stale parent", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "job",
+      kind: "change-set.submit",
+      attempts: 1,
+      payload: {
+        changeSetId: "change",
+        projectId: "project",
+        userId: "actor",
+        operationId: "attempt",
+        createdAt: "2026-09-08T00:00:00Z",
+        message: "Edit",
+      },
+    } as never);
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.commitFiles).mockRejectedValue(
+      Object.assign(new Error("Ref changed"), { code: "PROVIDER_CONFLICT" }),
+    );
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).runJob();
+    expect(port.discardRejectedCommit).toHaveBeenCalledWith("change", "project");
+    expect(port.failJob).toHaveBeenCalledWith("job", "Ref changed", false, 1);
+  });
+  it("renews slow jobs and reports a failed heartbeat", async () => {
+    vi.useFakeTimers();
+    try {
+      const port = repository();
+      const client = provider();
+      const logger = { error: vi.fn() };
+      vi.mocked(port.claimNextJob).mockResolvedValue({
+        id: "job",
+        kind: "branch.sync",
+        attempts: 1,
+        payload: { projectId: "project", branch: "main" },
+      } as never);
+      let finish: (value: Array<{ name: string; sha: string }>) => void = () => undefined;
+      vi.mocked(client.listBranches).mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const task = createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+        logger,
+      }).runJob();
+      await vi.advanceTimersByTimeAsync(1);
+      vi.mocked(port.heartbeatJob).mockRejectedValueOnce(new Error("database offline"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("heartbeat failed"));
+      finish([{ name: "main", sha: "head" }]);
+      await task;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("reports an empty queue", async () => {
     await expect(createWorkerService({ repository: repository() }).runJob()).resolves.toBe(false);
   });
@@ -412,7 +829,7 @@ describe("job execution and review polling", () => {
       decryptSecret: () => "token",
       repository: port,
     }).runJob();
-    expect(port.completeJob).toHaveBeenCalledWith("job");
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
 
   it("completes a project synchronization job", async () => {
@@ -431,7 +848,7 @@ describe("job execution and review polling", () => {
       repository: port,
     }).runJob();
     expect(port.ensureBranches).toHaveBeenCalled();
-    expect(port.completeJob).toHaveBeenCalledWith("job");
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
 
   it("retries failed jobs and logs the failure", async () => {
@@ -444,7 +861,7 @@ describe("job execution and review polling", () => {
       payload: { projectId: "project" },
     } as never);
     await expect(createWorkerService({ logger, repository: port }).runJob()).resolves.toBe(true);
-    expect(port.failJob).toHaveBeenCalledWith("job", "Unsupported job kind: unsupported", true);
+    expect(port.failJob).toHaveBeenCalledWith("job", "Unsupported job kind: unsupported", true, 1);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('"jobId":"job"'));
   });
 
@@ -464,7 +881,7 @@ describe("job execution and review polling", () => {
       "project",
       "Change set is unavailable",
     );
-    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false);
+    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false, 5);
   });
 
   it("polls visible projects and isolates provider failures", async () => {

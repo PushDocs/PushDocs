@@ -1,12 +1,20 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { analyzeDocusaurusFiles } from "@pushdocs/content";
+import {
+  analyzeDocusaurusFiles,
+  isEditableFile,
+  isMediaFile,
+  parseProjectConfig,
+} from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { createProvider, type GitProvider, type ProviderFileChange } from "@pushdocs/providers";
+import { GitTransport, type GitTransportOptions } from "./git-transport";
 
 export type WorkerRepository = Pick<
   PushDocsRepository,
   | "claimNextJob"
+  | "heartbeatJob"
   | "completeJob"
   | "ensureBranches"
   | "ensureProjectComponents"
@@ -20,6 +28,10 @@ export type WorkerRepository = Pick<
   | "releaseChangeSetSubmission"
   | "replaceChangeRequests"
   | "replaceImportedDocuments"
+  | "requireProjectAccess"
+  | "savePreparedCommit"
+  | "withGitRefLock"
+  | "discardRejectedCommit"
 >;
 
 interface ProviderInput {
@@ -29,6 +41,8 @@ interface ProviderInput {
 }
 
 export interface WorkerServiceOptions {
+  createGitTransport?: (input: GitTransportOptions) => Pick<GitTransport, "prepare" | "publish">;
+  gitRoot?: string;
   attachmentsRoot?: string;
   createProvider?: (input: ProviderInput) => GitProvider;
   decryptSecret?: (value: string) => string;
@@ -136,10 +150,21 @@ export function createWorkerService(options: WorkerServiceOptions) {
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     const client = provider ?? providerFor(target);
     const branches = await client.listBranches(target.provider_repository_id);
+    await repository.ensureBranches(projectId, branches);
     const branch = branches.find((item) => item.name === branchName);
     if (!branch) throw new Error(`Branch ${branchName} was not found`);
-    const allPaths = await client.listFiles(target.provider_repository_id, branch.name);
-    const paths = allPaths.filter((filePath) => /\.(md|mdx)$/i.test(filePath));
+    const allPaths = await client.listFiles(target.provider_repository_id, branch.sha);
+    const configPath = repositoryPath(target.root_path, ".pushdocs/config.json");
+    const config = parseProjectConfig(
+      allPaths.includes(configPath)
+        ? await client.readFile(target.provider_repository_id, branch.sha, configPath)
+        : null,
+    );
+    const prefix = target.root_path === "." ? "" : `${target.root_path.replace(/\/$/, "")}/`;
+    const paths = allPaths.filter(
+      (filePath) =>
+        filePath.startsWith(prefix) && isEditableFile(config, filePath.slice(prefix.length)),
+    );
     const contents = new Map<string, string>();
     for (let offset = 0; offset < paths.length; offset += 12) {
       const batch = paths.slice(offset, offset + 12);
@@ -148,18 +173,35 @@ export function createWorkerService(options: WorkerServiceOptions) {
           async (filePath) =>
             [
               filePath,
-              await client.readFile(target.provider_repository_id, branch.name, filePath),
+              await client.readFile(target.provider_repository_id, branch.sha, filePath),
             ] as const,
         ),
       );
       for (const [filePath, content] of loaded) contents.set(filePath, content);
     }
     const profile = analyzeDocusaurusFiles(contents, target.root_path);
+    const existing = new Set(profile.documents.map((document) => document.path));
+    for (const [filePath, content] of contents) {
+      const relativePath = filePath.slice(prefix.length);
+      if (!existing.has(relativePath))
+        profile.documents.push({
+          path: relativePath,
+          content,
+          contentHash: createHash("sha256").update(content).digest("hex"),
+          title: relativePath.split("/").at(-1) ?? relativePath,
+          locale: "default",
+          version: "current",
+          status: "clean",
+        });
+    }
     await repository.replaceImportedDocuments(
       projectId,
       branch.name,
       branch.sha,
       profile.documents,
+      allPaths
+        .filter((filePath) => filePath.startsWith(prefix))
+        .map((filePath) => filePath.slice(prefix.length)),
     );
     await repository.ensureProjectComponents(projectId, profile.unknownComponents);
   }
@@ -175,31 +217,59 @@ export function createWorkerService(options: WorkerServiceOptions) {
   }
 
   async function submitChangeSet(payload: unknown): Promise<void> {
+    const target = await repository.getChangeSetSubmission(
+      stringFromPayload(payload, "changeSetId"),
+    );
+    if (!target || target.project_id !== projectIdFromPayload(payload))
+      throw new Error("Change set is unavailable");
+    await repository.withGitRefLock(
+      `${target.base_url}:${target.provider_repository_id}:${target.branch}`,
+      () => submitLocked(payload),
+    );
+  }
+
+  async function submitLocked(payload: unknown): Promise<void> {
     const projectId = projectIdFromPayload(payload);
     const changeSetId = stringFromPayload(payload, "changeSetId");
     const message = stringFromPayload(payload, "message");
     const createReview = booleanFromPayload(payload, "createReview");
+    const userId = stringFromPayload(payload, "userId");
+    await repository.requireProjectAccess(userId, projectId, "branch:push");
+    if (!(await repository.getProjectSyncTarget(projectId)))
+      throw new Error("Project sync target is unavailable or no longer granted");
     const target = await repository.getChangeSetSubmission(changeSetId);
     if (!target || target.project_id !== projectId) throw new Error("Change set is unavailable");
+    if (target.status === "submitted") return;
     if (target.status !== "submitting") throw new Error("Change set is not ready for submission");
     const provider = providerFor(target);
     const branches = await provider.listBranches(target.provider_repository_id);
     const current = branches.find((branch) => branch.name === target.branch);
     if (!current) throw new Error(`Branch ${target.branch} was not found`);
 
-    if (current.sha !== target.base_commit_sha) {
+    const parentSha = target.prepared_commit?.parentSha ?? current.sha;
+    let binaryDeletes = target.files.filter(
+      (file) => file.operation === "delete" && isMediaFile(file.path),
+    );
+    let textFiles = target.files.filter((file) => !binaryDeletes.includes(file));
+    if (parentSha !== target.base_commit_sha) {
       const compared = await Promise.all(
-        target.files.map(async (file) => ({
+        textFiles.map(async (file) => ({
           ...file,
+          base_content: await loadTextOrNull(
+            provider,
+            target.provider_repository_id,
+            target.base_commit_sha,
+            repositoryPath(target.root_path, file.path),
+          ),
           theirsContent: await loadTextOrNull(
             provider,
             target.provider_repository_id,
-            current.sha,
+            parentSha,
             repositoryPath(target.root_path, file.path),
           ),
         })),
       );
-      const conflicts = compared
+      const conflicts: Parameters<WorkerRepository["markChangeSetConflicted"]>[3] = compared
         .filter(
           (file) =>
             file.theirsContent !== file.base_content && file.theirsContent !== file.ours_content,
@@ -210,45 +280,132 @@ export function createWorkerService(options: WorkerServiceOptions) {
           path: file.path,
           theirsContent: file.theirsContent,
         }));
+      {
+        const binaryFiles = [
+          ...target.attachments,
+          ...binaryDeletes.map((file) => ({ repository_path: file.path, storage_key: null })),
+        ];
+        const deletedUpstream = new Set<string>();
+        for (const attachment of binaryFiles) {
+          const filePath = repositoryPath(target.root_path, attachment.repository_path);
+          const binaryHash = async (ref: string) => {
+            try {
+              return createHash("sha256")
+                .update(await provider.readBinary(target.provider_repository_id, ref, filePath))
+                .digest("hex");
+            } catch (error) {
+              if (error instanceof Error && /\b404\b/.test(error.message)) return null;
+              throw error;
+            }
+          };
+          const base = await binaryHash(target.base_commit_sha);
+          const theirs = await binaryHash(parentSha);
+          const ours =
+            attachment.storage_key === null
+              ? null
+              : createHash("sha256")
+                  .update(
+                    await readStoredAttachment(path.join(attachmentsRoot, attachment.storage_key)),
+                  )
+                  .digest("hex");
+          if (theirs !== base && theirs !== ours)
+            conflicts.push({
+              kind: "binary",
+              path: attachment.repository_path,
+              baseContent: base,
+              oursContent: ours,
+              theirsContent: theirs,
+            });
+          if (theirs === null) deletedUpstream.add(attachment.repository_path);
+        }
+        binaryDeletes = binaryDeletes.filter((file) => !deletedUpstream.has(file.path));
+      }
       if (conflicts.length > 0) {
-        await repository.markChangeSetConflicted(changeSetId, projectId, current.sha, conflicts);
+        await repository.markChangeSetConflicted(changeSetId, projectId, parentSha, conflicts);
         return;
       }
+      textFiles = compared
+        .filter((file) => file.ours_content !== file.theirsContent)
+        .map((file) => ({
+          ...file,
+          operation:
+            file.ours_content === null ? "delete" : file.theirsContent === null ? "add" : "modify",
+        }));
     }
 
     const currentPaths =
       target.attachments.length > 0
-        ? new Set(await provider.listFiles(target.provider_repository_id, current.sha))
+        ? new Set(
+            await provider.listFiles(
+              target.provider_repository_id,
+              target.prepared_commit?.parentSha ?? current.sha,
+            ),
+          )
         : new Set<string>();
-    const attachmentChanges: ProviderFileChange[] = await Promise.all(
-      target.attachments.map(async (attachment) => {
-        const destinationPath = repositoryPath(target.root_path, attachment.repository_path);
-        return {
-          content: await readStoredAttachment(path.join(attachmentsRoot, attachment.storage_key)),
-          operation: currentPaths.has(destinationPath) ? "update" : "create",
-          path: destinationPath,
-        };
-      }),
+    const attachmentChanges: ProviderFileChange[] = [];
+    let submissionBytes = textFiles.reduce(
+      (total, file) => total + Buffer.byteLength(file.ours_content ?? ""),
+      0,
     );
-    const commit = await provider.commitFiles({
-      branch: target.branch,
-      changes: [
-        ...target.files.map((file) => ({
-          content: file.ours_content === null ? null : Buffer.from(file.ours_content, "utf8"),
-          operation:
-            file.operation === "add"
-              ? ("create" as const)
-              : file.operation === "delete"
-                ? ("delete" as const)
-                : ("update" as const),
-          path: repositoryPath(target.root_path, file.path),
-        })),
-        ...attachmentChanges,
-      ],
-      expectedHeadSha: current.sha,
-      message,
-      repositoryId: target.provider_repository_id,
+    if (submissionBytes > 256 * 1024 * 1024) throw new Error("Change set exceeds 256 MiB");
+    for (const attachment of target.attachments) {
+      const destinationPath = repositoryPath(target.root_path, attachment.repository_path);
+      const content = await readStoredAttachment(
+        path.join(attachmentsRoot, attachment.storage_key),
+      );
+      if (content.byteLength > 64 * 1024 * 1024) throw new Error("Attachment exceeds 64 MiB");
+      submissionBytes += content.byteLength;
+      if (submissionBytes > 256 * 1024 * 1024) throw new Error("Change set exceeds 256 MiB");
+      attachmentChanges.push({
+        content,
+        operation: currentPaths.has(destinationPath) ? "update" : "create",
+        path: destinationPath,
+      });
+    }
+    const changes: ProviderFileChange[] = [
+      ...[...textFiles, ...binaryDeletes].map((file) => ({
+        content: file.ours_content === null ? null : Buffer.from(file.ours_content, "utf8"),
+        operation:
+          file.operation === "add"
+            ? ("create" as const)
+            : file.operation === "delete"
+              ? ("delete" as const)
+              : ("update" as const),
+        path: repositoryPath(target.root_path, file.path),
+      })),
+      ...attachmentChanges,
+    ];
+    const operationId =
+      target.prepared_commit?.operationId ?? stringFromPayload(payload, "operationId");
+    const createdAt = target.prepared_commit?.createdAt ?? stringFromPayload(payload, "createdAt");
+    const token = decrypt(target.secret_encrypted);
+    if (new URL(target.clone_url).origin !== new URL(target.base_url).origin)
+      throw new Error("Clone origin does not match the provider connection");
+    const transport = (options.createGitTransport ?? ((input) => new GitTransport(input)))({
+      directory: path.join(
+        path.resolve(options.gitRoot ?? process.env.PUSHDOCS_GIT_CACHE_DIR ?? "./data/git"),
+        createHash("sha256").update(operationId).digest("hex"),
+      ),
+      remote: target.clone_url,
+      authorization: `Authorization: Basic ${Buffer.from(`${target.kind === "gitlab" ? "oauth2" : "x-access-token"}:${token}`).toString("base64")}`,
     });
+    const prepared = await transport.prepare({
+      branch: target.branch,
+      changes,
+      baseSha: target.prepared_commit?.parentSha ?? current.sha,
+      operationId,
+      createdAt,
+      message,
+    });
+    await repository.savePreparedCommit(changeSetId, { ...prepared, operationId, createdAt });
+    await repository.requireProjectAccess(userId, projectId, "branch:push");
+    if (!(await repository.getProjectSyncTarget(projectId)))
+      throw new Error("Project connection grant was revoked");
+    const published = await transport.publish(prepared);
+    const commit = {
+      sha: published.sha,
+      url: `${target.clone_url.replace(/\.git$/, "")}/${target.kind === "gitlab" ? "-/" : ""}commit/${published.sha}`,
+    };
     if (createReview && target.branch !== target.default_branch) {
       await provider.ensureChangeRequest({
         repositoryId: target.provider_repository_id,
@@ -269,6 +426,20 @@ export function createWorkerService(options: WorkerServiceOptions) {
   async function runJob(): Promise<boolean> {
     const job = await repository.claimNextJob();
     if (!job) return false;
+    return repository.withGitRefLock(`job:${job.id}`, async () => {
+      if (!(await repository.heartbeatJob(job.id, job.attempts))) return true;
+      return runClaimedJob(job);
+    });
+  }
+
+  async function runClaimedJob(
+    job: NonNullable<Awaited<ReturnType<WorkerRepository["claimNextJob"]>>>,
+  ): Promise<boolean> {
+    const heartbeat = setInterval(() => {
+      void repository.heartbeatJob(job.id, job.attempts).catch((error: unknown) => {
+        logger.error(`Job heartbeat failed: ${String(error)}`);
+      });
+    }, 30_000);
     try {
       if (job.kind === "project.sync") {
         await synchronizeProject(projectIdFromPayload(job.payload));
@@ -282,10 +453,23 @@ export function createWorkerService(options: WorkerServiceOptions) {
       } else {
         throw new Error(`Unsupported job kind: ${job.kind}`);
       }
-      await repository.completeJob(job.id);
+      await repository.completeJob(job.id, job.attempts);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const projectId = projectIdFromPayload(job.payload);
+      if (
+        job.kind === "change-set.submit" &&
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "PROVIDER_CONFLICT"
+      ) {
+        const changeSetId = stringFromPayload(job.payload, "changeSetId");
+        await repository.discardRejectedCommit(changeSetId, projectId);
+        await repository.releaseChangeSetSubmission(changeSetId, projectId, message);
+        await repository.failJob(job.id, message, false, job.attempts);
+        return true;
+      }
       if (job.attempts >= 5) {
         await repository.markProjectAttention(projectId);
         if (job.kind === "change-set.submit") {
@@ -296,8 +480,10 @@ export function createWorkerService(options: WorkerServiceOptions) {
           );
         }
       }
-      await repository.failJob(job.id, message, job.attempts < 5);
+      await repository.failJob(job.id, message, job.attempts < 5, job.attempts);
       logger.error(JSON.stringify({ error: message, jobId: job.id, kind: job.kind }));
+    } finally {
+      clearInterval(heartbeat);
     }
     return true;
   }

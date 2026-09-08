@@ -55,6 +55,7 @@ services:
     environment:
       <<: *app-environment
       HOSTNAME: "0.0.0.0"
+      PUSHDOCS_PUBLIC_ORIGIN: ${PUSHDOCS_PUBLIC_ORIGIN:-http://localhost:8080}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -82,6 +83,7 @@ services:
       - /tmp:rw,exec,mode=1777
     volumes:
       - attachments:/data/attachments
+      - git_cache:/app/apps/worker/data/git
     networks:
       - default
       - database
@@ -133,6 +135,7 @@ services:
       - caddy_data:/data
 
 volumes:
+  git_cache:
   attachments:
   caddy_data:
   postgres_data:

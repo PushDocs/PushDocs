@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => {
       getConnection: vi.fn(),
       getInvitation: vi.fn(),
       queueChangeSetSubmission: vi.fn(),
+      retryChangeSetSubmission: vi.fn(),
       recordAttachment: vi.fn(),
       requireProjectAccess: vi.fn(),
       resolveConflict: vi.fn(),
@@ -121,6 +122,7 @@ import {
   loginAction,
   logoutAction,
   resolveConflictAction,
+  retryChangeSetSubmissionAction,
   saveDraftAction,
   submitChangeSetAction,
   synchronizeBranchAction,
@@ -402,12 +404,22 @@ describe("document and review actions", () => {
     );
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
     expect(mocks.repo.queueChangeSetSubmission).toHaveBeenCalledWith({
+      userId: "user",
       branch: "docs/update",
       changeSetId,
       createReview: true,
       message: "Update docs",
       projectId,
     });
+  });
+
+  it("retries the existing submission using the signed-in actor", async () => {
+    await retryChangeSetSubmissionAction(form({ projectId, changeSetId }));
+    expect(mocks.repo.retryChangeSetSubmission).toHaveBeenCalledWith(
+      changeSetId,
+      projectId,
+      "user",
+    );
   });
 
   it("resolves conflicts after checking document access", async () => {

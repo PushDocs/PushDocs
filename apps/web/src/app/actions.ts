@@ -259,7 +259,7 @@ export async function submitChangeSetAction(formData: FormData): Promise<void> {
     createReview: formData.get("createReview") === "on",
   });
   await repository().requireProjectAccess(user.id, input.projectId, "branch:push");
-  await repository().queueChangeSetSubmission(input);
+  await repository().queueChangeSetSubmission({ ...input, userId: user.id });
   revalidatePath(`/projects/${input.projectId}/changes`);
 }
 
@@ -269,6 +269,14 @@ export async function resolveConflictAction(formData: FormData): Promise<void> {
   await repository().requireProjectAccess(user.id, input.projectId, "document:write");
   await repository().resolveConflict(input);
   revalidatePath(`/projects/${input.projectId}/changes`);
+}
+
+export async function retryChangeSetSubmissionAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const changeSetId = String(formData.get("changeSetId"));
+  await repository().retryChangeSetSubmission(changeSetId, projectId, user.id);
+  revalidatePath(`/projects/${projectId}/changes`);
 }
 
 export async function createProjectComponentAction(formData: FormData): Promise<void> {

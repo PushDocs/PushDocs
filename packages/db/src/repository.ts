@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type {
   DocumentSummary,
   ProjectRole,
@@ -6,9 +6,9 @@ import type {
   ProviderKind,
 } from "@pushdocs/contracts";
 import { assertCan, normalizeBranchRef, type ProjectAction } from "@pushdocs/domain";
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import { appendEvent } from "./events";
-import type { Database } from "./schema";
+import type { Database, PreparedGitCommit } from "./schema";
 
 export class RevisionConflictError extends Error {
   readonly code = "REVISION_CONFLICT";
@@ -333,6 +333,7 @@ export class PushDocsRepository {
       title: string;
       version: string;
     }>,
+    repositoryPaths?: string[],
   ): Promise<void> {
     await this.database.transaction().execute(async (transaction) => {
       const fullRef = normalizeBranchRef(branchName);
@@ -366,6 +367,12 @@ export class PushDocsRepository {
         .deleteFrom("imported_documents")
         .where("branch_context_id", "=", branch.id)
         .execute();
+      if (repositoryPaths)
+        await transaction
+          .updateTable("branch_contexts")
+          .set({ repository_paths: JSON.stringify(repositoryPaths) })
+          .where("id", "=", branch.id)
+          .execute();
       for (let offset = 0; offset < documents.length; offset += 250) {
         const batch = documents.slice(offset, offset + 250);
         if (batch.length === 0) continue;
@@ -405,8 +412,15 @@ export class PushDocsRepository {
       const job = await transaction
         .selectFrom("jobs")
         .selectAll()
-        .where("status", "=", "queued")
-        .where("available_at", "<=", new Date())
+        .where((eb) =>
+          eb.or([
+            eb.and([eb("status", "=", "queued"), eb("available_at", "<=", new Date())]),
+            eb.and([
+              eb("status", "=", "running"),
+              eb("locked_at", "<", new Date(Date.now() - 600_000)),
+            ]),
+          ]),
+        )
         .orderBy("created_at")
         .forUpdate()
         .skipLocked()
@@ -426,15 +440,29 @@ export class PushDocsRepository {
     });
   }
 
-  async completeJob(jobId: string): Promise<void> {
+  async heartbeatJob(jobId: string, attempt: number): Promise<boolean> {
+    const result = await this.database
+      .updateTable("jobs")
+      .set({ locked_at: new Date(), updated_at: new Date() })
+      .where("id", "=", jobId)
+      .where("status", "=", "running")
+      .where("attempts", "=", attempt)
+      .executeTakeFirst();
+    return result.numUpdatedRows === 1n;
+  }
+
+  async completeJob(jobId: string, attempt?: number): Promise<void> {
     await this.database
       .updateTable("jobs")
       .set({ locked_at: null, status: "done", updated_at: new Date() })
       .where("id", "=", jobId)
+      .$if(attempt !== undefined, (query) =>
+        query.where("attempts", "=", attempt!).where("status", "=", "running"),
+      )
       .execute();
   }
 
-  async failJob(jobId: string, error: string, retry: boolean): Promise<void> {
+  async failJob(jobId: string, error: string, retry: boolean, attempt?: number): Promise<void> {
     await this.database
       .updateTable("jobs")
       .set({
@@ -445,6 +473,9 @@ export class PushDocsRepository {
         updated_at: new Date(),
       })
       .where("id", "=", jobId)
+      .$if(attempt !== undefined, (query) =>
+        query.where("attempts", "=", attempt!).where("status", "=", "running"),
+      )
       .execute();
   }
 
@@ -480,13 +511,14 @@ export class PushDocsRepository {
 
   async ensureBranches(
     projectId: string,
-    branches: Array<{ name: string; sha: string }>,
+    branches: Array<{ name: string; sha: string; protected?: boolean }>,
   ): Promise<void> {
     if (branches.length === 0) return;
     await this.database
       .insertInto("branch_contexts")
       .values(
         branches.map((branch) => ({
+          is_protected: branch.protected ?? false,
           base_commit_sha: branch.sha,
           full_ref: normalizeBranchRef(branch.name),
           head_commit_sha: branch.sha,
@@ -494,7 +526,9 @@ export class PushDocsRepository {
         })),
       )
       .onConflict((conflict) =>
-        conflict.columns(["project_id", "full_ref", "generation"]).doNothing(),
+        conflict
+          .columns(["project_id", "full_ref", "generation"])
+          .doUpdateSet({ is_protected: sql<boolean>`excluded.is_protected` }),
       )
       .execute();
   }
@@ -509,10 +543,185 @@ export class PushDocsRepository {
   async listBranches(projectId: string) {
     return this.database
       .selectFrom("branch_contexts")
-      .select(["id", "full_ref", "head_commit_sha", "updated_at"])
+      .select(["id", "full_ref", "head_commit_sha", "updated_at", "is_protected"])
       .where("project_id", "=", projectId)
       .orderBy("updated_at", "desc")
       .execute();
+  }
+
+  async getBranchState(projectId: string, branchName: string) {
+    const branch = await this.database
+      .selectFrom("branch_contexts")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("full_ref", "=", normalizeBranchRef(branchName))
+      .orderBy("generation", "desc")
+      .executeTakeFirst();
+    if (!branch) throw new NotFoundError("Branch not found");
+    const changeSet = await this.database
+      .selectFrom("change_sets")
+      .selectAll()
+      .where("branch_context_id", "=", branch.id)
+      .where("status", "in", ["open", "conflicted", "submitting"])
+      .executeTakeFirst();
+    return { branch, changeSet };
+  }
+
+  async listWorkingFiles(projectId: string, branchName: string) {
+    const { branch, changeSet } = await this.getBranchState(projectId, branchName);
+    const imported = await this.database
+      .selectFrom("imported_documents")
+      .select(["path", "content", "locale", "version", "title"])
+      .where("branch_context_id", "=", branch.id)
+      .execute();
+    const files = new Map(
+      imported.map((file) => [
+        file.path,
+        { ...file, baseContent: file.content, status: "clean" as string },
+      ]),
+    );
+    if (changeSet) {
+      const drafts = await this.database
+        .selectFrom("draft_files")
+        .selectAll()
+        .where("change_set_id", "=", changeSet.id)
+        .execute();
+      for (const file of drafts) {
+        const existing = files.get(file.path);
+        files.set(file.path, {
+          path: file.path,
+          content: file.content ?? "",
+          baseContent: existing?.baseContent ?? "",
+          title: titleFromDraft(file.content, file.path),
+          locale: existing?.locale ?? file.path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
+          version: existing?.version ?? "current",
+          status: file.operation,
+        });
+      }
+    }
+    return { branch, changeSet, files: [...files.values()] };
+  }
+
+  async stageFiles(input: {
+    projectId: string;
+    branch: string;
+    userId: string;
+    expectedRevision: number;
+    files: Array<{ path: string; content?: string | null; revert?: boolean; createOnly?: boolean }>;
+  }): Promise<void> {
+    await this.requireProjectAccess(input.userId, input.projectId, "document:write");
+    if (
+      !input.files.length ||
+      new Set(input.files.map((file) => file.path)).size !== input.files.length
+    )
+      throw new Error("Empty or duplicate file operations");
+    for (const file of input.files) {
+      if (
+        !file.path ||
+        file.path.length > 1000 ||
+        file.path.includes("\\") ||
+        [...file.path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+        file.path
+          .split("/")
+          .some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
+      )
+        throw new Error("Invalid file path");
+      if (!file.revert && file.content === undefined) throw new Error("File content required");
+    }
+    await this.database.transaction().execute(async (transaction) => {
+      const branch = await transaction
+        .selectFrom("branch_contexts")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", normalizeBranchRef(input.branch))
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      let changeSet = await transaction
+        .selectFrom("change_sets")
+        .selectAll()
+        .where("branch_context_id", "=", branch.id)
+        .where("status", "in", ["open", "conflicted", "submitting"])
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        (changeSet?.revision ?? 0) !== input.expectedRevision ||
+        (changeSet && changeSet.status !== "open")
+      )
+        throw new RevisionConflictError("Набор изменений обновился. Перечитайте страницу.");
+      changeSet ??= await transaction
+        .insertInto("change_sets")
+        .values({
+          project_id: input.projectId,
+          branch_context_id: branch.id,
+          base_commit_sha: branch.head_commit_sha,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      for (const file of input.files) {
+        const imported = await transaction
+          .selectFrom("imported_documents")
+          .select(["content"])
+          .where("branch_context_id", "=", branch.id)
+          .where("path", "=", file.path)
+          .executeTakeFirst();
+        const draft = await transaction
+          .selectFrom("draft_files")
+          .selectAll()
+          .where("change_set_id", "=", changeSet.id)
+          .where("path", "=", file.path)
+          .executeTakeFirst();
+        const exists = Boolean(imported) || branch.repository_paths.includes(file.path);
+        if (file.createOnly && (exists || draft))
+          throw new RevisionConflictError(`Файл уже существует: ${file.path}`);
+        if (file.revert || file.content === null)
+          await transaction
+            .deleteFrom("attachments")
+            .where("change_set_id", "=", changeSet.id)
+            .where("repository_path", "=", file.path)
+            .execute();
+        if (
+          file.revert ||
+          (!exists && file.content === null) ||
+          (imported && file.content === imported.content)
+        ) {
+          await transaction
+            .deleteFrom("draft_files")
+            .where("change_set_id", "=", changeSet.id)
+            .where("path", "=", file.path)
+            .execute();
+          continue;
+        }
+        const values = {
+          author_user_id: input.userId,
+          content: file.content ?? null,
+          operation:
+            file.content === null
+              ? ("delete" as const)
+              : exists
+                ? ("modify" as const)
+                : ("add" as const),
+          revision: (draft?.revision ?? 0) + 1,
+          updated_at: new Date(),
+        };
+        await transaction
+          .insertInto("draft_files")
+          .values({ ...values, path: file.path, change_set_id: changeSet.id })
+          .onConflict((conflict) => conflict.columns(["change_set_id", "path"]).doUpdateSet(values))
+          .execute();
+      }
+      await transaction
+        .updateTable("change_sets")
+        .set({ revision: changeSet.revision + 1, updated_at: new Date() })
+        .where("id", "=", changeSet.id)
+        .execute();
+      await appendEvent(transaction, {
+        projectId: input.projectId,
+        entityId: changeSet.id,
+        type: "files.staged",
+        revision: changeSet.revision + 1,
+        payload: { branch: input.branch },
+      });
+    });
   }
 
   async ensureProjectComponents(projectId: string, names: string[]): Promise<void> {
@@ -1068,6 +1277,7 @@ export class PushDocsRepository {
     sha256: string;
     sizeBytes: number;
     storageKey: string;
+    expectedRevision?: number;
   }) {
     return this.database.transaction().execute(async (transaction) => {
       const branch = await transaction
@@ -1076,14 +1286,23 @@ export class PushDocsRepository {
         .where("project_id", "=", input.projectId)
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .orderBy("generation", "desc")
+        .forUpdate()
         .executeTakeFirst();
       if (!branch) throw new NotFoundError("Branch not found");
       let changeSet = await transaction
         .selectFrom("change_sets")
         .selectAll()
         .where("branch_context_id", "=", branch.id)
-        .where("status", "in", ["open", "conflicted"])
+        .where("status", "in", ["open", "conflicted", "submitting"])
+        .forUpdate()
         .executeTakeFirst();
+      if (changeSet && changeSet.status !== "open")
+        throw new RevisionConflictError("Набор изменений недоступен для загрузки");
+      if (
+        input.expectedRevision !== undefined &&
+        (changeSet?.revision ?? 0) !== input.expectedRevision
+      )
+        throw new RevisionConflictError("Набор изменений обновился. Повторите загрузку.");
       changeSet ??= await transaction
         .insertInto("change_sets")
         .values({
@@ -1093,6 +1312,11 @@ export class PushDocsRepository {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      await transaction
+        .deleteFrom("attachments")
+        .where("change_set_id", "=", changeSet.id)
+        .where("repository_path", "=", input.repositoryPath)
+        .execute();
       const attachment = await transaction
         .insertInto("attachments")
         .values({
@@ -1129,8 +1353,31 @@ export class PushDocsRepository {
     createReview: boolean;
     message: string;
     projectId: string;
+    userId: string;
   }): Promise<void> {
+    await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
     await this.database.transaction().execute(async (transaction) => {
+      const target = await transaction
+        .selectFrom("change_sets")
+        .select("branch_context_id")
+        .where("id", "=", input.changeSetId)
+        .where("project_id", "=", input.projectId)
+        .executeTakeFirst();
+      if (!target) throw new NotFoundError("Change set not found");
+      await transaction
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("id", "=", target.branch_context_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const uploading = await transaction
+        .selectFrom("upload_leases")
+        .select("id")
+        .where("branch_context_id", "=", target.branch_context_id)
+        .where("expires_at", ">", new Date())
+        .executeTakeFirst();
+      if (uploading)
+        throw new RevisionConflictError("В этой ветке ещё выполняется загрузка файлов");
       const changeSet = await transaction
         .selectFrom("change_sets")
         .select(["id", "revision", "status"])
@@ -1153,6 +1400,9 @@ export class PushDocsRepository {
           kind: "change-set.submit",
           payload: {
             changeSetId: changeSet.id,
+            userId: input.userId,
+            operationId: randomUUID(),
+            createdAt: new Date().toISOString(),
             createReview: input.createReview,
             message: input.message,
             projectId: input.projectId,
@@ -1180,11 +1430,15 @@ export class PushDocsRepository {
         "change_sets.project_id",
         "change_sets.base_commit_sha",
         "change_sets.status",
+        "change_sets.prepared_commit",
+        "change_sets.created_at",
         "branch_contexts.id as branch_context_id",
         "branch_contexts.full_ref as branch",
         "projects.default_branch",
         "projects.root_path",
         "repositories.provider_repository_id",
+        "repositories.clone_url",
+        "repositories.id as repository_id",
         "provider_connections.base_url",
         "provider_connections.kind",
         "provider_connections.secret_encrypted",
@@ -1216,11 +1470,48 @@ export class PushDocsRepository {
     return { ...target, attachments, files };
   }
 
+  async savePreparedCommit(changeSetId: string, prepared: PreparedGitCommit): Promise<void> {
+    await this.database.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("change_sets")
+        .select(["prepared_commit", "status"])
+        .where("id", "=", changeSetId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (row.status !== "submitting")
+        throw new RevisionConflictError("Change set is not submitting");
+      if (row.prepared_commit) {
+        if (
+          Object.entries(prepared).some(
+            ([key, value]) => row.prepared_commit?.[key as keyof PreparedGitCommit] !== value,
+          )
+        )
+          throw new RevisionConflictError("Prepared commit is immutable");
+        return;
+      }
+      await tx
+        .updateTable("change_sets")
+        .set({ prepared_commit: JSON.stringify(prepared) })
+        .where("id", "=", changeSetId)
+        .execute();
+    });
+  }
+
+  async withGitRefLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const lock =
+      Number.parseInt(createHash("sha256").update(key).digest("hex").slice(0, 8), 16) | 0;
+    return this.database.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(${lock})`.execute(tx);
+      return operation();
+    });
+  }
+
   async markChangeSetConflicted(
     changeSetId: string,
     projectId: string,
     upstreamSha: string,
     conflicts: Array<{
+      kind?: "text" | "binary";
       baseContent: string | null;
       oursContent: string | null;
       path: string;
@@ -1243,6 +1534,7 @@ export class PushDocsRepository {
           .insertInto("change_set_conflicts")
           .values(
             conflicts.map((conflict) => ({
+              kind: conflict.kind ?? "text",
               base_content: conflict.baseContent,
               change_set_id: changeSetId,
               ours_content: conflict.oursContent,
@@ -1304,28 +1596,53 @@ export class PushDocsRepository {
           "change_set_conflicts.theirs_content",
           "change_set_conflicts.theirs_head_sha",
           "change_set_conflicts.path",
+          "change_set_conflicts.kind",
         ])
         .where("change_set_conflicts.id", "=", input.conflictId)
         .where("change_sets.project_id", "=", input.projectId)
+        .where("change_sets.status", "=", "conflicted")
+        .where("change_set_conflicts.resolution", "is", null)
         .forUpdate()
         .executeTakeFirst();
       if (!conflict) throw new NotFoundError("Conflict not found");
+      if (conflict.kind === "binary" && input.resolution === "manual")
+        throw new Error("Выберите версию бинарного файла");
       const content =
         input.resolution === "ours"
           ? conflict.ours_content
           : input.resolution === "theirs"
             ? conflict.theirs_content
             : input.resolvedContent;
+      if (conflict.kind === "binary") {
+        if (input.resolution === "theirs") {
+          await transaction
+            .deleteFrom("attachments")
+            .where("change_set_id", "=", conflict.change_set_id)
+            .where("repository_path", "=", conflict.path)
+            .execute();
+          await transaction
+            .deleteFrom("draft_files")
+            .where("change_set_id", "=", conflict.change_set_id)
+            .where("path", "=", conflict.path)
+            .execute();
+        }
+      } else
+        await transaction
+          .updateTable("draft_files")
+          .set({
+            content,
+            operation:
+              content === null ? "delete" : conflict.theirs_content === null ? "add" : "modify",
+            revision: sql`revision + 1`,
+            updated_at: new Date(),
+          })
+          .where("change_set_id", "=", conflict.change_set_id)
+          .where("path", "=", conflict.path)
+          .execute();
       await transaction
-        .updateTable("draft_files")
-        .set({
-          content,
-          operation:
-            content === null ? "delete" : conflict.base_content === null ? "add" : "modify",
-          updated_at: new Date(),
-        })
-        .where("change_set_id", "=", conflict.change_set_id)
-        .where("path", "=", conflict.path)
+        .updateTable("change_sets")
+        .set({ revision: sql`revision + 1`, prepared_commit: null, updated_at: new Date() })
+        .where("id", "=", conflict.change_set_id)
         .execute();
       await transaction
         .updateTable("change_set_conflicts")
@@ -1412,6 +1729,7 @@ export class PushDocsRepository {
         .where("id", "=", changeSetId)
         .where("project_id", "=", projectId)
         .where("status", "=", "submitting")
+        .where("prepared_commit", "is", null)
         .returning("revision")
         .executeTakeFirst();
       if (!changeSet) return;
@@ -1423,6 +1741,138 @@ export class PushDocsRepository {
         type: "change-set.failed",
       });
     });
+  }
+
+  async discardRejectedCommit(changeSetId: string, projectId: string): Promise<void> {
+    await this.database
+      .updateTable("change_sets")
+      .set({ prepared_commit: null })
+      .where("id", "=", changeSetId)
+      .where("project_id", "=", projectId)
+      .where("status", "=", "submitting")
+      .execute();
+  }
+
+  async retryChangeSetSubmission(
+    changeSetId: string,
+    projectId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.requireProjectAccess(userId, projectId, "branch:push");
+    await this.database.transaction().execute(async (tx) => {
+      const change = await tx
+        .selectFrom("change_sets")
+        .select("status")
+        .where("id", "=", changeSetId)
+        .where("project_id", "=", projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (change.status !== "submitting")
+        throw new RevisionConflictError("Отправка не ожидает повтора");
+      const job = await tx
+        .selectFrom("jobs")
+        .selectAll()
+        .where("kind", "=", "change-set.submit")
+        .where(sql<string>`payload->>'changeSetId'`, "=", changeSetId)
+        .where("status", "=", "failed")
+        .orderBy("created_at", "desc")
+        .forUpdate()
+        .executeTakeFirst();
+      if (!job) throw new RevisionConflictError("Отправка ещё выполняется или уже завершена");
+      await tx
+        .updateTable("jobs")
+        .set({
+          status: "queued",
+          attempts: 0,
+          available_at: new Date(),
+          last_error: null,
+          payload: { ...(job.payload as Record<string, unknown>), userId },
+        })
+        .where("id", "=", job.id)
+        .execute();
+    });
+  }
+
+  async getSubmissionStatus(projectId: string, branch: string) {
+    const change = await this.database
+      .selectFrom("change_sets")
+      .innerJoin("branch_contexts", "branch_contexts.id", "change_sets.branch_context_id")
+      .select(["change_sets.id", "change_sets.status"])
+      .where("change_sets.project_id", "=", projectId)
+      .where("branch_contexts.full_ref", "=", normalizeBranchRef(branch))
+      .where("change_sets.status", "=", "submitting")
+      .executeTakeFirst();
+    if (!change) return undefined;
+    return this.database
+      .selectFrom("jobs")
+      .select(["status", "last_error", "attempts"])
+      .where("kind", "=", "change-set.submit")
+      .where(sql<string>`payload->>'changeSetId'`, "=", change.id)
+      .orderBy("created_at", "desc")
+      .executeTakeFirst();
+  }
+
+  async beginUpload(input: {
+    projectId: string;
+    branch: string;
+    expectedRevision: number;
+    userId: string;
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId, "document:write");
+    return this.database.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", input.projectId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const branch = await tx
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", normalizeBranchRef(input.branch))
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const change = await tx
+        .selectFrom("change_sets")
+        .select(["status", "revision"])
+        .where("branch_context_id", "=", branch.id)
+        .where("status", "in", ["open", "submitting", "conflicted"])
+        .executeTakeFirst();
+      if (
+        (change?.revision ?? 0) !== input.expectedRevision ||
+        (change && change.status !== "open")
+      )
+        throw new RevisionConflictError("Перечитайте набор изменений перед загрузкой");
+      await tx
+        .deleteFrom("upload_leases")
+        .where("project_id", "=", input.projectId)
+        .where("expires_at", "<", new Date())
+        .execute();
+      const active = await tx
+        .selectFrom("upload_leases")
+        .select("id")
+        .where("project_id", "=", input.projectId)
+        .execute();
+      if (active.length >= 4) throw new Error("У проекта уже выполняются четыре загрузки");
+      return tx
+        .insertInto("upload_leases")
+        .values({
+          project_id: input.projectId,
+          branch_context_id: branch.id,
+          expires_at: new Date(Date.now() + 600_000),
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+    });
+  }
+
+  async finishUpload(id: string, projectId: string): Promise<void> {
+    await this.database
+      .deleteFrom("upload_leases")
+      .where("id", "=", id)
+      .where("project_id", "=", projectId)
+      .execute();
   }
 
   async createInvitation(input: {

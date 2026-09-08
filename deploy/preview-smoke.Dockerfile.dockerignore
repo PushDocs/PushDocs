@@ -1,0 +1,10 @@
+**
+!tests/
+!tests/fixtures/
+!tests/fixtures/docusaurus/
+!tests/fixtures/docusaurus/package.json
+!tests/fixtures/docusaurus/yarn.lock
+!output/
+!output/playwright/
+!output/playwright/yarn-cache/
+!output/playwright/yarn-cache/**

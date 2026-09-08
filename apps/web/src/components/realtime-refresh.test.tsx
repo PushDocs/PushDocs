@@ -46,7 +46,8 @@ describe("RealtimeRefresh", () => {
     const mounted = render(<RealtimeRefresh />);
     const source = FakeEventSource.instances[0];
     expect(source?.url).toBe("/events");
-    expect(source?.listeners.size).toBe(12);
+    expect(source?.listeners.size).toBe(13);
+    expect(source?.listeners.has("files.staged")).toBe(true);
     source?.dispatch("comment.created");
     source?.dispatch("document.created");
     act(() => vi.advanceTimersByTime(179));

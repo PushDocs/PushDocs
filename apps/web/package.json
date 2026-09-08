@@ -10,6 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@pushdocs/content": "workspace:*",
     "@pushdocs/contracts": "workspace:*",
     "@pushdocs/core": "workspace:*",
     "@pushdocs/db": "workspace:*",

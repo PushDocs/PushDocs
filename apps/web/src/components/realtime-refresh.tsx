@@ -13,6 +13,7 @@ const refreshEvents = [
   "comment.created",
   "conflict.resolved",
   "document.created",
+  "files.staged",
   "member.joined",
   "project.created",
   "reviews.synchronized",
@@ -25,6 +26,7 @@ export function RealtimeRefresh() {
     const source = new EventSource("/events");
     let timer: number | undefined;
     const refresh = () => {
+      window.dispatchEvent(new Event("pushdocs:refresh"));
       window.clearTimeout(timer);
       timer = window.setTimeout(() => router.refresh(), 180);
     };

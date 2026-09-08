@@ -1,5 +1,6 @@
 import "@pushdocs/ui/styles.css";
 import "./globals.css";
+import "./workbench.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 

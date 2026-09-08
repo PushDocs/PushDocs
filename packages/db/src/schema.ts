@@ -81,6 +81,8 @@ export interface ProjectConnectionGrantsTable {
 }
 
 export interface BranchContextsTable {
+  is_protected: Generated<boolean>;
+  repository_paths: ColumnType<string[], string | undefined, string>;
   base_commit_sha: string;
   created_at: GeneratedTimestamp;
   full_ref: string;
@@ -103,7 +105,16 @@ export interface ImportedDocumentsTable {
   version: string;
 }
 
+export interface PreparedGitCommit {
+  branch: string;
+  parentSha: string;
+  sha: string;
+  operationId: string;
+  createdAt: string;
+}
+
 export interface ChangeSetsTable {
+  prepared_commit: ColumnType<PreparedGitCommit | null, string | null | undefined, string | null>;
   base_commit_sha: string;
   branch_context_id: string;
   created_at: GeneratedTimestamp;
@@ -157,7 +168,15 @@ export interface AttachmentsTable {
   storage_key: string;
 }
 
+export interface UploadLeasesTable {
+  id: Generated<string>;
+  project_id: string;
+  branch_context_id: string;
+  expires_at: Timestamp;
+}
+
 export interface ChangeSetConflictsTable {
+  kind: Generated<"text" | "binary">;
   base_content: string | null;
   change_set_id: string;
   created_at: GeneratedTimestamp;
@@ -238,6 +257,19 @@ export interface InstanceStateTable {
 }
 
 export interface Database {
+  upload_leases: UploadLeasesTable;
+  preview_builds: {
+    id: Generated<string>;
+    project_id: string;
+    branch: string;
+    sha: string;
+    revision: number;
+    snapshot: unknown;
+    status: Generated<"queued" | "building" | "ready" | "failed">;
+    log: Generated<string>;
+    created_at: GeneratedTimestamp;
+    updated_at: GeneratedTimestamp;
+  };
   attachments: AttachmentsTable;
   branch_contexts: BranchContextsTable;
   change_requests: ChangeRequestsTable;

@@ -121,6 +121,230 @@ afterEach(async () => {
   await database?.destroy();
 });
 
+describe("editorial file operations", () => {
+  it("refreshes branch protection without advancing the cached working tree", async () => {
+    const fixture = await synchronizedProject();
+    await repository.ensureBranches(fixture.projectId, [
+      { name: "main", sha: "new-head", protected: true },
+    ]);
+    expect(await repository.listBranches(fixture.projectId)).toEqual([
+      expect.objectContaining({ full_ref: "main", head_commit_sha: "head-1", is_protected: true }),
+    ]);
+    await repository.ensureBranches(fixture.projectId, [
+      { name: "main", sha: "new-head", protected: false },
+    ]);
+    expect(await repository.listBranches(fixture.projectId)).toEqual([
+      expect.objectContaining({ is_protected: false }),
+    ]);
+  });
+  it("blocks submission while another participant uploads a file to the same branch", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      path: "docs/intro.md",
+      content: "# Edit",
+      expectedRevision: 0,
+      baseCommitSha: "head-1",
+    });
+    const state = await repository.listWorkingFiles(fixture.projectId, "main");
+    const lease = await repository.beginUpload({
+      projectId: fixture.projectId,
+      branch: "main",
+      expectedRevision: state.changeSet?.revision ?? 0,
+      userId: fixture.operatorId,
+    });
+    const submission = {
+      projectId: fixture.projectId,
+      changeSetId: draft.changeSetId,
+      userId: fixture.operatorId,
+      message: "Edit",
+      createReview: false,
+    };
+    await expect(repository.queueChangeSetSubmission(submission)).rejects.toThrow("загрузка");
+    await repository.finishUpload(lease.id, fixture.projectId);
+    await repository.queueChangeSetSubmission(submission);
+    expect((await repository.getChangeSetSubmission(draft.changeSetId))?.status).toBe("submitting");
+  });
+  it("removes a pending replacement when deleting a media file", async () => {
+    const fixture = await synchronizedProject();
+    await repository.recordAttachment({
+      projectId: fixture.projectId,
+      branch: "main",
+      repositoryPath: "static/new.png",
+      originalName: "new.png",
+      mediaType: "image/png",
+      sizeBytes: 3,
+      sha256: "image",
+      storageKey: "fixture/image",
+    });
+    const state = await repository.listWorkingFiles(fixture.projectId, "main");
+    await repository.stageFiles({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      expectedRevision: state.changeSet?.revision ?? 0,
+      files: [{ path: "static/new.png", content: null }],
+    });
+    expect(await repository.listAttachments(fixture.projectId)).toHaveLength(0);
+  });
+  it("records a prepared commit once so a retry cannot silently choose a different result", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      path: "docs/intro.md",
+      content: "# Edit",
+      expectedRevision: 0,
+      baseCommitSha: "head-1",
+    });
+    const prepared = {
+      branch: "main",
+      parentSha: "a".repeat(40),
+      sha: "b".repeat(40),
+      operationId: "attempt-1",
+      createdAt: "2026-09-08T00:00:00Z",
+    };
+    await expect(repository.savePreparedCommit(draft.changeSetId, prepared)).rejects.toBeInstanceOf(
+      RevisionConflictError,
+    );
+    await expect(
+      repository.withGitRefLock("fixture:ref", async () => "locked result"),
+    ).resolves.toBe("locked result");
+    await repository.queueChangeSetSubmission({
+      changeSetId: draft.changeSetId,
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      createReview: false,
+      message: "Edit",
+    });
+    await repository.savePreparedCommit(draft.changeSetId, prepared);
+    await repository.savePreparedCommit(draft.changeSetId, prepared);
+    expect((await repository.getChangeSetSubmission(draft.changeSetId))?.prepared_commit).toEqual(
+      prepared,
+    );
+    await expect(
+      repository.savePreparedCommit(draft.changeSetId, { ...prepared, sha: "c".repeat(40) }),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+    await repository.releaseChangeSetSubmission(
+      draft.changeSetId,
+      fixture.projectId,
+      "Network outcome unknown",
+    );
+    expect((await repository.getChangeSetSubmission(draft.changeSetId))?.status).toBe("submitting");
+    await expect(
+      repository.retryChangeSetSubmission(draft.changeSetId, fixture.projectId, fixture.operatorId),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("kind", "=", "change-set.submit")
+      .executeTakeFirstOrThrow();
+    await repository.failJob(job.id, "Connection lost", false);
+    expect(await repository.getSubmissionStatus(fixture.projectId, "main")).toMatchObject({
+      status: "failed",
+      last_error: "Connection lost",
+    });
+    await repository.retryChangeSetSubmission(
+      draft.changeSetId,
+      fixture.projectId,
+      fixture.operatorId,
+    );
+    const retried = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", job.id)
+      .executeTakeFirstOrThrow();
+    expect(retried).toMatchObject({ status: "queued", attempts: 0, payload: job.payload });
+    await repository.discardRejectedCommit(draft.changeSetId, fixture.projectId);
+    await repository.releaseChangeSetSubmission(
+      draft.changeSetId,
+      fixture.projectId,
+      "Lease rejected",
+    );
+    await expect(
+      repository.retryChangeSetSubmission(draft.changeSetId, fixture.projectId, fixture.operatorId),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+  });
+  it("limits concurrent uploads per project and rejects outdated upload revisions", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      expectedRevision: 0,
+      userId: fixture.operatorId,
+    };
+    await expect(repository.beginUpload({ ...input, expectedRevision: 1 })).rejects.toBeInstanceOf(
+      RevisionConflictError,
+    );
+    for (let index = 0; index < 4; index++) await repository.beginUpload(input);
+    await expect(repository.beginUpload(input)).rejects.toThrow("четыре загрузки");
+  });
+  it("moves an existing article atomically and allows reverting the move", async () => {
+    const { projectId, operatorId } = await synchronizedProject();
+    await repository.stageFiles({
+      projectId,
+      userId: operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [
+        { path: "docs/intro.md", content: null },
+        { path: "docs/guide.md", content: "# Intro\n" },
+      ],
+    });
+    const files = await repository.listDraftFiles(projectId, "main");
+    expect(files.map((file) => [file.path, file.operation]).sort()).toEqual([
+      ["docs/guide.md", "add"],
+      ["docs/intro.md", "delete"],
+    ]);
+    await repository.stageFiles({
+      projectId,
+      userId: operatorId,
+      branch: "main",
+      expectedRevision: 1,
+      files: [
+        { path: "docs/intro.md", revert: true },
+        { path: "docs/guide.md", revert: true },
+      ],
+    });
+    expect(await repository.listDraftFiles(projectId, "main")).toEqual([]);
+  });
+
+  it("rejects a stale file operation without overwriting another editor", async () => {
+    const { projectId, operatorId } = await synchronizedProject();
+    const input = {
+      projectId,
+      userId: operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: "# Changed" }],
+    };
+    await repository.stageFiles(input);
+    await expect(
+      repository.stageFiles({ ...input, files: [{ path: "docs/intro.md", content: null }] }),
+    ).rejects.toThrow(RevisionConflictError);
+    expect((await repository.getDocument(projectId, "main", "docs/intro.md"))?.draft_content).toBe(
+      "# Changed",
+    );
+  });
+
+  it("rejects unsafe paths before recording a change", async () => {
+    const { projectId, operatorId } = await synchronizedProject();
+    await expect(
+      repository.stageFiles({
+        projectId,
+        userId: operatorId,
+        branch: "main",
+        expectedRevision: 0,
+        files: [{ path: "../secret", content: "bad" }],
+      }),
+    ).rejects.toThrow();
+    expect(await repository.listDraftFiles(projectId, "main")).toEqual([]);
+  });
+});
+
 describe("database connection", () => {
   it("requires a connection string", () => {
     const previous = process.env.DATABASE_URL;
@@ -713,6 +937,7 @@ describe("attachments and submissions", () => {
       createReview: true,
       message: "Update docs",
       projectId: fixture.projectId,
+      userId: fixture.operatorId,
     });
     await expect(repository.getChangeSetSubmission(draft.changeSetId)).resolves.toMatchObject({
       attachments: [{ repository_path: "static/img/a.png", storage_key: "stored/a.png" }],
@@ -726,6 +951,7 @@ describe("attachments and submissions", () => {
         createReview: false,
         message: "Again",
         projectId: fixture.projectId,
+        userId: fixture.operatorId,
       }),
     ).rejects.toBeInstanceOf(RevisionConflictError);
     await expect(repository.getChangeSetSubmission(randomUUID())).resolves.toBeUndefined();
@@ -739,6 +965,7 @@ describe("attachments and submissions", () => {
         createReview: false,
         message: "Missing",
         projectId: fixture.projectId,
+        userId: fixture.operatorId,
       }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -790,6 +1017,7 @@ describe("attachments and submissions", () => {
       createReview: false,
       message: "Update",
       projectId: fixture.projectId,
+      userId: fixture.operatorId,
     });
     await repository.releaseChangeSetSubmission(
       draft.changeSetId,
@@ -812,6 +1040,65 @@ describe("attachments and submissions", () => {
 });
 
 describe("conflict resolution", () => {
+  it.each(["ours", "theirs"] as const)(
+    "resolves binary conflicts with %s without converting bytes into text",
+    async (resolution) => {
+      const fixture = await synchronizedProject();
+      await repository.recordAttachment({
+        projectId: fixture.projectId,
+        branch: "main",
+        repositoryPath: "static/image.png",
+        originalName: "image.png",
+        mediaType: "image/png",
+        sizeBytes: 3,
+        sha256: "ours",
+        storageKey: "fixture/image",
+      });
+      const attachment = (await repository.listAttachments(fixture.projectId))[0]!;
+      await repository.markChangeSetConflicted(
+        attachment.change_set_id,
+        fixture.projectId,
+        "head-2",
+        [
+          {
+            kind: "binary",
+            path: "static/image.png",
+            baseContent: "base-hash",
+            oursContent: "ours-hash",
+            theirsContent: "theirs-hash",
+          },
+        ],
+      );
+      const conflict = (await repository.listConflicts(fixture.projectId, "main"))[0]!;
+      await expect(
+        repository.resolveConflict({
+          conflictId: conflict.id,
+          projectId: fixture.projectId,
+          resolution: "manual",
+          resolvedContent: "not bytes",
+        }),
+      ).rejects.toThrow();
+      await repository.resolveConflict({
+        conflictId: conflict.id,
+        projectId: fixture.projectId,
+        resolution,
+        resolvedContent: "",
+      });
+      expect(await repository.listAttachments(fixture.projectId)).toHaveLength(
+        resolution === "ours" ? 1 : 0,
+      );
+      const submission = await repository.getChangeSetSubmission(attachment.change_set_id);
+      expect(submission).toMatchObject({ status: "open", base_commit_sha: "head-2", files: [] });
+      await expect(
+        repository.resolveConflict({
+          conflictId: conflict.id,
+          projectId: fixture.projectId,
+          resolution,
+          resolvedContent: "",
+        }),
+      ).rejects.toThrow();
+    },
+  );
   it("records a conflicted change set even when no file conflict remains", async () => {
     const fixture = await synchronizedProject();
     const draft = await repository.saveDraft({
@@ -1029,6 +1316,32 @@ describe("invitations and members", () => {
 });
 
 describe("job lifecycle", () => {
+  it("recovers an expired lease and ignores acknowledgements from its old worker", async () => {
+    await projectFixture();
+    const first = (await repository.claimNextJob())!;
+    await database
+      .updateTable("jobs")
+      .set({ locked_at: new Date(0) })
+      .where("id", "=", first.id)
+      .execute();
+    const recovered = (await repository.claimNextJob())!;
+    expect(recovered).toMatchObject({ id: first.id, attempts: 2 });
+    await repository.completeJob(first.id, first.attempts);
+    await repository.failJob(first.id, "stale", false, first.attempts);
+    expect(await repository.heartbeatJob(first.id, first.attempts)).toBe(false);
+    expect(await repository.heartbeatJob(recovered.id, recovered.attempts)).toBe(true);
+    expect(
+      (
+        await database
+          .selectFrom("jobs")
+          .selectAll()
+          .where("id", "=", first.id)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("running");
+    await repository.completeJob(recovered.id, recovered.attempts);
+    await expect(repository.claimNextJob()).resolves.toBeUndefined();
+  });
   it("claims, completes, retries, and permanently fails jobs", async () => {
     const fixture = await projectFixture();
     const first = await repository.claimNextJob();
@@ -1055,5 +1368,123 @@ describe("job lifecycle", () => {
       .executeTakeFirstOrThrow();
     expect(failed.status).toBe("failed");
     expect(failed.last_error).toHaveLength(4000);
+  });
+});
+
+describe("working tree projection", () => {
+  it("includes repository paths, draft additions, modifications and deletions", async () => {
+    const fixture = await synchronizedProject();
+    await repository.replaceImportedDocuments(
+      fixture.projectId,
+      "main",
+      "head-1",
+      [
+        {
+          path: "docs/intro.md",
+          content: "# Intro\n",
+          contentHash: "hash",
+          title: "Intro",
+          locale: "default",
+          version: "current",
+        },
+      ],
+      ["docs/intro.md", "static/img/a.png"],
+    );
+    const input = {
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+    };
+    expect(
+      (await repository.listWorkingFiles(fixture.projectId, "main")).branch.repository_paths,
+    ).toContain("static/img/a.png");
+    await repository.stageFiles({
+      ...input,
+      files: [
+        { path: "docs/intro.md", content: "# Changed" },
+        { path: "docs/new.md", content: "# New" },
+      ],
+    });
+    let tree = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(tree.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "docs/intro.md",
+          status: "modify",
+          baseContent: "# Intro\n",
+          content: "# Changed",
+        }),
+        expect.objectContaining({ path: "docs/new.md", status: "add", title: "New" }),
+      ]),
+    );
+    await repository.stageFiles({
+      ...input,
+      expectedRevision: 1,
+      files: [
+        { path: "docs/intro.md", content: null },
+        { path: "static/img/a.png", content: null },
+      ],
+    });
+    tree = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(tree.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "docs/intro.md", status: "delete", content: "" }),
+        expect.objectContaining({ path: "static/img/a.png", status: "delete", content: "" }),
+      ]),
+    );
+    await expect(repository.getBranchState(fixture.projectId, "missing")).rejects.toThrow(
+      "Branch not found",
+    );
+  });
+  it("rejects malformed operations and collisions without partial application", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+    };
+    await expect(repository.stageFiles({ ...input, files: [] })).rejects.toThrow("Empty");
+    await expect(
+      repository.stageFiles({ ...input, files: [{ path: "docs/a" }, { path: "docs/a" }] }),
+    ).rejects.toThrow("duplicate");
+    await expect(repository.stageFiles({ ...input, files: [{ path: "docs/a" }] })).rejects.toThrow(
+      "content required",
+    );
+    await expect(
+      repository.stageFiles({
+        ...input,
+        files: [{ path: "docs/intro.md", content: "# overwrite", createOnly: true }],
+      }),
+    ).rejects.toThrow("уже существует");
+    expect((await repository.listWorkingFiles(fixture.projectId, "main")).files[0]?.content).toBe(
+      "# Intro\n",
+    );
+  });
+  it("rejects stale uploads and uploads to a submitting change set", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      branch: "main",
+      projectId: fixture.projectId,
+      mediaType: "image/png",
+      originalName: "a.png",
+      repositoryPath: "static/img/a.png",
+      sha256: "a".repeat(64),
+      sizeBytes: 1,
+      storageKey: "asset",
+      expectedRevision: 0,
+    };
+    await repository.recordAttachment(input);
+    await expect(repository.recordAttachment(input)).rejects.toThrow("обновился");
+    const state = await repository.getBranchState(fixture.projectId, "main");
+    await database
+      .updateTable("change_sets")
+      .set({ status: "submitting" })
+      .where("id", "=", state.changeSet?.id ?? "")
+      .execute();
+    await expect(repository.recordAttachment({ ...input, expectedRevision: 1 })).rejects.toThrow(
+      "недоступен",
+    );
   });
 });
