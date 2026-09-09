@@ -1,0 +1,199 @@
+name: CI and images
+
+on:
+  pull_request:
+  push:
+    branches: [stable]
+    tags: ['v*']
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      coverage:
+        description: Enforce the existing coverage thresholds (currently below target)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+  TURBO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  checks:
+    name: Quality checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: yarn lint
+      - run: yarn format:check
+      - run: yarn architecture:check
+      - run: yarn typecheck
+      - run: yarn test
+      - run: yarn test:coverage
+        if: github.event_name == 'workflow_dispatch' && inputs.coverage
+      - run: yarn build
+      - name: Upload coverage
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  integration:
+    name: PostgreSQL and Git recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.6-alpine3.22
+        env:
+          POSTGRES_USER: pushdocs
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pushdocs -d postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: yarn test:integration
+        env:
+          PUSHDOCS_TEST_DATABASE_URL: postgres://pushdocs:ci-only-password@127.0.0.1:5432/postgres
+
+  installation:
+    name: Compose, browser and restore
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PUSHDOCS_IMAGE: pushdocs:ci
+      PUSHDOCS_PREVIEW_SERVICE_IMAGE: pushdocs-preview:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: yarn playwright install --with-deps chromium
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Build application image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: pushdocs:ci
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Build preview service image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/preview.Dockerfile
+          load: true
+          tags: pushdocs-preview:ci
+          cache-from: type=gha,scope=preview
+          cache-to: type=gha,mode=max,scope=preview
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - run: yarn smoke:install
+      - name: Upload installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installation-diagnostics
+          path: output/ci/
+          retention-days: 7
+      - name: Export tested images
+        if: github.event_name == 'push'
+        run: docker save pushdocs:ci pushdocs-preview:ci | gzip -1 > /tmp/images.tar.gz
+      - name: Upload tested images
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tested-images
+          path: /tmp/images.tar.gz
+          compression-level: 0
+          retention-days: 1
+
+  ci:
+    name: CI
+    if: always()
+    needs: [checks, integration, installation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every check to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+
+  publish:
+    name: Publish tested images
+    if: github.event_name == 'push'
+    needs: [ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tested-images
+          path: /tmp
+      - run: docker load -i /tmp/images.tar.gz
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish version and commit tags, record digests
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || exit 1
+            version="${REF_NAME#v}"
+          else
+            version=stable
+          fi
+          repository="ghcr.io/${REPOSITORY,,}"
+          for suffix in '' '-preview'; do
+            image="${repository}${suffix}"
+            docker tag "pushdocs${suffix}:ci" "$image:sha-$COMMIT_SHA"
+            docker tag "pushdocs${suffix}:ci" "$image:$version"
+            docker push "$image:sha-$COMMIT_SHA"
+            docker push "$image:$version"
+            digest=$(docker image inspect "$image:$version" --format '{{index .RepoDigests 0}}')
+            printf '%s\n' "$digest" >> image-digests.txt
+          done
+          cat image-digests.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digests
+          path: image-digests.txt
+          retention-days: 90

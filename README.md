@@ -73,6 +73,8 @@ The editor's **Конфигурация проекта** button creates or opens
 
 ## Checks
 
+GitHub Actions runs the ADR checks and publishes tested Docker images after pushes to `stable` or version tags. See [CI and container delivery](docs/ci-cd.md) for the required check, image digests, local smoke tests and release procedure.
+
 ~~~sh
 yarn test
 yarn test:coverage
@@ -81,7 +83,7 @@ yarn check
 
 `yarn test:integration` requires `PUSHDOCS_TEST_DATABASE_URL` pointing to a dedicated local PostgreSQL server whose user can create databases. It creates and removes its own random test database and temporary Git repositories. It refuses non-local database hosts and never reads the application's provider connections. See [the verification report](docs/verification-2026-09-08.md) for the tested scenarios and remaining limits.
 
-The coverage check includes domain rules, content import, provider adapters, database repositories, server actions, background services, and shared interface components. It requires 100 percent line coverage, 99 percent statement and function coverage, and 95 percent branch coverage.
+The coverage check includes domain rules, content import, provider adapters, database repositories, server actions, background services, and shared interface components. It requires 100 percent line coverage, 99 percent statement and function coverage, and 95 percent branch coverage. Current coverage is below those thresholds; the measurements and manual CI option are documented in [CI and container delivery](docs/ci-cd.md).
 
 Architecture decisions are in [the ADR](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
 

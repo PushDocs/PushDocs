@@ -4,7 +4,7 @@ x-app: &app
   build:
     context: .
     dockerfile: Dockerfile
-  image: pushdocs:local
+  image: ${PUSHDOCS_IMAGE:-pushdocs:local}
   environment: &app-environment
     DATABASE_URL: postgres://pushdocs:pushdocs@postgres:5432/pushdocs
     PUSHDOCS_ATTACHMENTS_DIR: /data/attachments

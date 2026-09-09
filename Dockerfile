@@ -45,7 +45,8 @@ RUN mkdir /corepack \
 
 COPY --from=build --chown=pushdocs:pushdocs /app /app
 
-RUN mkdir -p /app/apps/worker/data/git && chown -R pushdocs:pushdocs /app/apps/worker/data
+RUN mkdir -p /app/apps/worker/data/git /data/attachments \
+  && chown -R pushdocs:pushdocs /app/apps/worker/data /data/attachments
 
 USER pushdocs
 EXPOSE 3000 4100

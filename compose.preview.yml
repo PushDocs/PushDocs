@@ -5,6 +5,7 @@ services:
       PUSHDOCS_PREVIEW_DOMAIN: ${PUSHDOCS_PREVIEW_DOMAIN:?Set a separate wildcard preview domain}
       PUSHDOCS_PREVIEW_KEY: ${PUSHDOCS_PREVIEW_KEY:?Set a random key of at least 32 characters}
   preview:
+    image: ${PUSHDOCS_PREVIEW_SERVICE_IMAGE:-pushdocs-preview:local}
     build:
       context: .
       dockerfile: deploy/preview.Dockerfile

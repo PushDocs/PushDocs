@@ -15,17 +15,19 @@
   "scripts": {
     "architecture:check": "node scripts/check-architecture.mjs",
     "build": "turbo run build",
-    "check": "yarn lint && yarn architecture:check && yarn typecheck && yarn test && yarn build",
+    "check": "yarn lint && yarn format:check && yarn architecture:check && yarn typecheck && yarn test && yarn build",
     "db:migrate": "yarn workspace @pushdocs/db migrate",
     "dev": "yarn workspace @pushdocs/web dev",
     "dev:all": "turbo run dev --parallel",
+    "e2e": "playwright test",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome check .",
+    "smoke:install": "bash scripts/ci/compose-smoke.sh",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json"
   },
   "dependenciesMeta": {
     "argon2": {
@@ -40,6 +42,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",
+    "@playwright/test": "1.63.0",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.0",
     "@types/node": "20.19.24",
