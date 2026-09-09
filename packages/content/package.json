@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./config": "./src/config.ts",
     "./editing": "./src/editing.ts",
     "./metadata": "./src/metadata.ts"
   },

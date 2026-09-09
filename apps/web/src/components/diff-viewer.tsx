@@ -2,6 +2,8 @@
 
 import { Columns2, List, UnfoldVertical } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
+import { MonacoDiff } from "./monaco-diff";
+import { useMonaco } from "./monaco-runtime";
 import { buildTextDiff, type DiffLine, foldDiff, pairDiffLines } from "./text-diff";
 
 export function DiffViewer({
@@ -9,12 +11,17 @@ export function DiffViewer({
   after,
   beforeLabel = "Исходный файл",
   afterLabel = "Ваши изменения",
+  diff,
+  path,
 }: {
+  path?: string;
   before: string;
   after: string;
   beforeLabel?: string;
   afterLabel?: string;
+  diff?: ReturnType<typeof buildTextDiff>;
 }) {
+  const monaco = useMonaco();
   const [layout, setLayout] = useState<"unified" | "split">("unified");
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<{ before: string; after: string; ids: Set<number> }>({
@@ -22,7 +29,10 @@ export function DiffViewer({
     after,
     ids: new Set(),
   });
-  const result = useMemo(() => buildTextDiff(before, after), [before, after]);
+  const result = useMemo(
+    () => (diff === undefined ? buildTextDiff(before, after) : diff),
+    [before, after, diff],
+  );
   const blocks = useMemo(() => foldDiff(result?.lines ?? []), [result]);
   const expandedIds =
     expanded.before === before && expanded.after === after ? expanded.ids : new Set<number>();
@@ -104,29 +114,40 @@ export function DiffViewer({
         <span>{beforeLabel}</span>
         <span>{afterLabel}</span>
       </div>
-      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: The diff scroll region must support keyboard scrolling. */}
-      <section className="wb-diff-scroll" tabIndex={0} aria-label="Строки изменений">
-        <div className="wb-diff-code" data-layout={layout}>
-          {blocks.map((block) => (
-            <Fragment key={block.lines[0]?.id}>
-              {block.kind === "fold" && !showAll && !expandedIds.has(block.id) ? (
-                <button
-                  className="wb-diff-fold"
-                  type="button"
-                  onClick={() =>
-                    setExpanded({ before, after, ids: new Set([...expandedIds, block.id]) })
-                  }
-                >
-                  <UnfoldVertical size={14} aria-hidden />
-                  Показать строки {block.lines[0]?.oldNumber}–{block.lines.at(-1)?.oldNumber}
-                </button>
-              ) : (
-                renderLines(block.lines)
-              )}
-            </Fragment>
-          ))}
-        </div>
-      </section>
+      {monaco && before.replace(/\r\n?/g, "\n") !== after.replace(/\r\n?/g, "\n") ? (
+        <MonacoDiff
+          monaco={monaco}
+          before={before}
+          after={after}
+          path={path}
+          split={layout === "split"}
+          showAll={showAll}
+        />
+      ) : (
+        /* biome-ignore lint/a11y/noNoninteractiveTabindex: The diff scroll region must support keyboard scrolling. */
+        <section className="wb-diff-scroll" tabIndex={0} aria-label="Строки изменений">
+          <div className="wb-diff-code" data-layout={layout}>
+            {blocks.map((block) => (
+              <Fragment key={block.lines[0]?.id}>
+                {block.kind === "fold" && !showAll && !expandedIds.has(block.id) ? (
+                  <button
+                    className="wb-diff-fold"
+                    type="button"
+                    onClick={() =>
+                      setExpanded({ before, after, ids: new Set([...expandedIds, block.id]) })
+                    }
+                  >
+                    <UnfoldVertical size={14} aria-hidden />
+                    Показать строки {block.lines[0]?.oldNumber}–{block.lines.at(-1)?.oldNumber}
+                  </button>
+                ) : (
+                  renderLines(block.lines)
+                )}
+              </Fragment>
+            ))}
+          </div>
+        </section>
+      )}
     </section>
   );
 }

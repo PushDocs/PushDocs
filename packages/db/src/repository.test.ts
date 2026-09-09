@@ -167,6 +167,67 @@ describe("editorial file operations", () => {
     await repository.queueChangeSetSubmission(submission);
     expect((await repository.getChangeSetSubmission(draft.changeSetId))?.status).toBe("submitting");
   });
+  it.each(["modify", "delete", "add"])(
+    "reverts one %s operation without touching another draft",
+    async (operation) => {
+      const fixture = await synchronizedProject();
+      const path = operation === "add" ? "docs/new.md" : "docs/intro.md";
+      const input = { projectId: fixture.projectId, branch: "main", userId: fixture.operatorId };
+      await repository.stageFiles({
+        ...input,
+        expectedRevision: 0,
+        files: [
+          { path, content: operation === "delete" ? null : "# Changed" },
+          { path: "docs/keep.md", content: "# Keep this draft" },
+        ],
+      });
+      await repository.stageFiles({
+        ...input,
+        expectedRevision: 1,
+        files: [{ path, revert: true }],
+      });
+      const state = await repository.listWorkingFiles(fixture.projectId, "main");
+      expect(state.files.find((file) => file.path === "docs/keep.md")?.content).toBe(
+        "# Keep this draft",
+      );
+      expect(state.changeSet?.revision).toBe(2);
+      if (operation === "add")
+        expect(state.files.find((file) => file.path === path)).toBeUndefined();
+      else
+        expect(state.files.find((file) => file.path === path)).toMatchObject({
+          content: "# Intro\n",
+          status: "clean",
+        });
+      expect(
+        (await repository.listDraftFiles(fixture.projectId, "main")).map((file) => file.path),
+      ).toEqual(["docs/keep.md"]);
+    },
+  );
+  it("reverts only the selected uploaded attachment", async () => {
+    const fixture = await synchronizedProject();
+    for (const name of ["revert", "keep"])
+      await repository.recordAttachment({
+        projectId: fixture.projectId,
+        branch: "main",
+        repositoryPath: `assets/${name}.png`,
+        originalName: `${name}.png`,
+        mediaType: "image/png",
+        sizeBytes: 3,
+        sha256: name,
+        storageKey: `fixture/${name}`,
+      });
+    const { changeSet } = await repository.getBranchState(fixture.projectId, "main");
+    await repository.stageFiles({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      expectedRevision: changeSet?.revision ?? 0,
+      files: [{ path: "assets/revert.png", revert: true }],
+    });
+    expect(
+      (await repository.listAttachments(fixture.projectId)).map((file) => file.repository_path),
+    ).toEqual(["assets/keep.png"]);
+  });
   it("removes a pending replacement when deleting a media file", async () => {
     const fixture = await synchronizedProject();
     await repository.recordAttachment({
@@ -1672,6 +1733,49 @@ describe("working tree projection", () => {
     expect((await repository.listWorkingFiles(fixture.projectId, "main")).files[0]?.content).toBe(
       "# Intro\n",
     );
+  });
+  it("never overwrites existing uploads or file-directory collisions in create-only mode", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      branch: "main",
+      projectId: fixture.projectId,
+      mediaType: "image/png",
+      originalName: "a.png",
+      repositoryPath: "docs/images/a.png",
+      sha256: "a".repeat(64),
+      sizeBytes: 1,
+      storageKey: "asset",
+      expectedRevision: 0,
+      createOnly: true,
+    };
+    await repository.recordAttachment(input);
+    await expect(repository.recordAttachment({ ...input, expectedRevision: 1 })).rejects.toThrow(
+      "Путь уже занят",
+    );
+    await expect(
+      repository.recordAttachment({
+        ...input,
+        repositoryPath: "docs/intro.md/a.png",
+        expectedRevision: 1,
+      }),
+    ).rejects.toThrow("Путь уже занят");
+    await expect(
+      repository.recordAttachment({ ...input, repositoryPath: "docs", expectedRevision: 1 }),
+    ).rejects.toThrow("Путь уже занят");
+    await expect(
+      repository.stageFiles({
+        projectId: fixture.projectId,
+        userId: fixture.operatorId,
+        branch: "main",
+        expectedRevision: 1,
+        files: [{ path: input.repositoryPath, content: "replace", createOnly: true }],
+      }),
+    ).rejects.toThrow("уже существует");
+    expect(
+      (await repository.listAttachments(fixture.projectId)).filter(
+        (item) => item.repository_path === input.repositoryPath,
+      ),
+    ).toHaveLength(1);
   });
   it("rejects stale uploads and uploads to a submitting change set", async () => {
     const fixture = await synchronizedProject();

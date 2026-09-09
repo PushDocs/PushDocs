@@ -3,6 +3,7 @@
 import { parseProjectConfig } from "@pushdocs/content";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { draftKey, readDraft, writeDraft } from "./draft-storage";
 import { Workbench, type WorkbenchState } from "./workbench";
 
 const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
@@ -16,6 +17,7 @@ let requests: Array<Record<string, unknown>>;
 beforeEach(() => {
   vi.useFakeTimers();
   sessionStorage.clear();
+  localStorage.clear();
   requests = [];
   state = {
     files: [
@@ -117,6 +119,126 @@ function mount() {
     />,
   );
 }
+it("retries a network failure without claiming a revision conflict or losing text", async () => {
+  mount();
+  await act(async () => {});
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "Offline edit" },
+  });
+  vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  await tick();
+  expect(screen.getByRole("alert").textContent).toContain("Нет связи");
+  expect(screen.queryByText(/Автосохранение остановлено, ваш текст/)).toBeNull();
+  expect(readDraft(draftKey("project", "main", "docs/a.mdx"))?.text).toBe("Offline edit");
+  await click("Повторить сохранение");
+  expect(state.files[0]?.content).toBe("Offline edit");
+  expect(requests[0]).toMatchObject({ expectedRevision: 0 });
+  expect(readDraft(draftKey("project", "main", "docs/a.mdx"))).toBeUndefined();
+});
+it("keeps a local backup when permission to save is revoked", async () => {
+  mount();
+  await act(async () => {});
+  fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Keep this" } });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ error: "Нет прав" }, { status: 403 }));
+  await tick();
+  expect(screen.getByText(/Нет прав на сохранение/)).toBeTruthy();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
+  expect(screen.queryByRole("button", { name: "Повторить сохранение" })).toBeNull();
+  expect(readDraft(draftKey("project", "main", "docs/a.mdx"))?.text).toBe("Keep this");
+});
+it("offers unsaved text after remount and only sends it after explicit restoration", async () => {
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "Recovered edit" },
+  });
+  cleanup();
+  mount();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
+  await tick();
+  expect(requests).toHaveLength(0);
+  await click("Восстановить текст");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "Recovered edit");
+  await tick();
+  expect(state.files[0]?.content).toBe("Recovered edit");
+});
+it("requires merging a recovered draft if its server base changed, including after another reload", async () => {
+  const key = draftKey("project", "main", "docs/a.mdx");
+  writeDraft(key, "My old edit", "Earlier base");
+  mount();
+  await click("Восстановить текст");
+  expect(screen.getByText("Текущая версия PushDocs")).toBeTruthy();
+  await tick();
+  expect(requests).toHaveLength(0);
+  expect(readDraft(key)?.base).toBe("Earlier base");
+  cleanup();
+  mount();
+  await click("Восстановить текст");
+  await tick();
+  expect(requests).toHaveLength(0);
+  await click("Я объединил версии — сохранить");
+  expect(state.files[0]?.content).toBe("My old edit");
+});
+it("opens a text search match using the shortcut and saves the previous file first", async () => {
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "Save before opening" },
+  });
+  fireEvent.keyDown(window, { key: "F", ctrlKey: true, shiftKey: true });
+  expect(document.activeElement).toBe(screen.getByLabelText("Поиск файлов"));
+  fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "Второй" } });
+  await act(async () => {
+    fireEvent.keyDown(screen.getByLabelText("Поиск файлов"), { key: "Enter" });
+  });
+  expect(state.files[0]?.content).toBe("Save before opening");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Второй");
+});
+it("shows split preview for articles and only source/diff controls for configuration", async () => {
+  mount();
+  await click("Файл и просмотр рядом");
+  expect(screen.getByLabelText("Исходник документа")).toBeTruthy();
+  expect(screen.getByRole("article").textContent).toContain("Первый");
+  await click("sidebars.js");
+  expect(screen.queryByRole("tab", { name: "Свойства" })).toBeNull();
+  expect(screen.queryByRole("tab", { name: "Просмотр" })).toBeNull();
+  expect(screen.queryByRole("toolbar", { name: "Форматирование документа" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "Файл" })).toBeTruthy();
+});
+it("persists explorer width and can close other tabs then reopen the last one", async () => {
+  mount();
+  fireEvent.keyDown(screen.getByRole("separator", { name: "Ширина проводника" }), {
+    key: "ArrowRight",
+  });
+  expect(localStorage.getItem("pushdocs:explorer-width")).toBe("300");
+  await click("b.md");
+  fireEvent.click(screen.getByLabelText("Действия с вкладками"));
+  await click("Закрыть остальные вкладки");
+  expect(screen.queryByRole("tab", { name: "a.mdx" })).toBeNull();
+  await click("Вернуть закрытую вкладку");
+  expect(screen.getByRole("tab", { name: "a.mdx" }).getAttribute("aria-selected")).toBe("true");
+  cleanup();
+  mount();
+  expect(
+    screen.getByRole("separator", { name: "Ширина проводника" }).getAttribute("aria-valuenow"),
+  ).toBe("300");
+});
+it("renames a file in its own directory and stages the move atomically", async () => {
+  mount();
+  fireEvent.contextMenu(screen.getByRole("treeitem", { name: "a.mdx" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("menuitem", { name: "Переименовать" }));
+  });
+  expect(screen.getByLabelText("Имя файла")).toHaveProperty("value", "a.mdx");
+  fireEvent.change(screen.getByLabelText("Имя файла"), { target: { value: "renamed.mdx" } });
+  await click("Применить");
+  expect(requests[0]).toMatchObject({
+    files: [
+      { path: "docs/a.mdx", content: null },
+      { path: "docs/renamed.mdx", content: "# Первый\n<Widget />", createOnly: true },
+    ],
+  });
+  expect(screen.getByRole("tab", { name: "renamed.mdx" })).toBeTruthy();
+});
 it("restores open documents independently for each project branch", async () => {
   mount();
   await click("b.md");
@@ -131,6 +253,35 @@ it("restores open documents independently for each project branch", async () => 
     "value",
     "# Первый\n<Widget />",
   );
+});
+it("persists reordered tabs without saving or changing the active document", async () => {
+  mount();
+  await click("b.md");
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "Unsaved second file" },
+  });
+  const a = screen.getByRole("tab", { name: "a.mdx" });
+  const b = screen.getByRole("tab", { name: "b.md" });
+  const dataTransfer = { effectAllowed: "", setData: vi.fn(), setDragImage: vi.fn() };
+  fireEvent.dragStart(b, { dataTransfer });
+  fireEvent.drop(a, { dataTransfer });
+  expect(
+    screen.getByRole("tablist", { name: "Открытые документы" }).querySelectorAll('[role="tab"]')[0]
+      ?.textContent,
+  ).toContain("b.md");
+  expect(b.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    "Unsaved second file",
+  );
+  expect(requests).toHaveLength(0);
+  cleanup();
+  mount();
+  expect(
+    screen.getByRole("tablist", { name: "Открытые документы" }).querySelectorAll('[role="tab"]')[0]
+      ?.textContent,
+  ).toContain("b.md");
+  expect(screen.getByRole("tab", { name: "b.md" }).getAttribute("aria-selected")).toBe("true");
 });
 it("searches branch names and identifies protected branches", async () => {
   state.branches[0] = { full_ref: "main", is_protected: true };
@@ -317,13 +468,27 @@ it("inserts formatting and components without rewriting the rest of MDX", async 
   await tick();
   expect(requests.length).toBeGreaterThan(0);
 });
-it("replaces text with a visible comparison and renders quick Markdown preview", async () => {
+it("previews replacements without editing or saving until confirmation", async () => {
   mount();
   fireEvent.change(screen.getByLabelText("Найти текст"), { target: { value: "Первый" } });
   fireEvent.change(screen.getByLabelText("Заменить на"), { target: { value: "Новый" } });
-  await click("Заменить и показать изменения");
-  expect(screen.getByText("Исходный файл")).toBeTruthy();
-  expect(screen.getByText("Ваши изменения")).toBeTruthy();
+  await click("Просмотреть замены");
+  expect(screen.getByRole("dialog", { name: "Предпросмотр замены" })).toBeTruthy();
+  expect(screen.getByText("После замены")).toBeTruthy();
+  await tick();
+  expect(requests).toHaveLength(0);
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    "# Первый\n<Widget />",
+  );
+  await click("Отмена");
+  expect(requests).toHaveLength(0);
+  await click("Просмотреть замены");
+  await click("Заменить все (1)");
+  await tick();
+  expect(requests[0]).toMatchObject({
+    files: [{ path: "docs/a.mdx", content: "# Новый\n<Widget />" }],
+  });
   fireEvent.click(screen.getByRole("tab", { name: "Просмотр" }));
   expect(screen.getByRole("heading", { name: "Новый" })).toBeTruthy();
 });
@@ -545,7 +710,9 @@ it("protects unload and saves before sidebar and preview navigation", async () =
   await act(async () => {
     fireEvent.click(screen.getByRole("link", { name: "Открыть сайт" }));
   });
-  expect(mocks.push).toHaveBeenCalledWith("/projects/project/preview?branch=main");
+  expect(mocks.push).toHaveBeenCalledWith(
+    "/projects/project/preview?branch=main&path=docs%2Fa.mdx",
+  );
 });
 
 it("opens document tabs and manually saves a selected component", async () => {
@@ -577,7 +744,7 @@ it("keeps a failed operation visible and handles failed reload, sync and events"
     Response.json({ error: "reload failed" }, { status: 500 }),
   );
   await click("Перечитать состояние");
-  expect(screen.getByRole("alert").textContent).toContain("reload failed");
+  expect(screen.getByRole("alert").textContent).toContain("Нет связи с сервером");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("sync failed"));
   await click("Обновить");
   expect(screen.getByRole("alert").textContent).toContain("sync failed");
@@ -602,19 +769,23 @@ it("keeps a template dialog open when planning fails", async () => {
   expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
-it("creates configuration once and opens it as source for an administrator", async () => {
+it("hides internal project configuration from the file tree", () => {
   state.role = "admin";
-  mount();
-  await click("Создать конфигурацию проекта");
-  expect(requests[0]).toMatchObject({
-    files: [{ path: ".pushdocs/config.json", createOnly: true }],
+  const content = JSON.stringify(state.config, null, 2);
+  state.files.push({
+    path: ".pushdocs/config.json",
+    content,
+    baseContent: content,
+    title: "config.json",
+    locale: "ru",
+    version: "current",
+    status: "clean",
   });
-  expect(
-    JSON.parse((screen.getByLabelText("Исходник документа") as HTMLTextAreaElement).value),
-  ).toEqual(state.config);
-  await click("b.md");
-  await click("Открыть конфигурацию проекта");
-  expect(requests).toHaveLength(1);
+  mount();
+  expect(screen.queryByText("Настройки файлов")).toBeNull();
+  expect(screen.queryByRole("treeitem", { name: ".pushdocs" })).toBeNull();
+  expect(screen.queryByRole("treeitem", { name: "config.json" })).toBeNull();
+  expect(requests).toHaveLength(0);
 });
 
 it("opens repository source outside the import profile as read-only", async () => {
@@ -785,4 +956,36 @@ it("opens a replacement upload from the draft instead of downloading the old Git
         ([url]) => String(url).includes("workbench?") && String(url).includes("path="),
       ),
   ).toBe(false);
+});
+
+it("saves the open draft before a dropped article and reveals its branch change", async () => {
+  mount();
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("Исходник документа"), {
+      target: { value: "# My draft" },
+    });
+  });
+  const file = new File(["# Uploaded\r\n"], "uploaded.md");
+  Object.defineProperty(file, "arrayBuffer", {
+    value: async () => new TextEncoder().encode("# Uploaded\r\n").buffer,
+  });
+  await act(async () => {
+    fireEvent.drop(screen.getByRole("treeitem", { name: "docs" }), {
+      dataTransfer: { types: ["Files"], files: [file] },
+    });
+  });
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toMatchObject({
+    expectedRevision: 0,
+    files: [{ path: "docs/a.mdx", content: "# My draft" }],
+  });
+  expect(requests[1]).toMatchObject({
+    branch: "main",
+    expectedRevision: 1,
+    files: [{ path: "docs/uploaded.md", content: "# Uploaded\r\n", createOnly: true }],
+  });
+  expect(screen.getByRole("treeitem", { name: "uploaded.md" }).dataset.status).toBe("add");
+  expect((screen.getByLabelText("Исходник документа") as HTMLTextAreaElement).value).toBe(
+    "# My draft",
+  );
 });

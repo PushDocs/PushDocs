@@ -17,7 +17,8 @@
       "!**/node_modules",
       "!output",
       "!**/yarn.lock",
-      "!docs/design/prompts.json"
+      "!docs/design/prompts.json",
+      "!apps/web/public/monaco"
     ]
   },
   "formatter": {

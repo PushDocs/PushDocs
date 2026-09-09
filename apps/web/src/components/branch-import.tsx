@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { synchronizeBranchAction } from "@/app/actions";
+import { ProjectContext } from "./project-context";
 
 export function BranchImport({ projectId, branch }: { projectId: string; branch: string }) {
   const router = useRouter();
@@ -44,7 +45,8 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
   }, [projectId, branch, router, attempt]);
 
   return (
-    <section className="page">
+    <section className="page branch-import">
+      <ProjectContext projectId={projectId} branch={branch} />
       <header className="page-header">
         <h1>{branch}</h1>
       </header>
@@ -63,7 +65,16 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
           </button>
         </>
       ) : (
-        <p role="status">Загружаем файлы ветки…</p>
+        <div className="branch-import-loading">
+          <p role="status">Загружаем файлы ветки…</p>
+          <div
+            className="branch-import-progress"
+            role="progressbar"
+            aria-label="Загрузка файлов ветки"
+          >
+            <span />
+          </div>
+        </div>
       )}
     </section>
   );

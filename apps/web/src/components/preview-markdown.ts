@@ -61,12 +61,15 @@ const tags = new Set([
   "blockquote",
 ]);
 
-export function preparePreviewSource(source: string) {
+export function preparePreviewSource(source: string, lineMap?: number[]) {
   let fence = "";
   return source
-    .replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "")
+    .replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, (header) =>
+      header.replace(/[^\n]/g, ""),
+    )
     .split("\n")
-    .map((line) => {
+    .map((line, index) => {
+      lineMap?.push(index + 1);
       const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
       if (marker?.[1]) {
         if (!fence) fence = marker[1];
@@ -80,7 +83,10 @@ export function preparePreviewSource(source: string) {
       );
       if (directive) return `${directive[1]}[${directive[2]}]`;
       // Keep imports separate from a preceding paragraph while editing.
-      if (/^import\s/.test(line)) return `\n${line}`;
+      if (/^import\s/.test(line)) {
+        lineMap?.push(index + 1);
+        return `\n${line}`;
+      }
       return line;
     })
     .join("\n");
@@ -240,8 +246,16 @@ export function previewPlugin(context: PreviewContext) {
           } else if (!name) {
             element(node, inline ? "span" : "div");
           } else {
-            if (!node.children?.length)
-              node.children = [{ type: "text", value: `${name} · Превью доступно на сайте` }];
+            node.children = [
+              {
+                type: inline ? "text" : "paragraph",
+                value: inline ? `${name} · Упрощённое превью · ` : undefined,
+                children: inline
+                  ? undefined
+                  : [{ type: "text", value: `${name} · Упрощённое превью` }],
+              },
+              ...(node.children ?? []),
+            ];
             element(node, inline ? "span" : "div", {
               className: "wb-preview-component",
               title: `Компонент ${name}. Полный вид доступен через «Открыть сайт».`,

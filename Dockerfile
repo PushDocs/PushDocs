@@ -25,7 +25,8 @@ COPY packages ./packages
 COPY scripts ./scripts
 
 RUN yarn build
-RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static
+RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static \
+  && cp -R apps/web/public apps/web/.next/standalone/apps/web/public
 
 FROM node:20.19.6-bookworm-slim AS runtime
 

@@ -27,6 +27,8 @@ export function MediaLibrary({
   onInsert,
   onChanged,
   onBusyChange,
+  initialQuery = "",
+  replacePath,
 }: {
   projectId: string;
   branch: string;
@@ -34,15 +36,17 @@ export function MediaLibrary({
   onInsert?: (url: string) => void;
   onChanged?: (path?: string) => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
+  initialQuery?: string;
+  replacePath?: string;
 }) {
   const [state, setState] = useState<MediaState>();
   const [error, setError] = useState("");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [onlyArticle, setOnlyArticle] = useState(false);
   const [selected, setSelected] = useState<Asset>();
   const [busy, setBusy] = useState(false);
   const [locale, setLocale] = useState("");
-  const [replace, setReplace] = useState(false);
+  const [replace, setReplace] = useState(!!replacePath);
   const [destination, setDestination] = useState("");
   const [progress, setProgress] = useState<{ name: string; percent: number }>();
   const [retry, setRetry] = useState(false);
@@ -73,6 +77,10 @@ export function MediaLibrary({
   useEffect(() => () => transfer.current?.abort(), []);
   async function upload(files: File[]) {
     if (readOnly || busy || uploading.current) return;
+    if (replacePath && files.length > 1) {
+      setError("Для замены выберите один файл.");
+      return;
+    }
     uploading.current = true;
     pending.current = files;
     setBusy(true);
@@ -90,8 +98,12 @@ export function MediaLibrary({
           document,
           locale: current.locale,
           revision: String(current.revision),
-          replace: String(replace),
-          ...(destination ? { path: `${destination.replace(/\/$/, "")}/${file.name}` } : {}),
+          replace: String(replacePath ? true : replace),
+          ...(replacePath
+            ? { path: replacePath }
+            : destination
+              ? { path: `${destination.replace(/\/$/, "")}/${file.name}` }
+              : {}),
         });
         setProgress({ name: file.name, percent: 0 });
         const uploadedPath = await new Promise<string | undefined>((resolve, reject) => {
@@ -195,6 +207,11 @@ export function MediaLibrary({
         </Link>
         .
       </p>
+      {replacePath ? (
+        <p>
+          Заменить файл: <strong>{replacePath}</strong>
+        </p>
+      ) : null}
       <section
         className="media-upload"
         aria-label="Загрузка файлов"
@@ -212,7 +229,7 @@ export function MediaLibrary({
           <input
             aria-label="Загрузить файлы"
             type="file"
-            multiple
+            multiple={!replacePath}
             disabled={readOnly || busy}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
@@ -221,35 +238,37 @@ export function MediaLibrary({
             }}
           />
         </label>
-        <details className="media-options">
-          <summary>Настройки загрузки</summary>
-          <label>
-            Каталог назначения
-            <input
-              value={destination}
-              placeholder="По настройкам проекта"
-              disabled={busy || readOnly}
-              onChange={(event) => setDestination(event.target.value)}
-            />
-          </label>
-          <label className="media-checkbox">
-            <input
-              type="checkbox"
-              checked={replace}
-              disabled={busy || readOnly}
-              onChange={(event) => setReplace(event.target.checked)}
-            />
-            Заменять существующие файлы с такими же путями
-          </label>
-          <label>
-            Язык каталога
-            <input
-              value={locale || state?.locale || ""}
-              onChange={(event) => setLocale(event.target.value)}
-              disabled={busy}
-            />
-          </label>
-        </details>
+        {!replacePath ? (
+          <details className="media-options">
+            <summary>Настройки загрузки</summary>
+            <label>
+              Каталог назначения
+              <input
+                value={destination}
+                placeholder="По настройкам проекта"
+                disabled={busy || readOnly}
+                onChange={(event) => setDestination(event.target.value)}
+              />
+            </label>
+            <label className="media-checkbox">
+              <input
+                type="checkbox"
+                checked={replace}
+                disabled={busy || readOnly}
+                onChange={(event) => setReplace(event.target.checked)}
+              />
+              Заменять существующие файлы с такими же путями
+            </label>
+            <label>
+              Язык каталога
+              <input
+                value={locale || state?.locale || ""}
+                onChange={(event) => setLocale(event.target.value)}
+                disabled={busy}
+              />
+            </label>
+          </details>
+        ) : null}
         {progress ? (
           <div role="status">
             <p>

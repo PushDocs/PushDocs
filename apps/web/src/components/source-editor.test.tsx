@@ -5,6 +5,47 @@ import { afterEach, expect, it, vi } from "vitest";
 import { SourceEditor } from "./source-editor";
 
 afterEach(cleanup);
+it("restores cursor and both scroll offsets separately for each file", () => {
+  sessionStorage.clear();
+  const props = {
+    value: "First\nSecond\nThird\n",
+    onChange: vi.fn(),
+    onSave: vi.fn(),
+    onIndent: vi.fn(),
+    readOnly: false,
+    inputRef: createRef<HTMLTextAreaElement>(),
+  };
+  render(<SourceEditor {...props} storageKey="a" />);
+  const input = screen.getByLabelText("Исходник документа") as HTMLTextAreaElement;
+  input.setSelectionRange(7, 10);
+  fireEvent.scroll(input, { target: { scrollTop: 48, scrollLeft: 80 } });
+  cleanup();
+  render(<SourceEditor {...props} storageKey="b" />);
+  expect(props.inputRef.current?.scrollTop).toBe(0);
+  cleanup();
+  render(<SourceEditor {...props} storageKey="a" />);
+  expect(props.inputRef.current?.selectionStart).toBe(7);
+  expect(props.inputRef.current?.selectionEnd).toBe(10);
+  expect(props.inputRef.current?.scrollTop).toBe(48);
+  expect(props.inputRef.current?.scrollLeft).toBe(80);
+  expect(screen.getByTestId("source-highlight").style.transform).toBe("translate(-80px, -48px)");
+});
+it("focuses the requested original source line", () => {
+  const ref = createRef<HTMLTextAreaElement>();
+  render(
+    <SourceEditor
+      value={"First\nSecond\nThird"}
+      onChange={vi.fn()}
+      onSave={vi.fn()}
+      onIndent={vi.fn()}
+      readOnly={false}
+      inputRef={ref}
+      jump={{ line: 3, token: 1 }}
+    />,
+  );
+  expect(document.activeElement).toBe(ref.current);
+  expect(ref.current?.selectionStart).toBe(13);
+});
 it("shows line numbers and syntax while keeping keyboard editing and CRLF bytes intact", () => {
   const change = vi.fn();
   const save = vi.fn();

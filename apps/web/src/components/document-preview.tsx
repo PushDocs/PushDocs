@@ -23,14 +23,19 @@ export function DocumentPreview({
   repositoryPaths,
   locale,
   media,
-}: PreviewContext & { source: string }) {
+  onErrorLine,
+}: PreviewContext & { source: string; onErrorLine?: (line: number) => void }) {
   const plugin = useMemo(
     () => previewPlugin({ projectId, branch, path, repositoryPaths, locale, media }),
     [projectId, branch, path, repositoryPaths, locale, media],
   );
+  const prepared = useMemo(() => {
+    const lines: number[] = [];
+    return { source: preparePreviewSource(source, lines), lines };
+  }, [source]);
   return (
     <article className="wb-markdown">
-      <PreviewBoundary key={source}>
+      <PreviewBoundary key={source} onErrorLine={onErrorLine} lineMap={prepared.lines}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMdx, remarkDirective, plugin]}
           components={{
@@ -44,21 +49,42 @@ export function DocumentPreview({
               ),
           }}
         >
-          {preparePreviewSource(source)}
+          {prepared.source}
         </ReactMarkdown>
       </PreviewBoundary>
     </article>
   );
 }
 
-class PreviewBoundary extends Component<{ children: ReactNode }, { error: boolean }> {
-  state = { error: false };
-  static getDerivedStateFromError() {
-    return { error: true };
+class PreviewBoundary extends Component<
+  { children: ReactNode; onErrorLine?: (line: number) => void; lineMap: number[] },
+  { error: boolean; line: number }
+> {
+  state = { error: false, line: 1 };
+  static getDerivedStateFromError(error: {
+    line?: number;
+    place?: { start?: { line?: number }; line?: number };
+  }) {
+    return { error: true, line: error.line ?? error.place?.start?.line ?? error.place?.line ?? 1 };
   }
   render() {
     return this.state.error ? (
-      <p role="alert">Не удалось показать превью. Проверьте синтаксис MDX в тексте документа.</p>
+      <div role="alert">
+        <p>
+          Не удалось показать превью. Проверьте синтаксис MDX: строка{" "}
+          {this.props.lineMap[this.state.line - 1] ?? this.state.line}.
+        </p>
+        {this.props.onErrorLine ? (
+          <button
+            type="button"
+            onClick={() =>
+              this.props.onErrorLine?.(this.props.lineMap[this.state.line - 1] ?? this.state.line)
+            }
+          >
+            Перейти к ошибке
+          </button>
+        ) : null}
+      </div>
     ) : (
       this.props.children
     );

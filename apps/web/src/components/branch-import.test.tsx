@@ -29,12 +29,16 @@ it("loads the requested branch once in Strict Mode and polls until the editor re
     branch: "docs/fix #1",
   });
   expect(screen.getByRole("status").textContent).toContain("Загружаем");
+  const progress = screen.getByRole("progressbar", { name: "Загрузка файлов ветки" });
+  expect(progress.hasAttribute("aria-valuenow")).toBe(false);
   expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
   await act(async () => {
     vi.advanceTimersByTime(2000);
   });
   expect(mocks.router.refresh).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("progressbar")).toBe(progress);
   view.unmount();
+  expect(screen.queryByRole("progressbar")).toBeNull();
   await act(async () => {
     vi.advanceTimersByTime(4000);
   });
@@ -44,10 +48,12 @@ it("offers a retry on failure and starts loading again", async () => {
   mocks.sync.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
   render(<BranchImport projectId="project" branch="docs/update" />);
   expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByRole("progressbar")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку" }));
   await act(async () => {});
   expect(mocks.sync).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("progressbar", { name: "Загрузка файлов ветки" })).toBeTruthy();
 });
 it("stops polling and offers a retry when loading times out", async () => {
   vi.useFakeTimers();
@@ -58,6 +64,7 @@ it("stops polling and offers a retry when loading times out", async () => {
     vi.advanceTimersByTime(300_000);
   });
   expect(screen.getByRole("alert").textContent).toContain("ещё не загрузилась");
+  expect(screen.queryByRole("progressbar")).toBeNull();
   const count = mocks.router.refresh.mock.calls.length;
   await act(async () => {
     vi.advanceTimersByTime(4000);

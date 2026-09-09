@@ -704,8 +704,40 @@ export class PushDocsRepository {
           .where("path", "=", file.path)
           .executeTakeFirst();
         const exists = Boolean(imported) || branch.repository_paths.includes(file.path);
-        if (file.createOnly && (exists || draft))
-          throw new RevisionConflictError(`Файл уже существует: ${file.path}`);
+        if (file.createOnly) {
+          const importedPaths = await transaction
+            .selectFrom("imported_documents")
+            .select("path")
+            .where("branch_context_id", "=", branch.id)
+            .execute();
+          const uploads = await transaction
+            .selectFrom("attachments")
+            .select("repository_path")
+            .where("change_set_id", "=", changeSet.id)
+            .execute();
+          const drafts = await transaction
+            .selectFrom("draft_files")
+            .select("path")
+            .where("change_set_id", "=", changeSet.id)
+            .execute();
+          const occupied = [
+            ...branch.repository_paths,
+            ...importedPaths.map((item) => item.path),
+            ...uploads.map((item) => item.repository_path),
+            ...drafts.map((item) => item.path),
+          ];
+          if (
+            exists ||
+            draft ||
+            occupied.some(
+              (path) =>
+                path === file.path ||
+                path.startsWith(`${file.path}/`) ||
+                file.path.startsWith(`${path}/`),
+            )
+          )
+            throw new RevisionConflictError(`Файл уже существует: ${file.path}`);
+        }
         if (file.revert || file.content === null)
           await transaction
             .deleteFrom("attachments")
@@ -1310,6 +1342,7 @@ export class PushDocsRepository {
     sha256: string;
     sizeBytes: number;
     storageKey: string;
+    createOnly?: boolean;
     expectedRevision?: number;
   }) {
     return this.database.transaction().execute(async (transaction) => {
@@ -1345,6 +1378,38 @@ export class PushDocsRepository {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (input.createOnly) {
+        const importedPaths = await transaction
+          .selectFrom("imported_documents")
+          .select("path")
+          .where("branch_context_id", "=", branch.id)
+          .execute();
+        const drafts = await transaction
+          .selectFrom("draft_files")
+          .select("path")
+          .where("change_set_id", "=", changeSet.id)
+          .execute();
+        const attachments = await transaction
+          .selectFrom("attachments")
+          .select("repository_path")
+          .where("change_set_id", "=", changeSet.id)
+          .execute();
+        const paths = [
+          ...branch.repository_paths,
+          ...importedPaths.map((item) => item.path),
+          ...drafts.map((file) => file.path),
+          ...attachments.map((file) => file.repository_path),
+        ];
+        if (
+          paths.some(
+            (path) =>
+              path === input.repositoryPath ||
+              path.startsWith(`${input.repositoryPath}/`) ||
+              input.repositoryPath.startsWith(`${path}/`),
+          )
+        )
+          throw new RevisionConflictError(`Путь уже занят: ${input.repositoryPath}`);
+      }
       await transaction
         .deleteFrom("attachments")
         .where("change_set_id", "=", changeSet.id)

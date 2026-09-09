@@ -12,6 +12,7 @@ export function SubmitChanges({
   disabled,
   submitting,
   reviewTitle,
+  reviewLabel = "PR / MR",
   children,
 }: {
   projectId: string;
@@ -21,6 +22,7 @@ export function SubmitChanges({
   disabled: boolean;
   submitting: boolean;
   reviewTitle?: string;
+  reviewLabel?: string;
   children?: React.ReactNode;
 }) {
   const [createReview, setCreateReview] = useState(true);
@@ -28,14 +30,14 @@ export function SubmitChanges({
   const [newBranch, setNewBranch] = useState(`docs/update-${changeSetId.slice(0, 8)}`);
   return (
     <form action={submitChangeSetAction} className="submit-panel">
-      <h2>{reviewTitle ? "Обновить PR / MR" : "Отправить изменения"}</h2>
+      <h2>{reviewTitle ? `Обновить ${reviewLabel}` : "Отправить изменения"}</h2>
       {reviewTitle ? <p>{reviewTitle}</p> : null}
       <input name="projectId" type="hidden" value={projectId} />
       <input name="changeSetId" type="hidden" value={changeSetId} />
       <input name="branch" type="hidden" value={branch} />
       <label>
         {createReview && !reviewTitle
-          ? "Название PR / MR и сообщение коммита"
+          ? `Название ${reviewLabel} и сообщение коммита`
           : "Сообщение коммита"}
         <textarea
           name="message"
@@ -57,7 +59,7 @@ export function SubmitChanges({
             onChange={(event) => setCreateReview(event.target.checked)}
             disabled={submitting}
           />
-          Создать PR / MR в {defaultBranch}
+          Создать {reviewLabel} в {defaultBranch}
         </label>
       )}
       {needsBranch && createReview ? (
@@ -77,9 +79,9 @@ export function SubmitChanges({
         disabled={disabled}
         label={
           reviewTitle
-            ? "Отправить в PR / MR"
+            ? `Отправить в ${reviewLabel}`
             : createReview
-              ? "Отправить и создать PR / MR"
+              ? `Отправить и создать ${reviewLabel}`
               : `Отправить в ${branch}`
         }
         submitting={submitting}

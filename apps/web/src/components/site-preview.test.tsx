@@ -20,6 +20,41 @@ async function mount(canBuild = true) {
     render(<SitePreview projectId="p" branch="docs/new" revision={7} canBuild={canBuild} />);
   });
 }
+it("opens the current article in a signed build and returns to the same editor file", async () => {
+  vi.mocked(fetch).mockResolvedValueOnce(
+    Response.json({
+      configured: true,
+      builds: [
+        {
+          id: "1",
+          status: "ready",
+          sha: "12345678",
+          revision: 7,
+          log: "",
+          stale: false,
+          url: "https://build.preview.test/?token=abc&expires=123",
+        },
+      ],
+    }),
+  );
+  await act(async () => {
+    render(
+      <SitePreview
+        projectId="p"
+        branch="docs/fix"
+        revision={7}
+        canBuild
+        path="docs/start.mdx"
+        articleRoute="/start"
+      />,
+    );
+  });
+  const href = screen.getByRole("link", { name: "Открыть статью на сайте" }).getAttribute("href");
+  expect(href).toBe("https://build.preview.test/start?token=abc&expires=123");
+  expect(screen.getByRole("link", { name: /Вернуться/ }).getAttribute("href")).toContain(
+    "branch=docs%2Ffix&path=docs%2Fstart.mdx",
+  );
+});
 it("explains an unconfigured runner and disables builds", async () => {
   vi.mocked(fetch).mockResolvedValueOnce(Response.json({ configured: false, builds: [] }));
   await mount();

@@ -26,6 +26,46 @@ beforeEach(() => {
   );
 });
 afterEach(cleanup);
+it("replaces the selected asset at its exact path regardless of the uploaded filename", async () => {
+  let requestedUrl = "";
+  class Request extends EventTarget {
+    upload = new EventTarget();
+    timeout = 0;
+    status = 200;
+    responseText = "{}";
+    open(_method: string, url: string) {
+      requestedUrl = url;
+    }
+    send() {
+      this.dispatchEvent(new Event("load"));
+    }
+  }
+  vi.stubGlobal("XMLHttpRequest", Request);
+  const changed = vi.fn();
+  await act(async () => {
+    render(
+      <MediaLibrary
+        projectId="p"
+        branch="fix"
+        document="docs/intro.md"
+        replacePath="static/img/a.png"
+        onChanged={changed}
+      />,
+    );
+  });
+  expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("multiple", false);
+  expect(screen.queryByText("Настройки загрузки")).toBeNull();
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
+      target: { files: [new File(["png"], "different.png", { type: "image/png" })] },
+    });
+  });
+  const url = new URL(requestedUrl, "http://localhost");
+  expect(url.searchParams.get("path")).toBe("static/img/a.png");
+  expect(url.searchParams.get("replace")).toBe("true");
+  expect(url.searchParams.get("branch")).toBe("fix");
+  expect(url.searchParams.get("revision")).toBe("3");
+});
 it("shows upload progress and lets the user cancel a transfer", async () => {
   let request: FakeRequest | undefined;
   class FakeRequest extends EventTarget {

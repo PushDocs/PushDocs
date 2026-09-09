@@ -41,6 +41,7 @@ export default async function DocumentsPage({
       initialPath={query.path}
       initialPanel={query.panel === "files" ? "media" : undefined}
       initial={{
+        ownerId: user.id,
         files: state.files,
         uploads: state.changeSet
           ? (await repository().listAttachments(projectId))

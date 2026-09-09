@@ -231,3 +231,17 @@ it("uses the scoped local data directory when no storage override is configured"
   const response = await GET(new Request("https://cms.test/api?path=static/img/a.png"), context);
   expect(await response.text()).toBe("image");
 });
+
+it("uploads explorer assets at the requested repository location without media-root redirection", async () => {
+  for (const filePath of ["logo.png", "docs/guide/logo.png"]) {
+    const response = await upload({ destination: "repository", path: filePath });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ path: filePath, url: null });
+    expect(mocks.record).toHaveBeenLastCalledWith(
+      expect.objectContaining({ repositoryPath: filePath, createOnly: true }),
+    );
+  }
+  expect((await upload({ destination: "repository", path: "../logo.png" })).status).toBe(400);
+  expect((await upload({ destination: "repository", path: ".git/config.png" })).status).toBe(400);
+  expect((await upload({ destination: "repository", path: "config.json" })).status).toBe(400);
+});

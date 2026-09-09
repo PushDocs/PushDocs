@@ -46,7 +46,7 @@ export async function GET(request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
     const branch = new URL(request.url).searchParams.get("branch") ?? "";
-    const { state, config, store, access, provider, target } = await workbenchContext(
+    const { state, config, store, access, provider, target, user } = await workbenchContext(
       projectId,
       branch,
     );
@@ -81,6 +81,7 @@ export async function GET(request: Request, context: Context) {
     }
     return Response.json(
       {
+        ownerId: user.id,
         files: state.files,
         uploads: state.changeSet
           ? (await store.listAttachments(projectId))

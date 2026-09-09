@@ -8,11 +8,13 @@ export function GitOperation({
   projectId,
   branch,
   createReview = false,
+  reviewLabel = "PR / MR",
   disabled = false,
 }: {
   projectId: string;
   branch: string;
   createReview?: boolean;
+  reviewLabel?: string;
   disabled?: boolean;
 }) {
   const router = useRouter();
@@ -36,7 +38,7 @@ export function GitOperation({
           setMessage(
             job.status === "done"
               ? createReview
-                ? "PR / MR создан"
+                ? `${reviewLabel} создан`
                 : "Изменения получены"
               : "Операция не завершена. Повторите попытку.",
           );
@@ -55,7 +57,7 @@ export function GitOperation({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [jobId, projectId, router, createReview]);
+  }, [jobId, projectId, router, createReview, reviewLabel]);
   return (
     <form
       className="git-operation"
@@ -81,7 +83,7 @@ export function GitOperation({
     >
       {createReview ? (
         <label>
-          Название PR / MR
+          Название {reviewLabel}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -104,10 +106,10 @@ export function GitOperation({
         )}
         {busy
           ? createReview
-            ? "Создаём PR / MR…"
+            ? `Создаём ${reviewLabel}…`
             : "Получаем изменения…"
           : createReview
-            ? "Создать PR / MR"
+            ? `Создать ${reviewLabel}`
             : "Получить из Git"}
       </button>
       {message ? <p role={error ? "alert" : "status"}>{message}</p> : null}

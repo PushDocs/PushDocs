@@ -90,6 +90,9 @@ export async function createConnectionAction(formData: FormData): Promise<void> 
     secretEncrypted: encryptSecret(input.token),
   });
   revalidatePath("/settings/connections");
+  const projectId = formData.get("projectId");
+  if (typeof projectId === "string" && projectId)
+    revalidatePath(`/projects/${projectId}/settings/connections`);
 }
 
 export async function createProjectAction(formData: FormData): Promise<void> {
@@ -154,7 +157,9 @@ export async function inviteMemberAction(formData: FormData): Promise<void> {
     projectId,
     tokenHash: invitation.hash,
   });
-  redirect(`/projects/${projectId}/members?invitation=${encodeURIComponent(invitation.token)}`);
+  redirect(
+    `/projects/${projectId}/settings/members?invitation=${encodeURIComponent(invitation.token)}`,
+  );
 }
 
 export async function acceptInvitationAction(formData: FormData): Promise<void> {

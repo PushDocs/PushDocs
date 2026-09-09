@@ -386,7 +386,7 @@ describe("document and review actions", () => {
       tokenHash: "invitation-hash",
     });
     expect(mocks.redirect).toHaveBeenCalledWith(
-      `/projects/${projectId}/members?invitation=invitation-token-value`,
+      `/projects/${projectId}/settings/members?invitation=invitation-token-value`,
     );
   });
 

@@ -35,15 +35,19 @@ export async function POST(request: Request, context: Context) {
     await store.requireProjectAccess(user.id, projectId, "document:write");
     if (state.changeSet && state.changeSet.status !== "open")
       throw new Error("Загрузка недоступна во время отправки или конфликта");
-    const location = assetLocation(
-      config,
-      query.get("locale") ?? config.defaultLocale,
-      query.get("document") ?? "docs/intro.md",
-      name,
-    );
+    const repositoryUpload = query.get("destination") === "repository";
+    const location = repositoryUpload
+      ? { path: safePath(query.get("path") ?? ""), url: "" }
+      : assetLocation(
+          config,
+          query.get("locale") ?? config.defaultLocale,
+          query.get("document") ?? "docs/intro.md",
+          name,
+        );
     const repositoryPath = safePath(query.get("path") || location.path);
     const root = path.posix.dirname(location.path);
-    if (!repositoryPath.startsWith(`${root}/`)) throw new Error("Каталог не разрешён для вложений");
+    if (!repositoryUpload && !repositoryPath.startsWith(`${root}/`))
+      throw new Error("Каталог не разрешён для вложений");
     if (state.branch.repository_paths.includes(repositoryPath) && query.get("replace") !== "true")
       throw new Error("Файл уже существует. Выберите замену явно.");
     const mediaType = mediaTypes[path.extname(repositoryPath).toLowerCase()];
@@ -74,15 +78,18 @@ export async function POST(request: Request, context: Context) {
       mediaType,
       sizeBytes: stored.size,
       sha256: stored.sha256,
+      createOnly: repositoryUpload,
       expectedRevision: Number(query.get("revision")),
     });
     const urlRoot = location.url.slice(0, location.url.lastIndexOf("/"));
     return Response.json({
-      url: `${urlRoot}/${repositoryPath
-        .slice(root.length + 1)
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")}`,
+      url: repositoryUpload
+        ? null
+        : `${urlRoot}/${repositoryPath
+            .slice(root.length + 1)
+            .split("/")
+            .map(encodeURIComponent)
+            .join("/")}`,
       path: repositoryPath,
       size: stored.size,
     });

@@ -1,6 +1,7 @@
 import { MailPlus, Shield, UserRound, Users } from "lucide-react";
 import type { Metadata } from "next";
 import { inviteMemberAction } from "@/app/actions";
+import { SettingsNavigation } from "@/components/settings-navigation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Участники" };
@@ -28,6 +29,11 @@ export default async function MembersPage({
           <h1>Участники</h1>
         </div>
       </header>
+      <SettingsNavigation
+        projectId={projectId}
+        active="members"
+        canManageConnections={user.isInstanceOperator}
+      />
       <div className="members-layout">
         <section className="members-table">
           <div className="members-head">

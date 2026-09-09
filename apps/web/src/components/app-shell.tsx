@@ -3,22 +3,22 @@
 import type { ProjectSummary } from "@pushdocs/contracts";
 import {
   BookOpenText,
-  Cable,
   ChevronDown,
   FolderGit2,
+  GitBranch,
   GitPullRequest,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
   SlidersHorizontal,
-  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { logoutAction } from "@/app/actions";
 import type { CurrentUser } from "@/lib/server";
+import { documentHref, readProjectBranch } from "./project-context";
 import { PushDocsLogo } from "./pushdocs-logo";
 import { RealtimeRefresh } from "./realtime-refresh";
 
@@ -26,7 +26,6 @@ const projectNavigation = [
   { icon: BookOpenText, label: "Документы", segment: "documents" },
   { icon: SlidersHorizontal, label: "Изменения", segment: "changes" },
   { icon: GitPullRequest, label: "PR / MR", segment: "reviews" },
-  { icon: Users, label: "Участники", segment: "members" },
   { icon: Settings, label: "Настройки", segment: "settings" },
 ];
 
@@ -40,11 +39,53 @@ export function AppShell({
   user: CurrentUser;
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const projectSwitcherRef = useRef<HTMLDetailsElement>(null);
   const pathname = usePathname();
   const match = pathname.match(/^\/projects\/([^/]+)/);
   const projectId = match?.[1];
   const activeProject = projects.find((project) => project.id === projectId);
 
+  useEffect(() => {
+    const dismissOutside = (event: PointerEvent) => {
+      const menu = projectSwitcherRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false;
+      }
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      const menu = projectSwitcherRef.current;
+      if (event.key === "Escape" && menu?.open) {
+        menu.open = false;
+        menu.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, []);
+
+  const [currentBranch, setCurrentBranch] = useState("");
+  useEffect(() => {
+    if (projectSwitcherRef.current) projectSwitcherRef.current.open = false;
+    const update = () => {
+      if (!activeProject || !pathname.startsWith("/projects/")) return;
+      const query = new URLSearchParams(window.location.search);
+      setCurrentBranch(
+        (/\/(documents|changes|preview)$/.test(pathname) ? query.get("branch") : null) ||
+          readProjectBranch(activeProject.id, activeProject.defaultBranch),
+      );
+    };
+    update();
+    window.addEventListener("pushdocs:context", update);
+    window.addEventListener("popstate", update);
+    return () => {
+      window.removeEventListener("pushdocs:context", update);
+      window.removeEventListener("popstate", update);
+    };
+  }, [activeProject, pathname]);
   return (
     <div className={sidebarCollapsed ? "app-frame sidebar-collapsed" : "app-frame"}>
       <RealtimeRefresh />
@@ -77,7 +118,7 @@ export function AppShell({
 
         {activeProject ? (
           <>
-            <details className="project-switcher-wrap">
+            <details className="project-switcher-wrap" ref={projectSwitcherRef}>
               <summary className="project-switcher">
                 <span className="project-monogram">
                   {activeProject.name.slice(0, 1).toUpperCase()}
@@ -96,7 +137,13 @@ export function AppShell({
               </summary>
               <nav className="project-switch-menu" aria-label="Сменить проект">
                 {projects.map((project) => (
-                  <Link href={`/projects/${project.id}/documents`} key={project.id}>
+                  <Link
+                    href={`/projects/${project.id}/documents`}
+                    key={project.id}
+                    onClick={() => {
+                      if (projectSwitcherRef.current) projectSwitcherRef.current.open = false;
+                    }}
+                  >
                     <span className="project-monogram">
                       {project.name.slice(0, 1).toUpperCase()}
                     </span>
@@ -108,20 +155,44 @@ export function AppShell({
                 ))}
               </nav>
             </details>
+            <div
+              className="sidebar-branch"
+              title={`Текущая ветка: ${currentBranch || activeProject.defaultBranch}`}
+            >
+              <GitBranch aria-hidden size={16} />
+              <span>
+                <small>Текущая ветка</small>
+                <code>{currentBranch || activeProject.defaultBranch}</code>
+              </span>
+            </div>
             <nav className="sidebar-nav" aria-label="Разделы проекта">
               {projectNavigation.map((item) => {
                 const Icon = item.icon;
                 const href = `/projects/${activeProject.id}/${item.segment}`;
-                const active = pathname.startsWith(href);
+                const active =
+                  pathname.startsWith(href) ||
+                  (item.segment === "settings" &&
+                    pathname === `/projects/${activeProject.id}/members`);
+                const branch = currentBranch || activeProject.defaultBranch;
+                const target =
+                  item.segment === "documents" && currentBranch
+                    ? documentHref(activeProject.id, branch)
+                    : `${href}?${new URLSearchParams({ branch })}`;
+                const label =
+                  item.segment === "reviews"
+                    ? activeProject.provider === "gitlab"
+                      ? "MR"
+                      : "PR"
+                    : item.label;
                 return (
                   <Link
                     className={active ? "active" : ""}
-                    href={href}
+                    href={target}
                     key={item.segment}
-                    title={item.label}
+                    title={label}
                   >
                     <Icon aria-hidden size={18} />
-                    {item.label}
+                    {label}
                   </Link>
                 );
               })}
@@ -130,10 +201,16 @@ export function AppShell({
         ) : null}
 
         <div className="sidebar-spacer" />
-        {user.isInstanceOperator ? (
-          <Link className="sidebar-system" href="/settings/connections" title="Подключения">
-            <Cable aria-hidden size={18} />
-            Подключения
+        {!activeProject && user.isInstanceOperator ? (
+          <Link
+            className={
+              pathname.startsWith("/settings") ? "sidebar-system active" : "sidebar-system"
+            }
+            href="/settings/connections"
+            title="Настройки"
+          >
+            <Settings aria-hidden size={18} />
+            Настройки
           </Link>
         ) : null}
         <div className="sidebar-profile">

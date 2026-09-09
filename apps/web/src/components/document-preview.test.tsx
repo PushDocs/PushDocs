@@ -58,7 +58,12 @@ it("does not execute embedded code or forward script tags and event handlers", (
   expect(container.querySelector("img")?.getAttribute("onerror")).toBeNull();
   expect(container.querySelector("a")?.getAttribute("href")).not.toContain("javascript:");
   expect(screen.getByText("{1 + 2}")).toBeTruthy();
-  expect(screen.getByText(/Unknown · Превью/).title).toContain("Компонент Unknown");
+  expect(
+    screen
+      .getByText(/Unknown · Упрощённое превью/)
+      .closest(".wb-preview-component")
+      ?.getAttribute("title"),
+  ).toContain("Компонент Unknown");
 });
 
 it("recovers from incomplete MDX when the source is corrected", () => {
@@ -68,6 +73,25 @@ it("recovers from incomplete MDX when the source is corrected", () => {
   rerender(preview("# Исправлено"));
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.getByRole("heading", { name: "Исправлено" })).toBeTruthy();
+});
+it("maps a syntax error back to the source line after front matter and import normalization", () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const jump = vi.fn();
+  render(
+    <DocumentPreview
+      {...context}
+      onErrorLine={jump}
+      source={"---\ntitle: Example\n---\nimport Widget from 'widget';\n\n{broken)}"}
+    />,
+  );
+  expect(screen.getByRole("alert").textContent).toContain("строка 6");
+  fireEvent.click(screen.getByRole("button", { name: "Перейти к ошибке" }));
+  expect(jump).toHaveBeenCalledWith(6);
+});
+it("marks approximate custom components even when they contain visible children", () => {
+  render(preview("<Custom>Visible child</Custom>"));
+  expect(screen.getByRole("article").textContent).toContain("Custom · Упрощённое превью");
+  expect(screen.getByRole("article").textContent).toContain("Visible child");
 });
 
 it.each([

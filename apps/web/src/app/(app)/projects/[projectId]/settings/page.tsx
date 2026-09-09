@@ -2,6 +2,7 @@ import { GitBranch, LockKeyhole } from "lucide-react";
 import type { Metadata } from "next";
 import { ComponentCatalog } from "@/components/component-catalog";
 import { componentExamples } from "@/components/component-examples";
+import { SettingsNavigation } from "@/components/settings-navigation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Настройки проекта" };
@@ -34,6 +35,11 @@ export default async function ProjectSettingsPage({
           <h1>Настройки проекта</h1>
         </div>
       </header>
+      <SettingsNavigation
+        projectId={projectId}
+        active="project"
+        canManageConnections={user.isInstanceOperator}
+      />
       <section className="setting-sections">
         <article>
           <GitBranch aria-hidden />

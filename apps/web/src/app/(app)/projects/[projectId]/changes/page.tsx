@@ -1,9 +1,10 @@
-import { Status } from "@pushdocs/ui";
-import { AlertTriangle, FileImage, FileText, GitBranch, UserRound } from "lucide-react";
+import { AlertTriangle, FileText, GitBranch } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { resolveConflictAction, retryChangeSetSubmissionAction } from "@/app/actions";
+import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
+import { ProjectContext } from "@/components/project-context";
 import { SubmitChanges } from "@/components/submit-changes";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
@@ -37,6 +38,8 @@ export default async function ChangesPage({
   const access = await repository().requireProjectAccess(user.id, projectId, "project:read");
   const branch = (await searchParams).branch ?? project.defaultBranch;
   const drafts = await repository().listDraftFiles(projectId, branch);
+  const working = await repository().listWorkingFiles(projectId, branch);
+  const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
   const attachments = (await repository().listAttachments(projectId)).filter(
     (attachment) =>
       attachment.branch === branch &&
@@ -50,11 +53,18 @@ export default async function ChangesPage({
   const review = (await repository().listChangeRequests(projectId)).find(
     (item) => item.source_branch === branch && item.state === "open",
   );
-  const fileCount = drafts.length + attachments.length;
+  const fileCount = new Set([
+    ...drafts.map((file) => file.path),
+    ...attachments.map((file) => file.repository_path),
+  ]).size;
   const files = fileCountText(fileCount);
+  const workingByPath = new Map(working.files.map((file) => [file.path, file]));
+  const repositoryPaths = new Set(working.branch.repository_paths);
+  const attachmentPaths = new Set(attachments.map((file) => file.repository_path));
 
   return (
-    <div className="page">
+    <div className="page changes-page">
+      <ProjectContext projectId={projectId} branch={branch} />
       <SubmissionRefresh
         active={submission?.status === "queued" || submission?.status === "running"}
       />
@@ -78,6 +88,7 @@ export default async function ChangesPage({
         <GitOperation
           projectId={projectId}
           branch={branch}
+          reviewLabel={reviewLabel}
           disabled={changeSetStatus === "submitting"}
         />
         {review ? (
@@ -85,7 +96,7 @@ export default async function ChangesPage({
             className="pd-button pd-button--secondary"
             href={`/projects/${projectId}/reviews?review=${review.id}`}
           >
-            Открыть PR / MR: {review.title}
+            Открыть {reviewLabel}: {review.title}
           </Link>
         ) : null}
         <Link
@@ -104,6 +115,7 @@ export default async function ChangesPage({
               projectId={projectId}
               branch={branch}
               createReview
+              reviewLabel={reviewLabel}
               disabled={access.role === "reader"}
             />
           ) : null}
@@ -117,47 +129,42 @@ export default async function ChangesPage({
         </section>
       ) : (
         <div className="changes-layout">
-          <section className="changes-files">
-            <header>
-              <h2>Файлы</h2>
-              <Status tone={changeSet?.status === "conflicted" ? "warning" : "neutral"}>
-                {conflicts.length > 0 ? "Есть конфликт" : files}
-              </Status>
-            </header>
-            {drafts.map((draft) => (
-              <article className="change-file" key={draft.path}>
-                <span className="file-kind">
-                  {/\.(png|jpe?g|gif|webp|svg)$/i.test(draft.path) ? (
-                    <FileImage aria-hidden />
-                  ) : (
-                    <FileText aria-hidden />
-                  )}
-                </span>
-                <span>
-                  <strong>{draft.path}</strong>
-                  <small>
-                    <UserRound aria-hidden size={12} />
-                    {draft.author_name}
-                  </small>
-                </span>
-                <b className={`operation operation--${draft.operation}`}>
-                  {draft.operation === "add" ? "A" : draft.operation === "delete" ? "D" : "M"}
-                </b>
-              </article>
-            ))}
-            {attachments.map((attachment) => (
-              <article className="change-file" key={attachment.id}>
-                <span className="file-kind">
-                  <FileImage aria-hidden />
-                </span>
-                <span>
-                  <strong>{attachment.repository_path}</strong>
-                  <small>{attachment.original_name}</small>
-                </span>
-                <b className="operation operation--add">A</b>
-              </article>
-            ))}
-          </section>
+          <ChangeReview
+            revertContext={
+              access.role !== "reader" && working.changeSet?.status === "open"
+                ? {
+                    revision: working.changeSet.revision,
+                    ownerId: user.id,
+                    canEditConfig: access.role === "admin",
+                  }
+                : undefined
+            }
+            projectId={projectId}
+            branch={branch}
+            files={[
+              ...drafts
+                .filter((draft) => !attachmentPaths.has(draft.path))
+                .map((draft) => {
+                  const file = workingByPath.get(draft.path);
+                  return {
+                    path: draft.path,
+                    operation: draft.operation,
+                    before: file?.baseContent ?? "",
+                    after: draft.operation === "delete" ? "" : (file?.content ?? ""),
+                    binary: /\.(png|jpe?g|gif|webp|avif|svg|pdf|zip|mp4)$/i.test(draft.path),
+                    existed: repositoryPaths.has(draft.path),
+                  };
+                }),
+              ...attachments.map((file) => ({
+                path: file.repository_path,
+                operation: repositoryPaths.has(file.repository_path) ? "modify" : "add",
+                before: "",
+                after: "",
+                binary: true,
+                existed: repositoryPaths.has(file.repository_path),
+              })),
+            ]}
+          />
 
           <SubmitChanges
             projectId={projectId}
@@ -165,6 +172,7 @@ export default async function ChangesPage({
             branch={branch}
             defaultBranch={project.defaultBranch}
             reviewTitle={review?.title}
+            reviewLabel={reviewLabel}
             submitting={changeSetStatus === "submitting"}
             disabled={
               access.role === "reader" ||

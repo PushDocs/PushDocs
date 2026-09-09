@@ -1,5 +1,6 @@
 "use client";
 
+import { assetLocation } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import {
@@ -7,6 +8,7 @@ import {
   Bold,
   Check,
   ChevronDown,
+  Columns2,
   Eye,
   GitBranch,
   Heading2,
@@ -15,7 +17,7 @@ import {
   Puzzle,
   RefreshCw,
   Save,
-  Settings2,
+  Search,
   Table2,
   Trash2,
   Upload,
@@ -26,12 +28,25 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DiffViewer } from "./diff-viewer";
 import { DocumentPreview } from "./document-preview";
+import { DocumentTabs } from "./document-tabs";
+import {
+  clearDraft,
+  draftKey,
+  type LocalDraft,
+  readDraft,
+  WorkbenchRequestError,
+  writeDraft,
+} from "./draft-storage";
+import { uploadExplorerFiles } from "./explorer-upload";
 import { FileComments } from "./file-comments";
 import { ExplorerFileIcon, FileExplorer } from "./file-explorer";
-import { fileStatusLabel, mergeFileStatuses } from "./file-status";
+import { mergeFileStatuses } from "./file-status";
 import { MediaLibrary } from "./media-library";
 import { MetadataEditor } from "./metadata-editor";
-import { SourceEditor } from "./source-editor";
+import { rememberProjectBranch } from "./project-context";
+import { QuickOpen } from "./quick-open";
+import { planReplacement, ReplacePreview } from "./replace-preview";
+import { SourceEditor, type SourceEditorHandle } from "./source-editor";
 
 export interface WorkingFile {
   path: string;
@@ -45,6 +60,7 @@ export interface WorkingFile {
 export interface WorkbenchState {
   files: WorkingFile[];
   uploads?: Array<{ path: string }>;
+  ownerId?: string;
   revision: number;
   status: string;
   sha: string;
@@ -54,7 +70,18 @@ export interface WorkbenchState {
   role: string;
   changeSetId?: string;
 }
-type Dialog = "folder" | "new" | "branch" | "move" | "delete" | "template" | "media" | null;
+type Dialog =
+  | "replace"
+  | "search"
+  | "folder"
+  | "new"
+  | "branch"
+  | "rename"
+  | "move"
+  | "delete"
+  | "template"
+  | "media"
+  | null;
 
 export function Workbench({
   projectId,
@@ -95,8 +122,9 @@ export function Workbench({
     initial.files.find((file) => file.path === firstPath)?.content ?? "",
   );
   const saved = useRef(text);
+  const recoveryBase = useRef<string | undefined>(undefined);
   const latest = useRef(text);
-  const textArea = useRef<HTMLTextAreaElement>(null);
+  const textArea = useRef<SourceEditorHandle>(null);
   const modal = useRef<HTMLElement>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [branchQuery, setBranchQuery] = useState("");
@@ -106,12 +134,43 @@ export function Workbench({
   const [statusError, setStatusError] = useState("");
   const [remoteFiles, setRemoteFiles] = useState<Record<string, string | null>>({});
   const opening = useRef(0);
-  const [mode, setMode] = useState<"source" | "preview" | "diff" | "metadata">("source");
+  const [mode, setMode] = useState<"source" | "preview" | "diff" | "metadata" | "split">("source");
   const [dialog, setDialog] = useState<Dialog>(initialPanel ?? null);
+  const [replaceAttachment, setReplaceAttachment] = useState<string>();
   const [mediaBusy, setMediaBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
   const mediaBusyRef = useRef(false);
   mediaBusyRef.current = mediaBusy;
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveFailure, setSaveFailure] = useState<"network" | "permission" | "other" | null>(null);
+  const [recovery, setRecovery] = useState<LocalDraft>();
+  const [searchContent, setSearchContent] = useState(false);
+  const [jump, setJump] = useState<{ line: number; token: number }>();
+  const [closedTabs, setClosedTabs] = useState<string[]>([]);
+  const [explorerWidth, setExplorerWidth] = useState(280);
+  const draftId = draftKey(projectId, branch, selected, state.ownerId);
+  useEffect(() => {
+    rememberProjectBranch(projectId, branch);
+  }, [projectId, branch]);
+  useEffect(() => {
+    recoveryBase.current = undefined;
+    const draft = readDraft(draftId);
+    setRecovery(draft && draft.text !== saved.current ? draft : undefined);
+  }, [draftId]);
+  useEffect(() => {
+    try {
+      const width = Number(localStorage.getItem("pushdocs:explorer-width"));
+      if (width >= 200 && width <= 600) setExplorerWidth(width);
+    } catch {}
+  }, []);
+  function editText(value: string) {
+    if (!writeDraft(draftId, value, recoveryBase.current ?? saved.current))
+      setNotice(
+        "Не удалось сохранить резервную копию в браузере. Не закрывайте вкладку до сохранения на сервере.",
+      );
+    setText(value);
+  }
   const [needsMerge, setNeedsMerge] = useState(false);
   const blocked = useRef(false);
   const [component, setComponent] = useState(components[0]?.snippet ?? "");
@@ -134,7 +193,18 @@ export function Workbench({
       : ([...tabs].reverse().find((path) => /\.mdx?$/i.test(path)) ??
         state.files.find((file) => /\.mdx?$/i.test(file.path) && file.status !== "delete")?.path ??
         "");
-  const readOnly = projectReadOnly || !active;
+  const readOnly = projectReadOnly || !active || !!recovery || saveFailure === "permission";
+  const isArticle = !!active && /\.mdx?$/i.test(selected);
+  const readOnlyReason =
+    state.role === "reader"
+      ? "У вас роль читателя. Для редактирования нужна роль редактора."
+      : state.status !== "open"
+        ? "Редактирование станет доступно после завершения отправки или разрешения конфликтов."
+        : saveFailure === "permission"
+          ? "Нет прав на сохранение. Обратитесь к администратору проекта."
+          : !active && !uploaded && remoteFiles[selected] !== null
+            ? "Этот файл доступен только для чтения по настройкам проекта."
+            : "";
   const explorerPaths = useMemo(
     () => [
       ...new Set([
@@ -145,6 +215,29 @@ export function Workbench({
       ]),
     ],
     [state.repositoryPaths, state.files, state.uploads, branchStatuses],
+  );
+  const mediaLocation = useMemo(() => {
+    try {
+      const locale = state.files.find((file) => file.path === article)?.locale;
+      return assetLocation(
+        state.config,
+        !locale || locale === "default" ? state.config.defaultLocale : locale,
+        article,
+        "placeholder",
+      );
+    } catch {
+      return undefined;
+    }
+  }, [state.config, state.files, article]);
+  const mediaDirectory = mediaLocation?.path.slice(0, mediaLocation.path.lastIndexOf("/") + 1);
+  const attachmentUrl =
+    mediaLocation && mediaDirectory && selected.startsWith(mediaDirectory)
+      ? mediaLocation.url.slice(0, mediaLocation.url.lastIndexOf("/") + 1) +
+        selected.slice(mediaDirectory.length).split("/").map(encodeURIComponent).join("/")
+      : undefined;
+  const replacementPlan = useMemo(
+    () => planReplacement(text, replace, replacement),
+    [text, replace, replacement],
   );
   const dirty = text !== saved.current;
   const fileStatuses = useMemo(() => {
@@ -222,6 +315,7 @@ export function Workbench({
   useEffect(() => {
     try {
       sessionStorage.setItem(sessionKey, JSON.stringify({ tabs, selected }));
+      window.dispatchEvent(new Event("pushdocs:context"));
     } catch {
       /* Storage may be disabled by the browser. */
     }
@@ -284,7 +378,7 @@ export function Workbench({
         body: JSON.stringify({ branch, ...payload }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
+      if (!response.ok) throw new WorkbenchRequestError(result.error, response.status);
       return result;
     },
     [branch, endpoint],
@@ -295,6 +389,7 @@ export function Workbench({
     if (blocked.current || inFlight.current || readOnly || !selected) return false;
     inFlight.current = true;
     setBusy(true);
+    setSaving(true);
     const snapshot = latest.current;
     try {
       await command({
@@ -304,18 +399,39 @@ export function Workbench({
       });
       saved.current = snapshot;
       await load();
+      recoveryBase.current = undefined;
+      if (latest.current === snapshot) clearDraft(draftId);
+      else writeDraft(draftId, latest.current, snapshot);
       setError("");
+      setSaveFailure(null);
       return latest.current === snapshot;
     } catch (cause) {
-      blocked.current = true;
-      setNeedsMerge(true);
-      setError(cause instanceof Error ? cause.message : "Ошибка сохранения");
+      const status = cause instanceof WorkbenchRequestError ? cause.status : 0;
+      if (status === 409) {
+        blocked.current = true;
+        setNeedsMerge(true);
+      } else
+        setSaveFailure(
+          status === 401 || status === 403
+            ? "permission"
+            : status === 0 || status >= 500
+              ? "network"
+              : "other",
+        );
+      setError(
+        status === 0 || status >= 500
+          ? "Нет связи с сервером. Ваш текст остаётся в редакторе."
+          : cause instanceof Error
+            ? cause.message
+            : "Ошибка сохранения",
+      );
       return false;
     } finally {
       inFlight.current = false;
       setBusy(false);
+      setSaving(false);
     }
-  }, [command, load, readOnly, selected]);
+  }, [command, load, readOnly, selected, draftId]);
 
   useEffect(() => {
     if (text === saved.current || !dirty || error || busy) return;
@@ -331,6 +447,21 @@ export function Workbench({
     return () => window.removeEventListener("beforeunload", prevent);
   }, []);
 
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))
+      ) {
+        event.preventDefault();
+        if (dialog && dialog !== "search") return;
+        setSearchContent(event.key.toLowerCase() === "f");
+        setDialog("search");
+      }
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  }, [dialog]);
   useEffect(() => {
     const timer = setInterval(() => {
       if (inFlight.current || latest.current !== saved.current) return;
@@ -428,7 +559,14 @@ export function Workbench({
         "button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled)",
       ) ?? []),
     ];
-    if (dialog === "new" || dialog === "folder") {
+    if (dialog === "search") {
+      modal.current?.querySelector<HTMLInputElement>('input[aria-label="Поиск файлов"]')?.focus();
+    } else if (
+      dialog === "new" ||
+      dialog === "folder" ||
+      dialog === "rename" ||
+      dialog === "move"
+    ) {
       const input = modal.current?.querySelector<HTMLInputElement>('input[name="path"]');
       input?.focus();
       const value = input?.value ?? "";
@@ -457,7 +595,7 @@ export function Workbench({
   }, [dialog]);
 
   async function openFile(filePath: string) {
-    if (!(await save())) return;
+    if (!(await save())) return false;
     const requestId = ++opening.current;
     const isUpload = stateRef.current.uploads?.some((item) => item.path === filePath);
     const file = stateRef.current.files.find(
@@ -496,16 +634,23 @@ export function Workbench({
     latest.current = saved.current;
     setText(saved.current);
     setSelected(filePath);
+    setJump(undefined);
+    setSaveFailure(null);
+    setError("");
     setTabs((current) => (current.includes(filePath) ? current : [...current, filePath]));
     window.history.replaceState(
       null,
       "",
       `?branch=${encodeURIComponent(branch)}&path=${encodeURIComponent(filePath)}`,
     );
+    return true;
   }
 
   async function closeFile(filePath: string) {
     if (!(await save())) return;
+    setClosedTabs((current) =>
+      [...current.filter((path) => path !== filePath), filePath].slice(-20),
+    );
     const remaining = tabs.filter((path) => path !== filePath);
     if (filePath === selected) {
       const next = remaining.at(-1);
@@ -543,13 +688,17 @@ export function Workbench({
   }
 
   function insert(value: string, wrap?: string) {
+    if (textArea.current?.replaceSelection) {
+      textArea.current.replaceSelection(value, wrap);
+      return;
+    }
     const displayed = text.replace(/\r\n?/g, "\n");
     const start = textArea.current?.selectionStart ?? displayed.length;
     const end = textArea.current?.selectionEnd ?? start;
     const content = (
       wrap ? `${value}${displayed.slice(start, end) || "текст"}${wrap}` : value
     ).replace(/\r\n?/g, "\n");
-    setText(applyEditorInput(text, displayed.slice(0, start) + content + displayed.slice(end)));
+    editText(applyEditorInput(text, displayed.slice(0, start) + content + displayed.slice(end)));
     requestAnimationFrame(() => {
       textArea.current?.focus();
       textArea.current?.setSelectionRange(start + content.length, start + content.length);
@@ -559,7 +708,13 @@ export function Workbench({
   async function submitDialog(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const path = String(data.get("path") ?? "");
+    const inputPath = String(data.get("path") ?? "");
+    const path =
+      dialog === "rename" ? [...selected.split("/").slice(0, -1), inputPath].join("/") : inputPath;
+    if (dialog === "rename" && /[/\\]/.test(inputPath)) {
+      setError("Введите имя файла без пути к папке.");
+      return;
+    }
     if (dialog === "branch") {
       if (!(await save())) return;
       setBusy(true);
@@ -593,7 +748,11 @@ export function Workbench({
         },
         path,
       );
-    } else if (dialog === "move") {
+    } else if (dialog === "move" || dialog === "rename") {
+      if (path === selected) {
+        setDialog(null);
+        return;
+      }
       await mutate(
         {
           action: "files",
@@ -627,7 +786,10 @@ export function Workbench({
   }
 
   return (
-    <div className="workbench">
+    <div
+      className="workbench"
+      style={{ "--explorer-width": `${explorerWidth}px` } as React.CSSProperties}
+    >
       <header className="wb-header">
         <div>
           <small>{projectName}</small>
@@ -702,11 +864,13 @@ export function Workbench({
             </div>
           </details>
           <Link
-            href={`/projects/${projectId}/preview?branch=${encodeURIComponent(branch)}`}
+            href={`/projects/${projectId}/preview?${new URLSearchParams({ branch, path: selected })}`}
             onClick={async (event) => {
               event.preventDefault();
               if (await save())
-                router.push(`/projects/${projectId}/preview?branch=${encodeURIComponent(branch)}`);
+                router.push(
+                  `/projects/${projectId}/preview?${new URLSearchParams({ branch, path: selected })}`,
+                );
             }}
           >
             <Eye size={16} />
@@ -728,22 +892,46 @@ export function Workbench({
       {error ? (
         <div className="wb-alert" role="alert">
           {error}
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                await load();
-                setMode("diff");
-                setNotice(
-                  "Справа ваш текст, слева текущая сохранённая версия. Объедините правки вручную и подтвердите сохранение.",
-                );
-              } catch (cause) {
-                setError(String(cause));
-              }
-            }}
-          >
-            Перечитать состояние
-          </button>
+          {saveFailure !== "permission" ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                try {
+                  const next = await load();
+                  if (needsMerge) {
+                    setMode("diff");
+                    setNotice("Сравните сохранённую версию и ваш текст, затем сохраните итог.");
+                    return;
+                  }
+                  const current = next.files.find((file) => file.path === selected);
+                  if (
+                    saveFailure &&
+                    current &&
+                    current.content !== saved.current &&
+                    current.content !== latest.current
+                  ) {
+                    blocked.current = true;
+                    setNeedsMerge(true);
+                    setMode("diff");
+                    return;
+                  }
+                  setError("");
+                  setSaveFailure(null);
+                  if (current?.content === latest.current) {
+                    saved.current = latest.current;
+                    clearDraft(draftId);
+                  } else if (saveFailure) await save();
+                } catch {
+                  setError(
+                    "Нет связи с сервером. Повторите попытку после восстановления соединения.",
+                  );
+                }
+              }}
+            >
+              {saveFailure ? "Повторить сохранение" : "Перечитать состояние"}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {needsMerge ? (
@@ -770,9 +958,66 @@ export function Workbench({
           </button>
         </div>
       ) : null}
+      {recovery ? (
+        <div className="wb-notice" role="status">
+          В браузере остался несохранённый текст этого файла.
+          <button
+            type="button"
+            onClick={() => {
+              const copy = recovery;
+              recoveryBase.current = copy.base;
+              setRecovery(undefined);
+              editText(copy.text);
+              if (copy.base !== saved.current) {
+                blocked.current = true;
+                setNeedsMerge(true);
+                setMode("diff");
+              }
+            }}
+          >
+            Восстановить текст
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              clearDraft(draftId);
+              setRecovery(undefined);
+            }}
+          >
+            Удалить резервную копию
+          </button>
+        </div>
+      ) : null}
       <div className="wb-layout">
         <aside className="wb-tree">
+          <button
+            className="wb-quick-open"
+            type="button"
+            onClick={() => {
+              setSearchContent(false);
+              setDialog("search");
+            }}
+          >
+            <Search size={15} /> Найти файл <kbd>⌘/Ctrl P</kbd>
+          </button>
           <FileExplorer
+            canEdit={(path) =>
+              state.files.some((file) => file.path === path && file.status !== "delete") &&
+              !state.uploads?.some((file) => file.path === path)
+            }
+            onAction={async (action, path) => {
+              if (action === "copy") {
+                try {
+                  await navigator.clipboard.writeText(path);
+                  setNotice("Путь скопирован");
+                } catch {
+                  setNotice(`Путь файла: ${path}`);
+                }
+                return;
+              }
+              if (await openFile(path)) setDialog(action);
+            }}
+            storageKey={`pushdocs:folders:${projectId}:${branch}`}
             paths={explorerPaths}
             revealDirectory={revealDirectory}
             selected={selected}
@@ -780,6 +1025,37 @@ export function Workbench({
             statusError={statusError}
             readOnly={projectReadOnly}
             busy={busy}
+            uploadProgress={uploadProgress}
+            onUpload={async (files, directory) => {
+              if (projectReadOnly || inFlight.current || busy || !(await save())) return;
+              if (inFlight.current) return;
+              inFlight.current = true;
+              setBusy(true);
+              try {
+                const result = await uploadExplorerFiles({
+                  files,
+                  directory,
+                  projectId,
+                  branch,
+                  reload: load,
+                  onProgress: setUploadProgress,
+                });
+                if (result.uploaded.length) {
+                  setRevealDirectory(directory);
+                }
+                setNotice(
+                  [`Загружено файлов: ${result.uploaded.length}`, ...result.errors].join(". "),
+                );
+              } catch (cause) {
+                setNotice(
+                  cause instanceof Error ? cause.message : "Не удалось обновить список файлов",
+                );
+              } finally {
+                inFlight.current = false;
+                setBusy(false);
+                setUploadProgress("");
+              }
+            }}
             onOpen={(path) => void openFile(path)}
             onCreate={(kind, directory) => {
               setCreateDirectory(directory);
@@ -787,7 +1063,10 @@ export function Workbench({
             }}
             onRefresh={() => void mutate({ action: "sync" })}
             onMedia={async () => {
-              if (await save()) setDialog("media");
+              if (await save()) {
+                setReplaceAttachment(undefined);
+                setDialog("media");
+              }
             }}
           />
           {state.config.templates.length ? (
@@ -802,77 +1081,87 @@ export function Workbench({
               Создать по шаблону
             </button>
           ) : null}
-          <details className="wb-settings">
-            <summary>
-              <Settings2 size={15} /> Настройки файлов <ChevronDown size={14} />
-            </summary>
-
-            {state.role === "admin" ? (
-              <button
-                type="button"
-                disabled={projectReadOnly || busy}
-                onClick={async () => {
-                  const path = ".pushdocs/config.json";
-                  if (stateRef.current.files.some((file) => file.path === path))
-                    await openFile(path);
-                  else
-                    await mutate(
-                      {
-                        action: "files",
-                        files: [
-                          {
-                            path,
-                            content: `${JSON.stringify(state.config, null, 2)}\n`,
-                            createOnly: true,
-                          },
-                        ],
-                      },
-                      path,
-                    );
-                }}
-              >
-                {state.files.some((file) => file.path === ".pushdocs/config.json")
-                  ? "Открыть конфигурацию проекта"
-                  : "Создать конфигурацию проекта"}
-              </button>
-            ) : null}
-          </details>
         </aside>
+        <hr
+          className="wb-resizer"
+          aria-label="Ширина проводника"
+          aria-orientation="vertical"
+          aria-valuemin={200}
+          aria-valuemax={600}
+          aria-valuenow={explorerWidth}
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const width = Math.max(
+              200,
+              Math.min(600, explorerWidth + (event.key === "ArrowRight" ? 20 : -20)),
+            );
+            setExplorerWidth(width);
+            try {
+              localStorage.setItem("pushdocs:explorer-width", String(width));
+            } catch {}
+          }}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+            const left = event.currentTarget.parentElement?.getBoundingClientRect().left ?? 0;
+            const width = Math.max(200, Math.min(600, event.clientX - left));
+            setExplorerWidth(width);
+            try {
+              localStorage.setItem("pushdocs:explorer-width", String(width));
+            } catch {}
+          }}
+          onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+        />
         <section className={`wb-editor${commentsOpen && selected ? " wb-editor--discussing" : ""}`}>
           <div className="wb-document">
-            <div className="wb-tabs" role="tablist" aria-label="Открытые документы">
-              {tabs.map((tab) => (
-                <div
-                  className="wb-tab-item"
-                  key={tab}
-                  data-active={tab === selected}
-                  data-status={fileStatuses.get(tab)}
-                  title={`${tab}${fileStatusLabel[fileStatuses.get(tab) ?? ""] ? ` · ${fileStatusLabel[fileStatuses.get(tab) ?? ""]}` : ""}`}
-                >
+            <DocumentTabs
+              tabs={tabs}
+              selected={selected}
+              statuses={fileStatuses}
+              onOpen={(path) => void openFile(path)}
+              onClose={(path) => void closeFile(path)}
+              onReorder={setTabs}
+            >
+              <details className="wb-disclosure wb-tabs-menu">
+                <summary aria-label="Действия с вкладками">
+                  <MoreHorizontal size={16} />
+                </summary>
+                <div className="wb-popover">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={tab === selected}
-                    onClick={() => void openFile(tab)}
+                    disabled={tabs.length < 2}
+                    onClick={() => {
+                      setClosedTabs((current) =>
+                        [...current, ...tabs.filter((path) => path !== selected)].slice(-20),
+                      );
+                      setTabs(selected ? [selected] : []);
+                    }}
                   >
-                    <ExplorerFileIcon path={tab} /> {tab.split("/").at(-1)}
+                    Закрыть остальные вкладки
                   </button>
                   <button
                     type="button"
-                    className="wb-tab-close"
-                    aria-label={`Закрыть ${tab}`}
-                    onClick={() => void closeFile(tab)}
+                    disabled={!closedTabs.length}
+                    onClick={async () => {
+                      const path = closedTabs.at(-1);
+                      if (path && (await openFile(path)))
+                        setClosedTabs((current) => current.slice(0, -1));
+                    }}
                   >
-                    <X size={13} aria-hidden />
+                    Вернуть закрытую вкладку
                   </button>
                 </div>
-              ))}
-            </div>
+              </details>
+            </DocumentTabs>
             {selected ? (
               <>
                 <div className="wb-filebar">
                   <div className="wb-document-heading">
-                    <code>{selected.split("/").join(" / ")}</code>
+                    <code title={selected}>{selected.split("/").join(" / ")}</code>
                   </div>
                   <div className="wb-save-info">
                     <span
@@ -880,11 +1169,11 @@ export function Workbench({
                       title="Черновик сохраняется в PushDocs. Для отправки в Git откройте «Изменения»."
                     >
                       {active && !busy && !dirty && !needsMerge ? <Check size={14} /> : null}
-                      {!active
+                      {state.role === "reader" || !active || saveFailure === "permission"
                         ? "Только чтение"
                         : needsMerge
                           ? "Автосохранение остановлено"
-                          : busy
+                          : saving
                             ? "Сохраняем…"
                             : dirty
                               ? "Есть изменения"
@@ -901,19 +1190,35 @@ export function Workbench({
                         ["preview", "Просмотр"],
                         ["diff", "Изменения"],
                       ] as const
-                    ).map(([value, label]) => (
-                      <button
-                        type="button"
-                        key={value}
-                        aria-selected={mode === value}
-                        role="tab"
-                        onClick={() => setMode(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                    )
+                      .filter(([value]) => isArticle || value === "source" || value === "diff")
+                      .map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          aria-selected={mode === value}
+                          role="tab"
+                          onClick={() => {
+                            setJump(undefined);
+                            setMode(value);
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
                   </div>
                   <div className="wb-document-actions">
+                    {isArticle ? (
+                      <button
+                        type="button"
+                        aria-pressed={mode === "split"}
+                        aria-label="Файл и просмотр рядом"
+                        title="Файл и просмотр рядом"
+                        onClick={() => setMode(mode === "split" ? "source" : "split")}
+                      >
+                        <Columns2 size={16} />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       aria-expanded={commentsOpen}
@@ -950,7 +1255,9 @@ export function Workbench({
                     </details>
                   </div>
                 </div>
-                {mode === "source" && active && active.status !== "delete" ? (
+                {(mode === "source" || mode === "split") &&
+                isArticle &&
+                active?.status !== "delete" ? (
                   <div className="wb-format" role="toolbar" aria-label="Форматирование документа">
                     <button
                       type="button"
@@ -1023,14 +1330,22 @@ export function Workbench({
                       type="button"
                       disabled={readOnly || busy}
                       onClick={async () => {
-                        if (await save()) setDialog("media");
+                        if (await save()) {
+                          setReplaceAttachment(undefined);
+                          setDialog("media");
+                        }
                       }}
                     >
                       <Upload size={15} /> Вставить файл
                     </button>
                   </div>
                 ) : null}
-                <div className="wb-document-body">
+                {readOnlyReason ? (
+                  <div className="wb-readonly-note" role="status">
+                    {readOnlyReason}
+                  </div>
+                ) : null}
+                <div className={`wb-document-body${mode === "split" ? " wb-split-view" : ""}`}>
                   {active?.status === "delete" ? (
                     <>
                       <div className="wb-notice">
@@ -1048,7 +1363,12 @@ export function Workbench({
                         </button>
                       </div>
                       {mode === "diff" && (
-                        <DiffViewer key={selected} before={active.baseContent} after="" />
+                        <DiffViewer
+                          path={selected}
+                          key={selected}
+                          before={active.baseContent}
+                          after=""
+                        />
                       )}
                     </>
                   ) : !active && branchStatuses[selected] === "delete" ? (
@@ -1074,28 +1394,80 @@ export function Workbench({
                       >
                         Скачать файл
                       </a>
+                      {attachmentUrl ? (
+                        <div className="wb-actions">
+                          <button
+                            type="button"
+                            disabled={projectReadOnly}
+                            onClick={() => {
+                              setReplaceAttachment(selected);
+                              setDialog("media");
+                            }}
+                          >
+                            Заменить файл
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(attachmentUrl);
+                                setNotice("Ссылка скопирована");
+                              } catch {
+                                setNotice(attachmentUrl);
+                              }
+                            }}
+                          >
+                            Копировать ссылку
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
-                  ) : mode === "source" ? (
-                    <SourceEditor
-                      inputRef={textArea}
-                      value={text}
-                      readOnly={readOnly}
-                      onChange={setText}
-                      onSave={() => {
-                        void save();
-                      }}
-                      onIndent={() => insert("  ")}
-                    />
+                  ) : mode === "source" || mode === "split" ? (
+                    <>
+                      <SourceEditor
+                        path={selected}
+                        key={selected}
+                        storageKey={`pushdocs:position:${projectId}:${branch}:${selected}`}
+                        jump={jump}
+                        inputRef={textArea}
+                        value={text}
+                        readOnly={readOnly}
+                        onChange={editText}
+                        onSave={() => {
+                          void save();
+                        }}
+                        onIndent={() => insert("  ")}
+                      />
+                      {mode === "split" ? (
+                        <DocumentPreview
+                          source={text}
+                          projectId={projectId}
+                          branch={branch}
+                          path={selected}
+                          repositoryPaths={explorerPaths}
+                          locale={active?.locale ?? state.config.defaultLocale}
+                          media={state.config.media}
+                          onErrorLine={(line) => {
+                            setMode("source");
+                            setJump({ line, token: Date.now() });
+                          }}
+                        />
+                      ) : null}
+                    </>
                   ) : mode === "metadata" ? (
                     <MetadataEditor
                       value={text}
                       fields={state.config.metadata}
                       path={selected}
                       readOnly={readOnly || !/\.mdx?$/i.test(selected)}
-                      onChange={setText}
+                      onChange={editText}
                     />
                   ) : mode === "preview" ? (
                     <DocumentPreview
+                      onErrorLine={(line) => {
+                        setMode("source");
+                        setJump({ line, token: Date.now() });
+                      }}
                       source={text}
                       projectId={projectId}
                       branch={branch}
@@ -1106,6 +1478,7 @@ export function Workbench({
                     />
                   ) : (
                     <DiffViewer
+                      path={selected}
                       key={selected}
                       before={
                         (needsMerge ? active?.content : active?.baseContent) ??
@@ -1117,30 +1490,36 @@ export function Workbench({
                     />
                   )}
                 </div>
-                <details className="wb-replace">
+                <details className="wb-replace" hidden={!active || active.status === "delete"}>
                   <summary>Найти и заменить в документе</summary>
                   <div>
                     <input
                       aria-label="Найти текст"
+                      placeholder="Найти текст"
                       value={replace}
                       onChange={(event) => setReplace(event.target.value)}
                     />
                     <input
                       aria-label="Заменить на"
+                      placeholder="Заменить на"
                       value={replacement}
                       onChange={(event) => setReplacement(event.target.value)}
                     />
                     <button
                       type="button"
-                      disabled={readOnly || !replace}
-                      onClick={() => {
-                        setText(text.split(replace).join(replacement));
-                        setMode("diff");
-                      }}
+                      disabled={
+                        readOnly ||
+                        !replacementPlan.count ||
+                        replacementPlan.before === replacementPlan.after
+                      }
+                      onClick={() => setDialog("replace")}
                     >
-                      Заменить и показать изменения
+                      Просмотреть замены
                     </button>
                   </div>
+                  {replace ? (
+                    <small role="status">Совпадений: {replacementPlan.count}</small>
+                  ) : null}
                 </details>
               </>
             ) : (
@@ -1172,20 +1551,23 @@ export function Workbench({
       {dialog ? (
         <div className="wb-modal-backdrop">
           <section
-            className={`wb-modal${dialog === "media" ? " wb-media-modal" : ""}`}
+            className={`wb-modal${dialog === "media" ? " wb-media-modal" : dialog === "replace" ? " wb-replacement-modal" : ""}`}
             ref={modal}
             role="dialog"
             aria-modal="true"
-            aria-label="Операция с проектом"
+            aria-label={dialog === "replace" ? "Предпросмотр замены" : "Операция с проектом"}
           >
             <header>
               <h2>
                 {
                   {
+                    replace: "Предпросмотр замены",
+                    search: "Поиск файлов",
                     new: "Новый файл",
                     folder: "Новая папка",
                     branch: "Новая ветка",
-                    move: "Перенести документ",
+                    move: "Переместить файл",
+                    rename: "Переименовать файл",
                     delete: "Удалить документ",
                     media: "Вложения",
                     template: "Создать по шаблону",
@@ -1196,12 +1578,45 @@ export function Workbench({
                 Закрыть
               </button>
             </header>
-            {dialog === "media" ? (
+            {dialog === "replace" ? (
+              <ReplacePreview
+                path={selected}
+                key={selected}
+                source={text}
+                find={replace}
+                replacement={replacement}
+                readOnly={readOnly}
+                onCancel={() => setDialog(null)}
+                onApply={(before, after) => {
+                  if (readOnly || latest.current !== before) return;
+                  editText(after);
+                  setMode("source");
+                  setDialog(null);
+                }}
+              />
+            ) : dialog === "search" ? (
+              <QuickOpen
+                key={String(searchContent)}
+                paths={explorerPaths}
+                files={state.files.map((file) =>
+                  file.path === selected ? { ...file, content: text } : file,
+                )}
+                initialContent={searchContent}
+                onOpen={async (path, line) => {
+                  if (await openFile(path)) {
+                    setDialog(null);
+                    if (line) setJump({ line, token: Date.now() });
+                  }
+                }}
+              />
+            ) : dialog === "media" ? (
               <MediaLibrary
                 projectId={projectId}
                 branch={branch}
                 document={article}
                 onBusyChange={setMediaBusy}
+                replacePath={replaceAttachment}
+                initialQuery={replaceAttachment?.split("/").at(-1)}
                 onChanged={async (path) => {
                   await load();
                   if (path) setRevealDirectory(path.slice(0, path.lastIndexOf("/")));
@@ -1236,22 +1651,27 @@ export function Workbench({
                 {dialog === "new" ||
                 dialog === "folder" ||
                 dialog === "branch" ||
-                dialog === "move" ? (
+                dialog === "move" ||
+                dialog === "rename" ? (
                   <label>
                     {dialog === "branch"
                       ? "Имя ветки"
                       : dialog === "folder"
                         ? "Путь папки"
-                        : "Путь файла"}
+                        : dialog === "rename"
+                          ? "Имя файла"
+                          : "Путь файла"}
                     <input
                       name="path"
                       required
                       defaultValue={
                         dialog === "new" || dialog === "folder"
                           ? `${createDirectory ? `${createDirectory}/` : ""}${dialog === "new" ? "new-file.mdx" : "new-folder"}`
-                          : dialog === "move"
-                            ? selected
-                            : "docs/"
+                          : dialog === "rename"
+                            ? selected.split("/").at(-1)
+                            : dialog === "move"
+                              ? selected
+                              : "docs/"
                       }
                     />
                   </label>
@@ -1270,7 +1690,7 @@ export function Workbench({
                     Основа: {branch}, {state.sha.slice(0, 8)}. Черновики остаются в исходной ветке.
                   </p>
                 ) : null}
-                {dialog === "move" ? (
+                {dialog === "move" || dialog === "rename" ? (
                   <p>
                     Перенос добавит новый путь и удалит прежний одним коммитом. Проверьте ссылки на
                     старый путь через поиск.

@@ -1,16 +1,21 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { previewPageUrl } from "./preview-page-url";
 export function SitePreview({
   projectId,
   branch,
   revision,
   canBuild,
+  path,
+  articleRoute,
 }: {
   projectId: string;
   branch: string;
   revision: number;
   canBuild: boolean;
+  path?: string;
+  articleRoute?: string;
 }) {
   const [state, setState] = useState<{
     configured: boolean;
@@ -96,7 +101,7 @@ export function SitePreview({
         </div>
         <Link
           className="pd-button pd-button--secondary"
-          href={`/projects/${projectId}/documents?${new URLSearchParams({ branch })}`}
+          href={`/projects/${projectId}/documents?${new URLSearchParams({ branch, ...(path ? { path } : {}) })}`}
         >
           Вернуться в редактор
         </Link>
@@ -146,11 +151,11 @@ export function SitePreview({
           {build.url ? (
             <a
               className="pd-button pd-button--primary"
-              href={build.url}
+              href={previewPageUrl(build.url, articleRoute)}
               target="_blank"
               rel="noreferrer"
             >
-              Открыть сайт
+              {articleRoute ? "Открыть статью на сайте" : "Открыть сайт"}
             </a>
           ) : null}
           <details>
