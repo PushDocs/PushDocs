@@ -533,11 +533,34 @@ export class PushDocsRepository {
       .execute();
   }
 
-  async enqueueBranchSync(projectId: string, branch: string): Promise<void> {
-    await this.database
+  async enqueueBranchSync(projectId: string, branch: string): Promise<string> {
+    const job = await this.database
       .insertInto("jobs")
       .values({ kind: "branch.sync", payload: { branch, projectId } })
-      .execute();
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    return job.id;
+  }
+
+  async enqueueReviewCreation(projectId: string, branch: string, title: string, userId: string) {
+    const job = await this.database
+      .insertInto("jobs")
+      .values({
+        kind: "review.create",
+        payload: { projectId, branch: normalizeBranchRef(branch), title, userId },
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    return job.id;
+  }
+
+  async getProjectJob(projectId: string, jobId: string) {
+    return this.database
+      .selectFrom("jobs")
+      .select(["status", "last_error"])
+      .where("id", "=", jobId)
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .executeTakeFirst();
   }
 
   async listBranches(projectId: string) {
@@ -547,6 +570,16 @@ export class PushDocsRepository {
       .where("project_id", "=", projectId)
       .orderBy("updated_at", "desc")
       .execute();
+  }
+
+  async hasImportedBranch(branchId: string): Promise<boolean> {
+    const event = await this.database
+      .selectFrom("domain_events")
+      .select("id")
+      .where("entity_id", "=", branchId)
+      .where("type", "=", "branch.synchronized")
+      .executeTakeFirst();
+    return Boolean(event);
   }
 
   async getBranchState(projectId: string, branchName: string) {
@@ -730,7 +763,7 @@ export class PushDocsRepository {
       .insertInto("project_components")
       .values(
         names.map((name) => ({
-          description: "Найден при импорте MDX. Настройте шаблон перед использованием.",
+          description: "",
           label: name,
           name,
           project_id: projectId,
@@ -1351,6 +1384,7 @@ export class PushDocsRepository {
   async queueChangeSetSubmission(input: {
     changeSetId: string;
     createReview: boolean;
+    newBranch?: string;
     message: string;
     projectId: string;
     userId: string;
@@ -1364,9 +1398,9 @@ export class PushDocsRepository {
         .where("project_id", "=", input.projectId)
         .executeTakeFirst();
       if (!target) throw new NotFoundError("Change set not found");
-      await transaction
+      const sourceBranch = await transaction
         .selectFrom("branch_contexts")
-        .select("id")
+        .selectAll()
         .where("id", "=", target.branch_context_id)
         .forUpdate()
         .executeTakeFirstOrThrow();
@@ -1389,6 +1423,48 @@ export class PushDocsRepository {
       if (changeSet.status !== "open") {
         throw new RevisionConflictError("Change set cannot be submitted in its current state");
       }
+      if (input.newBranch) {
+        if (!input.createReview) throw new Error("Новая ветка требует создания PR / MR");
+        const name = normalizeBranchRef(input.newBranch);
+        const existing = await transaction
+          .selectFrom("branch_contexts")
+          .select("id")
+          .where("project_id", "=", input.projectId)
+          .where("full_ref", "=", name)
+          .executeTakeFirst();
+        if (existing) throw new RevisionConflictError("Ветка уже существует. Выберите новое имя.");
+        const destination = await transaction
+          .insertInto("branch_contexts")
+          .values({
+            project_id: input.projectId,
+            full_ref: name,
+            base_commit_sha: sourceBranch.head_commit_sha,
+            head_commit_sha: sourceBranch.head_commit_sha,
+            repository_paths: JSON.stringify(sourceBranch.repository_paths),
+          })
+          .returning("id")
+          .executeTakeFirstOrThrow();
+        const documents = await transaction
+          .selectFrom("imported_documents")
+          .selectAll()
+          .where("branch_context_id", "=", sourceBranch.id)
+          .execute();
+        for (let offset = 0; offset < documents.length; offset += 250) {
+          await transaction
+            .insertInto("imported_documents")
+            .values(
+              documents
+                .slice(offset, offset + 250)
+                .map((document) => ({ ...document, branch_context_id: destination.id })),
+            )
+            .execute();
+        }
+        await transaction
+          .updateTable("change_sets")
+          .set({ branch_context_id: destination.id })
+          .where("id", "=", changeSet.id)
+          .execute();
+      }
       await transaction
         .updateTable("change_sets")
         .set({ status: "submitting", updated_at: new Date() })
@@ -1404,6 +1480,8 @@ export class PushDocsRepository {
             operationId: randomUUID(),
             createdAt: new Date().toISOString(),
             createReview: input.createReview,
+            newBranch: input.newBranch,
+            branchBaseSha: sourceBranch.head_commit_sha,
             message: input.message,
             projectId: input.projectId,
           },
@@ -1694,9 +1772,64 @@ export class PushDocsRepository {
         .where("project_id", "=", input.projectId)
         .returning(["branch_context_id", "revision"])
         .executeTakeFirstOrThrow();
+      const previousBranch = await transaction
+        .selectFrom("branch_contexts")
+        .selectAll()
+        .where("id", "=", changeSet.branch_context_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const paths = new Set(previousBranch.repository_paths);
+      const drafts = await transaction
+        .selectFrom("draft_files")
+        .selectAll()
+        .where("change_set_id", "=", input.changeSetId)
+        .execute();
+      for (const draft of drafts) {
+        if (draft.content === null) {
+          paths.delete(draft.path);
+          await transaction
+            .deleteFrom("imported_documents")
+            .where("branch_context_id", "=", changeSet.branch_context_id)
+            .where("path", "=", draft.path)
+            .execute();
+        } else {
+          paths.add(draft.path);
+          const values = {
+            content: draft.content,
+            content_hash: createHash("sha256").update(draft.content).digest("hex"),
+            title: titleFromDraft(draft.content, draft.path),
+            updated_at: new Date(),
+          };
+          await transaction
+            .insertInto("imported_documents")
+            .values({
+              ...values,
+              branch_context_id: changeSet.branch_context_id,
+              project_id: input.projectId,
+              path: draft.path,
+              locale: draft.path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
+              version: "current",
+            })
+            .onConflict((conflict) =>
+              conflict.columns(["branch_context_id", "path"]).doUpdateSet(values),
+            )
+            .execute();
+        }
+      }
+      const attachments = await transaction
+        .selectFrom("attachments")
+        .select("repository_path")
+        .where("change_set_id", "=", input.changeSetId)
+        .where("status", "=", "ready")
+        .execute();
+      for (const attachment of attachments) paths.add(attachment.repository_path);
       const branch = await transaction
         .updateTable("branch_contexts")
-        .set({ head_commit_sha: input.commitSha, updated_at: new Date() })
+        .set({
+          head_commit_sha: input.commitSha,
+          repository_paths: JSON.stringify([...paths]),
+          updated_at: new Date(),
+        })
         .where("id", "=", changeSet.branch_context_id)
         .returning("full_ref")
         .executeTakeFirstOrThrow();
@@ -1760,6 +1893,25 @@ export class PushDocsRepository {
   ): Promise<void> {
     await this.requireProjectAccess(userId, projectId, "branch:push");
     await this.database.transaction().execute(async (tx) => {
+      const context = await tx
+        .selectFrom("change_sets")
+        .select("branch_context_id")
+        .where("id", "=", changeSetId)
+        .where("project_id", "=", projectId)
+        .executeTakeFirstOrThrow();
+      await tx
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("id", "=", context.branch_context_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const upload = await tx
+        .selectFrom("upload_leases")
+        .select("id")
+        .where("branch_context_id", "=", context.branch_context_id)
+        .where("expires_at", ">", new Date())
+        .executeTakeFirst();
+      if (upload) throw new RevisionConflictError("В этой ветке ещё выполняется загрузка файлов");
       const change = await tx
         .selectFrom("change_sets")
         .select("status")
@@ -1767,7 +1919,7 @@ export class PushDocsRepository {
         .where("project_id", "=", projectId)
         .forUpdate()
         .executeTakeFirstOrThrow();
-      if (change.status !== "submitting")
+      if (change.status !== "submitting" && change.status !== "open")
         throw new RevisionConflictError("Отправка не ожидает повтора");
       const job = await tx
         .selectFrom("jobs")
@@ -1779,6 +1931,11 @@ export class PushDocsRepository {
         .forUpdate()
         .executeTakeFirst();
       if (!job) throw new RevisionConflictError("Отправка ещё выполняется или уже завершена");
+      await tx
+        .updateTable("change_sets")
+        .set({ status: "submitting", updated_at: new Date() })
+        .where("id", "=", changeSetId)
+        .execute();
       await tx
         .updateTable("jobs")
         .set({
@@ -1800,7 +1957,7 @@ export class PushDocsRepository {
       .select(["change_sets.id", "change_sets.status"])
       .where("change_sets.project_id", "=", projectId)
       .where("branch_contexts.full_ref", "=", normalizeBranchRef(branch))
-      .where("change_sets.status", "=", "submitting")
+      .orderBy("change_sets.created_at", "desc")
       .executeTakeFirst();
     if (!change) return undefined;
     return this.database

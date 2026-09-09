@@ -145,6 +145,7 @@ export const inviteMemberSchema = z.object({
 });
 
 export const submitChangeSetSchema = z.object({
+  newBranch: z.string().trim().min(1).max(255).optional(),
   branch: z.string().trim().min(1).max(255),
   changeSetId: z.uuid(),
   createReview: z.boolean(),

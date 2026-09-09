@@ -53,6 +53,22 @@ export function readMetadata(source: string) {
   };
 }
 
+/** Remove a scalar override while preserving other YAML, comments and document bytes. */
+export function removeMetadata(source: string, key: string): string {
+  const parsed = inspect(source);
+  if (parsed.blocked.includes(key)) throw new Error(unsupported);
+  const field = parsed.fields.get(key);
+  if (!field) return source;
+  const start = source.lastIndexOf("\n", field.range[0] - 1) + 1;
+  const newline = source.indexOf("\n", field.range[1]);
+  const end = newline === -1 ? source.length : newline + 1;
+  const suffix = source.slice(field.range[1], end);
+  const comment = suffix.match(/^[ \t]+(#[^\r\n]*)(\r?\n)?$/);
+  return (
+    source.slice(0, start) + (comment ? `${comment[1]}${comment[2] ?? ""}` : "") + source.slice(end)
+  );
+}
+
 /** Patch scalar value ranges only. Never stringify the whole YAML/MDX document. */
 export function patchMetadata(source: string, updates: Record<string, MetadataValue>): string {
   const parsed = inspect(source);

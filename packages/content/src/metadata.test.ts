@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { patchMetadata, readMetadata } from "./metadata";
+import { patchMetadata, readMetadata, removeMetadata } from "./metadata";
 
 it("changes only the selected YAML scalar and preserves comments, unknown fields and MDX bytes", () => {
   const source =
@@ -51,4 +51,16 @@ it("bounds metadata input and validates field names and values", () => {
     Record<string, string | number>
   >)
     expect(() => patchMetadata("# Body", fields)).toThrow();
+});
+
+it("removes overrides without losing inline comments, other metadata or MDX", () => {
+  const source =
+    '\uFEFF---\r\ntitle: "Override" # keep this\r\ndraft: true\r\ncustom:\r\n  nested: [1, 2]\r\n---\r\n# Heading\r\n<Widget />';
+  expect(removeMetadata(source, "title")).toBe(
+    source.replace('title: "Override" # keep this', "# keep this"),
+  );
+  expect(removeMetadata(source, "draft")).toBe(source.replace("draft: true\r\n", ""));
+  expect(removeMetadata(source, "missing")).toBe(source);
+  expect(removeMetadata("# Body", "title")).toBe("# Body");
+  expect(() => removeMetadata(source, "custom")).toThrow("исходник");
 });

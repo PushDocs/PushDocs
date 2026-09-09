@@ -46,6 +46,8 @@ const mocks = vi.hoisted(() => {
       createDraftDocument: vi.fn(),
       deleteSession: vi.fn(),
       enqueueBranchSync: vi.fn(),
+      enqueueReviewCreation: vi.fn(),
+      getProjectJob: vi.fn(),
       findUserByEmail: vi.fn(),
       getConnection: vi.fn(),
       getInvitation: vi.fn(),
@@ -118,12 +120,14 @@ import {
   createDocumentAction,
   createProjectAction,
   createProjectComponentAction,
+  gitOperationStatusAction,
   inviteMemberAction,
   loginAction,
   logoutAction,
   resolveConflictAction,
   retryChangeSetSubmissionAction,
   saveDraftAction,
+  startGitOperationAction,
   submitChangeSetAction,
   synchronizeBranchAction,
   uploadAttachmentAction,
@@ -411,6 +415,43 @@ describe("document and review actions", () => {
       message: "Update docs",
       projectId,
     });
+  });
+
+  it("redirects to the new MR branch only after the drafts are queued", async () => {
+    await expect(
+      submitChangeSetAction(
+        form({
+          projectId,
+          changeSetId,
+          branch: "stable",
+          newBranch: "docs/new",
+          createReview: "on",
+          message: "New article",
+        }),
+      ),
+    ).rejects.toThrow(`REDIRECT:/projects/${projectId}/changes?branch=docs%2Fnew`);
+    expect(mocks.repo.queueChangeSetSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({ newBranch: "docs/new", createReview: true }),
+    );
+  });
+  it("checks push permission before creating a review and read permission before pulling", async () => {
+    await startGitOperationAction({ projectId, branch: "docs/update", title: "Review" });
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
+    expect(mocks.repo.enqueueReviewCreation).toHaveBeenCalledWith(
+      projectId,
+      "docs/update",
+      "Review",
+      "user",
+    );
+    await startGitOperationAction({ projectId, branch: "docs/update" });
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+  });
+  it("scopes operation status to an accessible project", async () => {
+    mocks.repo.getProjectJob.mockResolvedValue({ status: "done" });
+    expect(await gitOperationStatusAction(projectId, "job")).toEqual({ status: "done" });
+    expect(mocks.repo.getProjectJob).toHaveBeenCalledWith(projectId, "job");
+    mocks.repo.requireProjectAccess.mockRejectedValueOnce(new Error("denied"));
+    await expect(gitOperationStatusAction(projectId, "job")).rejects.toThrow("denied");
   });
 
   it("retries the existing submission using the signed-in actor", async () => {

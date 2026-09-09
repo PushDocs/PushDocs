@@ -35,6 +35,10 @@ beforeEach(() => {
       enqueueBranchSync: mocks.sync,
       ensureBranch: mocks.ensure,
       listBranches: async () => [{ full_ref: "main" }],
+      listAttachments: async () => [
+        { repository_path: "static/img/new.png", change_set_id: "change" },
+        { repository_path: "other.png", change_set_id: "other" },
+      ],
     },
     user: { id: "user" },
     access: { role },
@@ -66,6 +70,7 @@ it("returns branch state without caching or credentials", async () => {
   const data = await response.json();
   expect(data).toMatchObject({ revision: 7, changeSetId: "change", sha: "sha", role: "editor" });
   expect(data.provider).toBeUndefined();
+  expect(data.uploads).toEqual([{ path: "static/img/new.png" }]);
 });
 it("creates a branch from the chosen SHA and queues its import", async () => {
   expect(
@@ -227,4 +232,58 @@ it("returns an open revision for a branch without drafts", async () => {
     revision: 0,
     status: "open",
   });
+});
+
+it("stages an empty folder as a Git marker and rejects unsafe or occupied paths", async () => {
+  expect(
+    (await request({ action: "folder", branch: "main", expectedRevision: 7, path: "docs/guides" }))
+      .status,
+  ).toBe(200);
+  expect(mocks.stage).toHaveBeenCalledWith(
+    expect.objectContaining({
+      files: [{ path: "docs/guides/.gitkeep", content: "", createOnly: true }],
+      expectedRevision: 7,
+    }),
+  );
+  expect(
+    (await request({ action: "folder", branch: "main", expectedRevision: 7, path: "../bad" }))
+      .status,
+  ).toBe(400);
+  const snapshot = await mocks.context();
+  snapshot.state.branch.repository_paths = ["docs/existing.md"];
+  mocks.context.mockResolvedValue(snapshot);
+  for (const path of ["docs", "docs/existing.md/child"])
+    expect(
+      (await request({ action: "folder", branch: "main", expectedRevision: 7, path })).status,
+    ).toBe(400);
+  role = "reader";
+  expect(
+    (await request({ action: "folder", branch: "main", expectedRevision: 7, path: "new" })).status,
+  ).toBe(403);
+});
+it("reads only known repository paths at the imported revision without allowing code execution", async () => {
+  const snapshot = await mocks.context();
+  snapshot.target.root_path = "website";
+  snapshot.state.branch.repository_paths = ["src/app.ts", "image.png"];
+  const readBinary = vi.fn().mockResolvedValue(Buffer.from("export const a = 1;"));
+  snapshot.provider.readBinary = readBinary;
+  mocks.context.mockResolvedValue(snapshot);
+  const get = (path: string, download = false) =>
+    GET(
+      new Request(
+        `https://cms.test/api?${new URLSearchParams({ branch: "main", path, ...(download ? { download: "1" } : {}) })}`,
+      ),
+      context,
+    );
+  expect(await (await get("src/app.ts")).json()).toEqual({ content: "export const a = 1;" });
+  expect(readBinary).toHaveBeenCalledWith("42", "sha", "website/src/app.ts");
+  expect((await get("../secret")).status).toBe(400);
+  expect((await get("missing.ts")).status).toBe(400);
+  expect(readBinary).toHaveBeenCalledTimes(1);
+  readBinary.mockResolvedValue(Buffer.from([0, 255, 0]));
+  expect(await (await get("image.png")).json()).toEqual({ content: null });
+  const response = await get("src/app.ts", true);
+  expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+  expect(response.headers.get("Content-Disposition")).toContain("attachment");
+  expect(response.headers.get("Content-Security-Policy")).toBe("sandbox");
 });

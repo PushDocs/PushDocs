@@ -19,6 +19,11 @@ export async function GET(request: Request, context: Context) {
     const query = new URL(request.url).searchParams;
     const branch = query.get("branch") ?? "";
     const { config, state, store, access } = await workbenchContext(projectId, branch);
+    const document = query.get("document") ?? "";
+    const locale =
+      query.get("locale") ??
+      state.files.find((file) => file.path === document)?.locale ??
+      config.defaultLocale;
     const uploads = (await store.listAttachments(projectId)).filter(
       (file) => file.change_set_id === state.changeSet?.id,
     );
@@ -26,8 +31,8 @@ export async function GET(request: Request, context: Context) {
       {
         assets: mediaCatalog({
           config,
-          locale: query.get("locale") ?? config.defaultLocale,
-          document: query.get("document") ?? "docs/intro.md",
+          locale,
+          document,
           paths: state.branch.repository_paths,
           files: state.files,
           uploads: uploads.map((file) => ({
@@ -38,7 +43,7 @@ export async function GET(request: Request, context: Context) {
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",
         role: access.role,
-        locale: query.get("locale") ?? config.defaultLocale,
+        locale,
       },
       { headers: { "Cache-Control": "private, no-store" } },
     );

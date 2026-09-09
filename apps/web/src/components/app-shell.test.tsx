@@ -67,6 +67,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: /Все проекты/ }).getAttribute("href")).toBe(
       "/projects",
     );
+    expect(screen.queryByRole("link", { name: "Файлы" })).toBeNull();
     expect(screen.getByRole("link", { name: "Документы" }).className).toBe("active");
     expect(screen.getByRole("link", { name: "PR / MR" }).getAttribute("href")).toBe(
       "/projects/one/reviews",
@@ -99,7 +100,7 @@ describe("AppShell", () => {
         Content
       </AppShell>,
     );
-    expect(screen.getByText("Выберите проект")).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Разделы проекта" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
     expect(screen.getByText("anna@example.test")).toBeTruthy();
   });

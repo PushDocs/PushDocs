@@ -5,7 +5,6 @@ import {
   BookOpenText,
   Cable,
   ChevronDown,
-  FileImage,
   FolderGit2,
   GitPullRequest,
   LogOut,
@@ -27,7 +26,6 @@ const projectNavigation = [
   { icon: BookOpenText, label: "Документы", segment: "documents" },
   { icon: SlidersHorizontal, label: "Изменения", segment: "changes" },
   { icon: GitPullRequest, label: "PR / MR", segment: "reviews" },
-  { icon: FileImage, label: "Файлы", segment: "files" },
   { icon: Users, label: "Участники", segment: "members" },
   { icon: Settings, label: "Настройки", segment: "settings" },
 ];
@@ -79,7 +77,6 @@ export function AppShell({
 
         {activeProject ? (
           <>
-            <p className="sidebar-label">Проект</p>
             <details className="project-switcher-wrap">
               <summary className="project-switcher">
                 <span className="project-monogram">
@@ -130,12 +127,7 @@ export function AppShell({
               })}
             </nav>
           </>
-        ) : (
-          <div className="sidebar-hint">
-            <p>Выберите проект</p>
-            <span>Ветки, документы и участники относятся к конкретному проекту.</span>
-          </div>
-        )}
+        ) : null}
 
         <div className="sidebar-spacer" />
         {user.isInstanceOperator ? (

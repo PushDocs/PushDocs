@@ -148,6 +148,19 @@ export function createWorkerService(options: WorkerServiceOptions) {
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
+    await repository.withGitRefLock(
+      `${target.base_url}:${target.provider_repository_id}:${branchName}`,
+      () => synchronizeBranchLocked(projectId, branchName, provider),
+    );
+  }
+
+  async function synchronizeBranchLocked(
+    projectId: string,
+    branchName: string,
+    provider?: GitProvider,
+  ): Promise<void> {
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     const client = provider ?? providerFor(target);
     const branches = await client.listBranches(target.provider_repository_id);
     await repository.ensureBranches(projectId, branches);
@@ -243,7 +256,18 @@ export function createWorkerService(options: WorkerServiceOptions) {
     if (target.status !== "submitting") throw new Error("Change set is not ready for submission");
     const provider = providerFor(target);
     const branches = await provider.listBranches(target.provider_repository_id);
-    const current = branches.find((branch) => branch.name === target.branch);
+    let current = branches.find((branch) => branch.name === target.branch);
+    if (payload && typeof payload === "object" && "newBranch" in payload && payload.newBranch) {
+      const baseSha = stringFromPayload(payload, "branchBaseSha");
+      if (!current)
+        current = await provider.createBranch(
+          target.provider_repository_id,
+          target.branch,
+          baseSha,
+        );
+      else if (current.sha !== baseSha && !target.prepared_commit)
+        throw new Error("Новая ветка уже содержит другие изменения. Отправка остановлена.");
+    }
     if (!current) throw new Error(`Branch ${target.branch} was not found`);
 
     const parentSha = target.prepared_commit?.parentSha ?? current.sha;
@@ -407,12 +431,16 @@ export function createWorkerService(options: WorkerServiceOptions) {
       url: `${target.clone_url.replace(/\.git$/, "")}/${target.kind === "gitlab" ? "-/" : ""}commit/${published.sha}`,
     };
     if (createReview && target.branch !== target.default_branch) {
-      await provider.ensureChangeRequest({
-        repositoryId: target.provider_repository_id,
-        sourceBranch: target.branch,
-        targetBranch: target.default_branch,
-        title: message.split("\n", 1)[0] || "Обновление документации",
-      });
+      const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
+        (review) => review.sourceBranch === target.branch && review.state === "open",
+      );
+      if (!existing)
+        await provider.ensureChangeRequest({
+          repositoryId: target.provider_repository_id,
+          sourceBranch: target.branch,
+          targetBranch: target.default_branch,
+          title: message.split("\n", 1)[0] || "Обновление документации",
+        });
     }
     await repository.markChangeSetSubmitted({
       changeSetId,
@@ -448,6 +476,29 @@ export function createWorkerService(options: WorkerServiceOptions) {
           projectIdFromPayload(job.payload),
           stringFromPayload(job.payload, "branch"),
         );
+      } else if (job.kind === "review.create") {
+        const projectId = projectIdFromPayload(job.payload);
+        await repository.requireProjectAccess(
+          stringFromPayload(job.payload, "userId"),
+          projectId,
+          "branch:push",
+        );
+        const target = await repository.getProjectSyncTarget(projectId);
+        if (!target) throw new Error("Подключение проекта недоступно");
+        const branch = stringFromPayload(job.payload, "branch");
+        if (branch === target.default_branch) throw new Error("Для PR / MR нужна отдельная ветка");
+        const provider = providerFor(target);
+        const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
+          (review) => review.sourceBranch === branch && review.state === "open",
+        );
+        if (!existing)
+          await provider.ensureChangeRequest({
+            repositoryId: target.provider_repository_id,
+            sourceBranch: branch,
+            targetBranch: target.default_branch,
+            title: stringFromPayload(job.payload, "title"),
+          });
+        await synchronizeReviews(projectId, provider, target.provider_repository_id);
       } else if (job.kind === "change-set.submit") {
         await submitChangeSet(job.payload);
       } else {

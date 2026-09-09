@@ -1,12 +1,10 @@
 import { Status } from "@pushdocs/ui";
-import { AlertTriangle, FileImage, FileText, GitBranch, Send, UserRound } from "lucide-react";
+import { AlertTriangle, FileImage, FileText, GitBranch, UserRound } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  resolveConflictAction,
-  retryChangeSetSubmissionAction,
-  submitChangeSetAction,
-} from "@/app/actions";
+import { resolveConflictAction, retryChangeSetSubmissionAction } from "@/app/actions";
+import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
+import { SubmitChanges } from "@/components/submit-changes";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Изменения" };
@@ -49,19 +47,26 @@ export default async function ChangesPage({
   const changeSet = drafts[0];
   const changeSetStatus = changeSet?.status ?? attachments[0]?.change_set_status;
   const submission = await repository().getSubmissionStatus(projectId, branch);
+  const review = (await repository().listChangeRequests(projectId)).find(
+    (item) => item.source_branch === branch && item.state === "open",
+  );
   const fileCount = drafts.length + attachments.length;
   const files = fileCountText(fileCount);
 
   return (
     <div className="page">
+      <SubmissionRefresh
+        active={submission?.status === "queued" || submission?.status === "running"}
+      />
       <header className="page-header">
         <div>
-          <p className="eyebrow">{project.name}</p>
           <h1>Изменения в ветке</h1>
-          <p>
-            {files} {fileCount === 1 ? "сохранён" : "сохранены"} в PushDocs и ещё не
-            {fileCount === 1 ? " отправлен" : " отправлены"} в Git.
-          </p>
+          {fileCount > 0 ? (
+            <p>
+              {files} {fileCount === 1 ? "сохранён" : "сохранены"} в PushDocs и ещё не
+              {fileCount === 1 ? " отправлен" : " отправлены"} в Git.
+            </p>
+          ) : null}
         </div>
         <span className="branch-placeholder">
           <GitBranch aria-hidden size={15} />
@@ -69,23 +74,40 @@ export default async function ChangesPage({
         </span>
       </header>
 
-      <ol className="workflow-steps" aria-label="Этапы отправки">
-        <li className="active">
-          <i>1</i> Черновик
-        </li>
-        <li>
-          <i>2</i> Коммит в ветку
-        </li>
-        <li>
-          <i>3</i> PR / MR
-        </li>
-      </ol>
-
+      <div className="branch-git-actions">
+        <GitOperation
+          projectId={projectId}
+          branch={branch}
+          disabled={changeSetStatus === "submitting"}
+        />
+        {review ? (
+          <Link
+            className="pd-button pd-button--secondary"
+            href={`/projects/${projectId}/reviews?review=${review.id}`}
+          >
+            Открыть PR / MR: {review.title}
+          </Link>
+        ) : null}
+        <Link
+          className="pd-button pd-button--secondary"
+          href={`/projects/${projectId}/documents?${new URLSearchParams({ branch })}`}
+        >
+          Редактировать ветку
+        </Link>
+      </div>
       {fileCount === 0 ? (
         <section className="empty-state">
           <FileText aria-hidden />
-          <h2>В ветке нет черновиков</h2>
-          <p>Измените документ или загрузите файл, чтобы подготовить один общий коммит.</p>
+          <h2>Все изменения отправлены</h2>
+          {!review && branch !== project.defaultBranch ? (
+            <GitOperation
+              projectId={projectId}
+              branch={branch}
+              createReview
+              disabled={access.role === "reader"}
+            />
+          ) : null}
+
           <Link
             className="pd-button pd-button--primary"
             href={`/projects/${projectId}/documents?branch=${encodeURIComponent(branch)}`}
@@ -137,49 +159,21 @@ export default async function ChangesPage({
             ))}
           </section>
 
-          <form action={submitChangeSetAction} className="submit-panel">
-            <p className="eyebrow">Отправка изменений</p>
-            <h2>Один коммит для ветки</h2>
-            <input name="projectId" type="hidden" value={projectId} />
-            <input name="changeSetId" type="hidden" value={changeSetId} />
-            <input name="branch" type="hidden" value={branch} />
-            <label>
-              Сообщение коммита
-              <textarea
-                name="message"
-                defaultValue="Обновить документацию через PushDocs"
-                required
-              />
-            </label>
-            {branch !== project.defaultBranch ? (
-              <label className="checkbox-field">
-                <input name="createReview" type="checkbox" defaultChecked />
-                Создать PR / MR в {project.defaultBranch}
-              </label>
-            ) : null}
-            <div className="submit-summary">
-              <span>{files}</span>
-              {changeSet ? <span>Ревизия {changeSet.change_set_revision}</span> : null}
-              {changeSet ? (
-                <span className="commit-sha">{changeSet.base_commit_sha.slice(0, 8)}</span>
-              ) : null}
-            </div>
-            <button
-              className="pd-button pd-button--primary"
-              disabled={
-                access.role === "reader" ||
-                !changeSetId ||
-                changeSetStatus === "submitting" ||
-                conflicts.length > 0
-              }
-              type="submit"
-            >
-              <Send aria-hidden size={16} />
-              {changeSetStatus === "submitting"
-                ? "Изменения заблокированы на время отправки"
-                : "Отправить в ветку"}
-            </button>
-            {submission ? (
+          <SubmitChanges
+            projectId={projectId}
+            changeSetId={changeSetId ?? ""}
+            branch={branch}
+            defaultBranch={project.defaultBranch}
+            reviewTitle={review?.title}
+            submitting={changeSetStatus === "submitting"}
+            disabled={
+              access.role === "reader" ||
+              !changeSetId ||
+              changeSetStatus === "submitting" ||
+              conflicts.length > 0
+            }
+          >
+            {submission && submission.status !== "done" ? (
               <div role="status" className="panel-note">
                 <p>
                   {submission.status === "failed"
@@ -199,11 +193,7 @@ export default async function ChangesPage({
                 ) : null}
               </div>
             ) : null}
-            <p className="panel-note">
-              Ветка обновляется только относительно проверенного SHA. Если Git изменился, PushDocs
-              остановит отправку и покажет конфликт.
-            </p>
-          </form>
+          </SubmitChanges>
         </div>
       )}
       {conflicts.length > 0 ? (
@@ -211,7 +201,6 @@ export default async function ChangesPage({
           <header>
             <AlertTriangle aria-hidden />
             <div>
-              <p className="eyebrow">Требуется решение</p>
               <h2>Конфликты с актуальной веткой</h2>
             </div>
           </header>

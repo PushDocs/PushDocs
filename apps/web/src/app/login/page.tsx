@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { loginAction } from "@/app/actions";
 import { AuthPanel } from "@/components/auth-panel";
@@ -16,11 +15,7 @@ export default async function LoginPage({
   if (await optionalUser()) redirect("/projects");
   const query = await searchParams;
   return (
-    <AuthPanel
-      eyebrow="PushDocs"
-      title="Вернитесь к документации"
-      description="Войдите в локальную учётную запись этой установки."
-    >
+    <AuthPanel title="Вход">
       {query.error === "credentials" ? (
         <p className="form-error" role="alert">
           Email или пароль не подошли.
@@ -39,13 +34,10 @@ export default async function LoginPage({
           Войти
         </button>
       </form>
-      <p className="auth-help">
-        Потеряли доступ? Обратитесь к оператору установки или используйте локальную команду
-        восстановления.
-      </p>
-      <Link className="text-link" href="/api/health">
-        Проверить состояние сервиса
-      </Link>
+      <details className="auth-help">
+        <summary>Не получается войти?</summary>
+        <p>Для восстановления доступа обратитесь к оператору установки.</p>
+      </details>
     </AuthPanel>
   );
 }

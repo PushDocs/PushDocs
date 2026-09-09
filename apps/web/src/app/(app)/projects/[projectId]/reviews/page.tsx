@@ -1,8 +1,16 @@
 import { evaluateMergeReadiness } from "@pushdocs/domain";
 import { Status } from "@pushdocs/ui";
-import { CheckCircle2, CircleDot, ExternalLink, GitPullRequest, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  CircleDot,
+  ExternalLink,
+  GitPullRequest,
+  Pencil,
+  XCircle,
+} from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { GitOperation } from "@/components/git-operation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "PR и MR" };
@@ -20,7 +28,7 @@ export default async function ReviewsPage({
     (item) => item.id === projectId,
   );
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  await repository().requireProjectAccess(user.id, projectId);
+  const access = await repository().requireProjectAccess(user.id, projectId);
   const reviews = await repository().listChangeRequests(projectId);
   const requestedId = (await searchParams).review;
   const selected = reviews.find((review) => review.id === requestedId) ?? reviews[0];
@@ -40,9 +48,7 @@ export default async function ReviewsPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">{project.name}</p>
           <h1>PR / MR</h1>
-          <p>Проверки обновляются по данным Git-провайдера.</p>
         </div>
       </header>
       {reviews.length === 0 ? (
@@ -80,16 +86,34 @@ export default async function ReviewsPage({
                     {selected.source_branch} → {selected.target_branch}
                   </p>
                 </div>
-                <a
-                  className="pd-button pd-button--secondary"
-                  href={selected.provider_url}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  Открыть в Git
-                  <ExternalLink aria-hidden size={15} />
-                </a>
+                <div className="review-actions">
+                  <Link
+                    className="pd-button pd-button--primary"
+                    href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: selected.source_branch })}`}
+                  >
+                    <Pencil aria-hidden size={15} />
+                    {access.role === "reader" ? "Открыть ветку" : "Редактировать ветку"}
+                  </Link>
+                  <a
+                    className="pd-button pd-button--secondary"
+                    href={selected.provider_url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Открыть в Git
+                    <ExternalLink aria-hidden size={15} />
+                  </a>
+                </div>
               </header>
+              <div className="branch-git-actions review-sync-actions">
+                <GitOperation projectId={projectId} branch={selected.source_branch} />
+                <Link
+                  className="pd-button pd-button--secondary"
+                  href={`/projects/${projectId}/changes?${new URLSearchParams({ branch: selected.source_branch })}`}
+                >
+                  Отправить изменения
+                </Link>
+              </div>
               <div className="review-columns">
                 <div className="checks-panel">
                   <div className="checks-title">
@@ -135,7 +159,6 @@ export default async function ReviewsPage({
                   <button className="pd-button pd-button--primary" disabled type="button">
                     Слить в {selected.target_branch}
                   </button>
-                  <small>Слияние дополнительно проверяет роль и актуальный SHA.</small>
                 </aside>
               </div>
             </section>

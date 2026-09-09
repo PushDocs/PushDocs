@@ -675,3 +675,54 @@ describe("repository locator normalization", () => {
     expect(normalizeRepositoryLocator(kind, input)).toBe(expected);
   });
 });
+
+it("compares GitLab changes from the merge base and handles renames", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    json({
+      diffs: [
+        { old_path: "a.md", new_path: "a.md", new_file: true },
+        { old_path: "old.md", new_path: "new.md", renamed_file: true },
+        { old_path: "gone.md", new_path: "gone.md", deleted_file: true },
+        { old_path: "edit.md", new_path: "edit.md" },
+      ],
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  expect(
+    await new GitLabProvider("https://gitlab.test", "token").compareFiles("9", "stable", "sha"),
+  ).toEqual([
+    { path: "a.md", status: "add" },
+    { path: "old.md", status: "delete" },
+    { path: "new.md", status: "add" },
+    { path: "gone.md", status: "delete" },
+    { path: "edit.md", status: "modify" },
+  ]);
+  const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+  expect(url.searchParams.get("straight")).toBe("false");
+  expect(url.searchParams.get("from")).toBe("stable");
+  fetchMock.mockResolvedValue(json({ compare_timeout: true, diffs: [] }));
+  await expect(
+    new GitLabProvider("https://gitlab.test", "token").compareFiles("9", "stable", "sha"),
+  ).rejects.toThrow("полный список");
+});
+it("maps GitHub comparison statuses and rejects potentially truncated file lists", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    json({
+      files: [
+        { filename: "new.md", previous_filename: "old.md", status: "renamed" },
+        { filename: "logo.png", status: "modified" },
+      ],
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const provider = new GitHubProvider("https://github.com", "token");
+  expect(await provider.compareFiles("org/repo", "main", "sha")).toEqual([
+    { path: "old.md", status: "delete" },
+    { path: "new.md", status: "add" },
+    { path: "logo.png", status: "modify" },
+  ]);
+  fetchMock.mockResolvedValue(
+    json({ files: Array.from({ length: 300 }, () => ({ filename: "a", status: "added" })) }),
+  );
+  await expect(provider.compareFiles("org/repo", "main", "sha")).rejects.toThrow("ограничил");
+});

@@ -21,7 +21,6 @@ export default async function InvitationPage({
     return (
       <AuthPanel
         description="Ссылка уже использована, истекла или была отозвана."
-        eyebrow="Приглашение"
         title="Приглашение недействительно"
       >
         <a className="pd-button pd-button--secondary auth-submit" href="/login">
@@ -39,7 +38,6 @@ export default async function InvitationPage({
   return (
     <AuthPanel
       description={`Вас пригласили в проект «${invitation.project_name}» с ролью ${roleLabel}.`}
-      eyebrow="Приглашение в проект"
       title={current ? "Подтвердите участие" : "Создайте учётную запись"}
     >
       {query.error === "credentials" ? (

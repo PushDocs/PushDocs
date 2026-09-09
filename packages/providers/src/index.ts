@@ -34,7 +34,10 @@ export class ProviderConflictError extends Error {
   readonly code = "PROVIDER_CONFLICT";
 }
 
+export type ProviderFileStatus = { path: string; status: "add" | "modify" | "delete" };
+
 export interface GitProvider {
+  compareFiles?(repositoryId: string, base: string, head: string): Promise<ProviderFileStatus[]>;
   readonly kind: ProviderKind;
   createBranch(repositoryId: string, name: string, ref: string): Promise<ProviderBranch>;
   commitFiles(input: {
@@ -128,6 +131,40 @@ export class GitLabProvider implements GitProvider {
       await this.request(
         `projects/${encodeURIComponent(repositoryId)}/repository/files/${encodeURIComponent(filePath)}/raw?${new URLSearchParams({ ref })}`,
       ),
+    );
+  }
+  async compareFiles(
+    repositoryId: string,
+    base: string,
+    head: string,
+  ): Promise<ProviderFileStatus[]> {
+    const result = await readJson<{
+      compare_timeout?: boolean;
+      diffs: Array<{
+        old_path: string;
+        new_path: string;
+        new_file: boolean;
+        deleted_file: boolean;
+        renamed_file: boolean;
+      }>;
+    }>(
+      await this.request(
+        `projects/${encodeURIComponent(repositoryId)}/repository/compare?${new URLSearchParams({ from: base, to: head, straight: "false" })}`,
+      ),
+    );
+    if (result.compare_timeout) throw new Error("GitLab не вернул полный список изменений ветки");
+    return result.diffs.flatMap((file): ProviderFileStatus[] =>
+      file.renamed_file
+        ? [
+            { path: file.old_path, status: "delete" },
+            { path: file.new_path, status: "add" },
+          ]
+        : [
+            {
+              path: file.deleted_file ? file.old_path : file.new_path,
+              status: file.deleted_file ? "delete" : file.new_file ? "add" : "modify",
+            },
+          ],
     );
   }
   private readonly apiUrl: string;
@@ -388,6 +425,34 @@ export class GitHubProvider implements GitProvider {
         `repos/${repositoryId}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
         { headers: { Accept: "application/vnd.github.raw+json" } },
       ),
+    );
+  }
+  async compareFiles(
+    repositoryId: string,
+    base: string,
+    head: string,
+  ): Promise<ProviderFileStatus[]> {
+    const result = await readJson<{
+      files: Array<{ filename: string; previous_filename?: string; status: string }>;
+    }>(
+      await this.request(
+        `repos/${repositoryId}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      ),
+    );
+    if (result.files.length >= 300) throw new Error("GitHub ограничил список изменений ветки");
+    return result.files.flatMap((file): ProviderFileStatus[] =>
+      file.status === "renamed" && file.previous_filename
+        ? [
+            { path: file.previous_filename, status: "delete" },
+            { path: file.filename, status: "add" },
+          ]
+        : [
+            {
+              path: file.filename,
+              status:
+                file.status === "removed" ? "delete" : file.status === "added" ? "add" : "modify",
+            },
+          ],
     );
   }
   private readonly apiUrl: string;

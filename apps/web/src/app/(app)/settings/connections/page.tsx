@@ -12,9 +12,7 @@ export default async function ConnectionsPage() {
     <div className="page narrow-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Настройки установки</p>
           <h1>Git-подключения</h1>
-          <p>Один токен можно разрешить нескольким проектам, но его секреты не видны участникам.</p>
         </div>
       </header>
 
@@ -49,7 +47,6 @@ export default async function ConnectionsPage() {
             </span>
             <div>
               <h2>Новое подключение</h2>
-              <p>Токен шифруется перед записью в PostgreSQL.</p>
             </div>
           </div>
           <label>
@@ -70,7 +67,6 @@ export default async function ConnectionsPage() {
           <label>
             Access token
             <input name="token" type="password" autoComplete="off" required />
-            <span className="field-note">Токен не передаётся в браузер после сохранения.</span>
           </label>
           <button className="pd-button pd-button--primary" type="submit">
             Сохранить подключение

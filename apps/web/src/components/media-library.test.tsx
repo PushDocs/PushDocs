@@ -69,7 +69,9 @@ it("shows media usages and requires an explicit confirmation before staging dele
   });
   expect(screen.getByText("static/img/a.png")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Удалить static/img/a.png" }));
-  expect(screen.getByText("docs/intro.md")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "docs/intro.md" }).getAttribute("href")).toContain(
+    "branch=main&path=docs%2Fintro.md",
+  );
   expect(fetch).toHaveBeenCalledTimes(1);
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить удаление" }));
@@ -201,7 +203,7 @@ it("keeps reader uploads disabled, shows out-of-scope media and reports refresh 
     render(<MediaLibrary projectId="p" branch="main" document="docs/a.md" />);
   });
   expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("disabled", true);
-  expect(screen.getByText("Путь вне настроенного каталога")).toBeTruthy();
+  expect(screen.getByText("Вне каталога вложений")).toBeTruthy();
   vi.mocked(fetch).mockResolvedValueOnce(
     Response.json({ error: "Session expired" }, { status: 401 }),
   );
@@ -257,4 +259,25 @@ it("can recover from an initial network failure into an empty media library", as
   });
   expect(screen.getByText("В этой ветке пока нет медиафайлов.")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("filters attachments by the article and keeps the changes link on the current branch", async () => {
+  vi.mocked(fetch).mockResolvedValueOnce(
+    Response.json({
+      ...state,
+      assets: [
+        ...state.assets,
+        { ...state.assets[0], path: "static/img/other.png", usages: ["docs/other.md"] },
+      ],
+    }),
+  );
+  await act(async () => {
+    render(<MediaLibrary projectId="p" branch="docs/fix" document="docs/intro.md" />);
+  });
+  fireEvent.click(screen.getByLabelText("Только в этой статье"));
+  expect(screen.getByText("static/img/a.png")).toBeTruthy();
+  expect(screen.queryByText("static/img/other.png")).toBeNull();
+  expect(screen.getByRole("link", { name: "«Изменения»" }).getAttribute("href")).toBe(
+    "/projects/p/changes?branch=docs%2Ffix",
+  );
 });

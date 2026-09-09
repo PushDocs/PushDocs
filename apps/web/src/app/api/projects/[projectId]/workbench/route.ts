@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseProjectConfig, planTemplate } from "@pushdocs/content";
+import { parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { apiError, assertEditable, assertSameOrigin, workbenchContext } from "@/lib/workbench";
@@ -12,6 +12,12 @@ const fileSchema = z.object({
   createOnly: z.boolean().optional(),
 });
 const commandSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("folder"),
+    branch: z.string(),
+    path: z.string(),
+    expectedRevision: z.number().int().nonnegative(),
+  }),
   z.object({
     action: z.literal("files"),
     branch: z.string(),
@@ -40,10 +46,47 @@ export async function GET(request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
     const branch = new URL(request.url).searchParams.get("branch") ?? "";
-    const { state, config, store, access } = await workbenchContext(projectId, branch);
+    const { state, config, store, access, provider, target } = await workbenchContext(
+      projectId,
+      branch,
+    );
+    const query = new URL(request.url).searchParams;
+    if (query.has("path")) {
+      const path = safePath(query.get("path") ?? "");
+      if (!state.branch.repository_paths.includes(path)) throw new Error("Файл не найден");
+      const bytes = await provider.readBinary(
+        target.provider_repository_id,
+        state.branch.head_commit_sha,
+        target.root_path === "." ? path : `${target.root_path}/${path}`,
+      );
+      if (query.get("download") === "1")
+        return new Response(Buffer.from(bytes), {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(path.split("/").at(-1) ?? "file")}`,
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      let content: string | null = null;
+      if (bytes.length <= 2_000_000 && !bytes.includes(0)) {
+        try {
+          content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          /* Binary files are downloaded, never interpreted as source. */
+        }
+      }
+      return Response.json({ content }, { headers: { "Cache-Control": "no-store" } });
+    }
     return Response.json(
       {
         files: state.files,
+        uploads: state.changeSet
+          ? (await store.listAttachments(projectId))
+              .filter((file) => file.change_set_id === state.changeSet?.id)
+              .map((file) => ({ path: file.repository_path }))
+          : [],
         revision: state.changeSet?.revision ?? 0,
         changeSetId: state.changeSet?.id,
         status: state.changeSet?.status ?? "open",
@@ -91,6 +134,28 @@ export async function POST(request: Request, context: Context) {
       await store.ensureBranch(projectId, created.name, created.sha);
       await store.enqueueBranchSync(projectId, created.name);
       return Response.json(created);
+    }
+    if (command.action === "folder") {
+      const folder = safePath(command.path);
+      const paths = [
+        ...state.branch.repository_paths,
+        ...state.files.filter((file) => file.status !== "delete").map((file) => file.path),
+      ];
+      if (
+        paths.some(
+          (path) =>
+            path === folder || path.startsWith(`${folder}/`) || folder.startsWith(`${path}/`),
+        )
+      )
+        throw new Error("Этот путь уже занят");
+      await store.stageFiles({
+        projectId,
+        branch: command.branch,
+        userId: user.id,
+        expectedRevision: command.expectedRevision,
+        files: [{ path: `${folder}/.gitkeep`, content: "", createOnly: true }],
+      });
+      return Response.json({ saved: true });
     }
     const files =
       command.action === "template"

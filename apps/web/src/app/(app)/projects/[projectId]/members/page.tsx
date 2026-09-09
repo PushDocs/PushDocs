@@ -25,9 +25,7 @@ export default async function MembersPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">{project.name}</p>
           <h1>Участники</h1>
-          <p>Роль действует только в этом проекте.</p>
         </div>
       </header>
       <div className="members-layout">
@@ -60,8 +58,8 @@ export default async function MembersPage({
             </div>
           ))}
         </section>
-        <aside className="roles-panel">
-          <h2>Три роли</h2>
+        <section className="roles-panel" aria-labelledby="roles-heading">
+          <h2 id="roles-heading">Права ролей</h2>
           <div>
             <Shield aria-hidden />
             <p>
@@ -83,7 +81,7 @@ export default async function MembersPage({
               <span>Читает документы и оставляет комментарии.</span>
             </p>
           </div>
-        </aside>
+        </section>
       </div>
       {access.role === "admin" ? (
         <>

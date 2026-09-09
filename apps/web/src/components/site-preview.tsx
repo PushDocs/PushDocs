@@ -93,7 +93,6 @@ export function SitePreview({
         <div>
           <p className="eyebrow">{branch}</p>
           <h1>Предпросмотр сайта</h1>
-          <p>Снимок с черновиками и вложениями, без коммита в Git.</p>
         </div>
         <Link
           className="pd-button pd-button--secondary"
@@ -104,8 +103,8 @@ export function SitePreview({
       </header>
       {!state.configured ? (
         <p className="wb-alert">
-          Оператор ещё не настроил runner. Требуются отдельный домен предпросмотра и образ с
-          зависимостями сайта. Быстрый просмотр Markdown доступен в редакторе.
+          Предпросмотр сайта не настроен. Обратитесь к оператору или откройте просмотр документа в
+          редакторе.
         </p>
       ) : null}
       {error ? (
@@ -130,12 +129,7 @@ export function SitePreview({
         />
         Обновлять после сохранения
       </label>
-      {automatic ? (
-        <p className="wb-hint">
-          Частые сохранения объединяются. Повторная сборка начнётся после завершения текущей. Ошибку
-          сборки нужно повторить вручную.
-        </p>
-      ) : null}
+
       {!state.builds.length ? <p>Для этой ветки ещё нет сборок.</p> : null}
       {state.builds.map((build) => (
         <section key={build.id} className="wb-preview-build">
@@ -148,9 +142,7 @@ export function SitePreview({
             }[build.status] ?? build.status}
             {build.stale ? " (снимок устарел)" : ""}
           </h2>
-          <p>
-            Git {build.sha.slice(0, 8)}, ревизия черновиков {build.revision}
-          </p>
+
           {build.url ? (
             <a
               className="pd-button pd-button--primary"
@@ -163,6 +155,9 @@ export function SitePreview({
           ) : null}
           <details>
             <summary>Журнал сборки</summary>
+            <p>
+              Git {build.sha.slice(0, 8)}, ревизия черновиков {build.revision}
+            </p>
             <pre>{build.log || "Ожидаем runner…"}</pre>
           </details>
         </section>

@@ -23,7 +23,7 @@ async function mount(canBuild = true) {
 it("explains an unconfigured runner and disables builds", async () => {
   vi.mocked(fetch).mockResolvedValueOnce(Response.json({ configured: false, builds: [] }));
   await mount();
-  expect(screen.getByText(/Оператор ещё не настроил runner/)).toBeTruthy();
+  expect(screen.getByText(/Предпросмотр сайта не настроен/)).toBeTruthy();
   expect(screen.getByRole("button")).toHaveProperty("disabled", true);
 });
 it("builds the frozen draft revision and polls status", async () => {

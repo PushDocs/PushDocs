@@ -47,8 +47,7 @@ export function FileComments({
   }, [refresh]);
   return (
     <section className="wb-comments">
-      <h2>Комментарии к документу</h2>
-      <small>Обсуждение в PushDocs, отдельно от PR / MR.</small>
+      <h2 title="Комментарии сохраняются в PushDocs и не отправляются в PR / MR">Комментарии</h2>
       {comments.map((comment) => (
         <article key={comment.id}>
           <strong>{comment.author_name}</strong>

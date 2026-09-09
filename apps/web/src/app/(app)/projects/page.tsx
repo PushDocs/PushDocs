@@ -25,9 +25,7 @@ export default async function ProjectsPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Установка PushDocs</p>
           <h1>Проекты</h1>
-          <p>Документация, к которой у вас есть доступ.</p>
         </div>
         {user.isInstanceOperator ? (
           <Link className="pd-button pd-button--primary" href="/projects/new">
@@ -73,7 +71,7 @@ export default async function ProjectsPage({
         <section className="empty-state compact-empty">
           <Search aria-hidden />
           <h2>Проекты не найдены</h2>
-          <p>Измените строку поиска и нажмите Enter.</p>
+
           <Link className="pd-button pd-button--secondary" href="/projects">
             Сбросить поиск
           </Link>
@@ -99,7 +97,6 @@ export default async function ProjectsPage({
                 </span>
                 <span>
                   <strong>{project.name}</strong>
-                  <small>{project.slug}</small>
                 </span>
               </span>
               <span>

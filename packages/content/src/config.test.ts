@@ -211,12 +211,12 @@ it("rejects control characters, excessive paths and unsafe media destinations", 
     ).toThrow();
 });
 
-it("limits editing to declared technical files and document roots", () => {
+it("allows document files anywhere and limits code editing to declared files", () => {
   const config = parseProjectConfig();
   expect(isEditableFile(config, "sidebars.js")).toBe(true);
   expect(isEditableFile(config, "docs/_category_.json")).toBe(true);
   expect(isEditableFile(config, "src/App.tsx")).toBe(false);
-  expect(isEditableFile(config, "other/a.md")).toBe(false);
+  expect(isEditableFile(config, "other/a.md")).toBe(true);
   const template = {
     id: "t",
     label: "T",

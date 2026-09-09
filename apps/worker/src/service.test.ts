@@ -55,6 +55,7 @@ function createWorkerService(options: WorkerServiceOptions) {
 
 function provider(): GitProvider {
   return {
+    createBranch: vi.fn().mockResolvedValue({ name: "docs/update", sha: "base" }),
     commitFiles: vi.fn().mockResolvedValue({ sha: "commit-sha", url: "commit-url" }),
     ensureChangeRequest: vi.fn().mockResolvedValue({ id: "review" }),
     getRepository: vi.fn(),
@@ -275,6 +276,84 @@ describe("branch and review synchronization", () => {
 });
 
 describe("change set submission", () => {
+  it("creates a new working branch and sends its first commit to a review", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "New review",
+      createReview: true,
+      newBranch: "docs/update",
+      branchBaseSha: "base",
+    });
+    expect(client.createBranch).toHaveBeenCalledWith("42", "docs/update", "base");
+    expect(client.commitFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ branch: "docs/update" }),
+    );
+    expect(client.ensureChangeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceBranch: "docs/update", targetBranch: "main" }),
+    );
+  });
+  it("updates an existing review without creating another, including reviews targeting another branch", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.listChangeRequests).mockResolvedValue([
+      {
+        id: "7",
+        sourceBranch: "docs/update",
+        targetBranch: "release",
+        state: "open",
+        headSha: "base",
+        title: "Existing",
+        url: "url",
+      },
+    ]);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Another edit",
+      createReview: true,
+    });
+    expect(client.commitFiles).toHaveBeenCalledTimes(1);
+    expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+    expect(port.replaceChangeRequests).toHaveBeenCalled();
+  });
+  it("does not overwrite an unexpected existing new branch", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([
+      { name: "docs/update", sha: "someone-elses-head" },
+    ]);
+    await expect(
+      createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+      }).submitChangeSet({
+        projectId: "project",
+        changeSetId: "change",
+        message: "New review",
+        createReview: true,
+        newBranch: "docs/update",
+        branchBaseSha: "base",
+      }),
+    ).rejects.toThrow("другие изменения");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+
   it("never forwards a provider credential to a different clone origin", async () => {
     const port = repository();
     const client = provider();
@@ -740,6 +819,49 @@ describe("change set submission", () => {
 });
 
 describe("job execution and review polling", () => {
+  it("creates a review for a branch with existing commits and synchronizes its card", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "job",
+      kind: "review.create",
+      attempts: 1,
+      payload: { projectId: "project", branch: "docs/update", title: "Guide", userId: "actor" },
+    } as never);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).runJob();
+    expect(port.requireProjectAccess).toHaveBeenCalledWith("actor", "project", "branch:push");
+    expect(client.ensureChangeRequest).toHaveBeenCalledWith({
+      repositoryId: "42",
+      sourceBranch: "docs/update",
+      targetBranch: "main",
+      title: "Guide",
+    });
+    expect(port.replaceChangeRequests).toHaveBeenCalled();
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
+  it("does not create a review after push access is revoked", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "job",
+      kind: "review.create",
+      attempts: 1,
+      payload: { projectId: "project", branch: "docs/update", title: "Guide", userId: "actor" },
+    } as never);
+    vi.mocked(port.requireProjectAccess).mockRejectedValue(new Error("denied"));
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      logger: { error: vi.fn() },
+    }).runJob();
+    expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalled();
+  });
+
   it("does not process a job after losing its lease", async () => {
     const port = repository();
     vi.mocked(port.claimNextJob).mockResolvedValue({ id: "job", attempts: 2 } as never);

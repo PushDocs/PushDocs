@@ -128,3 +128,15 @@ it("reports an empty branch without an active change set", async () => {
     revision: 0,
   });
 });
+
+it("uses the open article locale when no locale is explicitly chosen", async () => {
+  const current = await mocks.context();
+  current.state.files = [
+    { path: "i18n/en/docs/a.md", locale: "en", content: "# A", status: "clean" },
+  ];
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&document=i18n%2Fen%2Fdocs%2Fa.md"),
+    context,
+  );
+  expect((await response.json()).locale).toBe("en");
+});

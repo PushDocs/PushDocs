@@ -10,9 +10,8 @@ export default async function SetupPage() {
   if (await repository().isBootstrapped()) redirect("/login");
   return (
     <AuthPanel
-      eyebrow="Первый запуск"
       title="Создайте оператора установки"
-      description="Оператор подключает Git-провайдеры и создаёт проекты. Роли участников назначаются отдельно в каждом проекте."
+      description="Эта учётная запись будет управлять установкой."
     >
       <form action={bootstrapAction} className="auth-form">
         <label>

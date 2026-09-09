@@ -111,8 +111,8 @@ export function isEditableFile(config: ProjectConfig, filePath: string): boolean
   safePath(filePath);
   return (
     filePath === ".pushdocs/config.json" ||
+    filePath.endsWith("/.gitkeep") ||
     config.editableFiles.includes(filePath) ||
-    (/\.(mdx?|json)$/i.test(filePath) &&
-      config.documentRoots.some((root) => filePath.startsWith(`${root}/`)))
+    /\.(mdx?|json)$/i.test(filePath)
   );
 }

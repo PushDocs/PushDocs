@@ -614,6 +614,16 @@ describe("branches and imported documents", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("distinguishes an unimported branch from an imported empty repository", async () => {
+    const fixture = await projectFixture();
+    const branch = await repository.ensureBranch(fixture.projectId, "docs/empty", "sha");
+    await expect(repository.hasImportedBranch(branch.id)).resolves.toBe(false);
+    await repository.replaceImportedDocuments(fixture.projectId, "docs/empty", "sha", [], []);
+    await expect(repository.hasImportedBranch(branch.id)).resolves.toBe(true);
+    const other = await repository.ensureBranch(fixture.projectId, "docs/other", "sha");
+    await expect(repository.hasImportedBranch(other.id)).resolves.toBe(false);
+  });
+
   it("ensures branches idempotently and queues branch synchronization", async () => {
     const fixture = await projectFixture();
     const first = await repository.ensureBranch(fixture.projectId, "docs/update", "one");
@@ -909,6 +919,207 @@ describe("attachments and submissions", () => {
         storageKey: `${fixture.projectId}/bad.png`,
       }),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("keeps local draft content and its original base when receiving upstream files", async () => {
+    const fixture = await synchronizedProject();
+    await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# My draft",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.replaceImportedDocuments(
+      fixture.projectId,
+      "main",
+      "head-2",
+      [
+        {
+          path: "docs/intro.md",
+          content: "# Remote change",
+          contentHash: "hash",
+          locale: "default",
+          version: "current",
+          title: "Remote",
+        },
+      ],
+      ["docs/intro.md"],
+    );
+    const state = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(state.files[0]?.content).toBe("# My draft");
+    expect(state.branch.head_commit_sha).toBe("head-2");
+    expect(state.changeSet?.base_commit_sha).toBe("head-1");
+  });
+
+  it("tracks pull and review jobs without exposing another project's jobs", async () => {
+    const fixture = await projectFixture();
+    const jobId = await repository.enqueueBranchSync(fixture.projectId, "main");
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toMatchObject({
+      status: "queued",
+    });
+    expect(await repository.getProjectJob(randomUUID(), jobId)).toBeUndefined();
+    const reviewJob = await repository.enqueueReviewCreation(
+      fixture.projectId,
+      "docs/update",
+      "Guide",
+      fixture.operatorId,
+    );
+    expect(await repository.getProjectJob(fixture.projectId, reviewJob)).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  it("moves drafts and attachments to a new review branch without modifying the original imported files", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Review draft",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.recordAttachment({
+      branch: "main",
+      mediaType: "image/png",
+      originalName: "a.png",
+      projectId: fixture.projectId,
+      repositoryPath: "static/img/a.png",
+      sha256: "hash",
+      sizeBytes: 10,
+      storageKey: "stored/a.png",
+    });
+    const before = await repository.listWorkingFiles(fixture.projectId, "main");
+    await repository.queueChangeSetSubmission({
+      changeSetId: draft.changeSetId,
+      createReview: true,
+      newBranch: "docs/review",
+      message: "Review draft",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    const source = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(source.changeSet).toBeUndefined();
+    expect(source.files[0]?.content).toBe(before.files[0]?.baseContent);
+    const target = await repository.getChangeSetSubmission(draft.changeSetId);
+    expect(target).toMatchObject({
+      branch: "docs/review",
+      status: "submitting",
+      attachments: [{ repository_path: "static/img/a.png", storage_key: "stored/a.png" }],
+    });
+    expect(target?.files[0]?.ours_content).toBe("# Review draft");
+  });
+
+  it("retries a new-branch submission after branch creation failed before preparing a commit", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Draft",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.queueChangeSetSubmission({
+      changeSetId: draft.changeSetId,
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      createReview: true,
+      newBranch: "docs/retry",
+      message: "New review",
+    });
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("kind", "=", "change-set.submit")
+      .executeTakeFirstOrThrow();
+    await repository.failJob(job.id, "Network unavailable", false);
+    await repository.releaseChangeSetSubmission(
+      draft.changeSetId,
+      fixture.projectId,
+      "Network unavailable",
+    );
+    await repository.retryChangeSetSubmission(
+      draft.changeSetId,
+      fixture.projectId,
+      fixture.operatorId,
+    );
+    expect((await repository.getChangeSetSubmission(draft.changeSetId))?.status).toBe("submitting");
+    const retried = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", job.id)
+      .executeTakeFirstOrThrow();
+    expect(retried).toMatchObject({ status: "queued", payload: job.payload });
+  });
+
+  it("rejects an existing destination branch without moving drafts", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Draft",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.ensureBranch(fixture.projectId, "docs/existing", "head-1");
+    await expect(
+      repository.queueChangeSetSubmission({
+        changeSetId: draft.changeSetId,
+        createReview: true,
+        newBranch: "docs/existing",
+        message: "Draft",
+        projectId: fixture.projectId,
+        userId: fixture.operatorId,
+      }),
+    ).rejects.toBeInstanceOf(RevisionConflictError);
+    expect((await repository.listWorkingFiles(fixture.projectId, "main")).changeSet?.status).toBe(
+      "open",
+    );
+  });
+
+  it("starts the next edit with the published content before the background import finishes", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Published",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.markChangeSetSubmitted({
+      changeSetId: draft.changeSetId,
+      projectId: fixture.projectId,
+      commitSha: "head-2",
+      commitUrl: "url",
+    });
+    const state = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(state.files.find((file) => file.path === "docs/intro.md")).toMatchObject({
+      content: "# Published",
+      baseContent: "# Published",
+      status: "clean",
+    });
+    await repository.stageFiles({
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: "# Next edit" }],
+    });
+    const next = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(next.changeSet?.base_commit_sha).toBe("head-2");
+    expect(next.files.find((file) => file.path === "docs/intro.md")?.baseContent).toBe(
+      "# Published",
+    );
   });
 
   it("queues an open change set and exposes the complete submission", async () => {

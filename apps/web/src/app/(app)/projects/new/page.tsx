@@ -17,9 +17,7 @@ export default async function NewProjectPage() {
       </Link>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Импорт Docusaurus</p>
           <h1>Подключить проект</h1>
-          <p>Проект соответствует одному сайту документации и его корню в репозитории.</p>
         </div>
       </header>
 
@@ -37,7 +35,6 @@ export default async function NewProjectPage() {
       ) : (
         <form action={createProjectAction} className="project-form">
           <div className="form-section">
-            <span className="form-step">1</span>
             <div className="form-section-body">
               <h2>Репозиторий</h2>
               <div className="form-grid">
@@ -59,16 +56,11 @@ export default async function NewProjectPage() {
                     required
                   />
                 </label>
-                <p className="wide-field field-note">
-                  URL, полное имя и фактический ID PushDocs получит у провайдера. Так проект нельзя
-                  случайно связать с другим репозиторием.
-                </p>
               </div>
             </div>
           </div>
 
           <div className="form-section">
-            <span className="form-step">2</span>
             <div className="form-section-body">
               <h2>Проект документации</h2>
               <div className="form-grid">

@@ -257,10 +257,15 @@ export async function submitChangeSetAction(formData: FormData): Promise<void> {
   const input = submitChangeSetSchema.parse({
     ...Object.fromEntries(formData),
     createReview: formData.get("createReview") === "on",
+    newBranch: String(formData.get("newBranch") ?? "").trim() || undefined,
   });
   await repository().requireProjectAccess(user.id, input.projectId, "branch:push");
   await repository().queueChangeSetSubmission({ ...input, userId: user.id });
   revalidatePath(`/projects/${input.projectId}/changes`);
+  if (input.newBranch)
+    redirect(
+      `/projects/${input.projectId}/changes?${new URLSearchParams({ branch: input.newBranch })}`,
+    );
 }
 
 export async function resolveConflictAction(formData: FormData): Promise<void> {
@@ -286,6 +291,7 @@ export async function createProjectComponentAction(formData: FormData): Promise<
   await repository().requireProjectAccess(user.id, projectId, "project:configure");
   await repository().createProjectComponent({ ...input, projectId });
   revalidatePath(`/projects/${projectId}/settings`);
+  revalidatePath(`/projects/${projectId}/documents`);
 }
 
 export async function createDocumentAction(formData: FormData): Promise<void> {
@@ -298,4 +304,34 @@ export async function createDocumentAction(formData: FormData): Promise<void> {
   redirect(
     `/projects/${projectId}/documents?branch=${encodeURIComponent(input.branch)}&path=${encodeURIComponent(input.path)}`,
   );
+}
+
+export async function startGitOperationAction(input: {
+  projectId: string;
+  branch: string;
+  title?: string;
+}) {
+  const user = await requireUser();
+  const store = repository();
+  await store.requireProjectAccess(
+    user.id,
+    input.projectId,
+    input.title ? "branch:push" : "project:read",
+  );
+  if (input.title)
+    return store.enqueueReviewCreation(
+      input.projectId,
+      input.branch,
+      input.title.trim().slice(0, 255),
+      user.id,
+    );
+  return store.enqueueBranchSync(input.projectId, input.branch);
+}
+
+export async function gitOperationStatusAction(projectId: string, jobId: string) {
+  const user = await requireUser();
+  await repository().requireProjectAccess(user.id, projectId, "project:read");
+  const job = await repository().getProjectJob(projectId, jobId);
+  if (!job) throw new Error("Операция не найдена");
+  return job;
 }
