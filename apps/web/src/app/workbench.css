@@ -29,8 +29,7 @@
 }
 .workbench button:where(:not(.monaco-editor *)),
 .workbench .wb-actions a,
-.wb-discussions button,
-.preview-screen button {
+.wb-discussions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -91,16 +90,6 @@
 .wb-tree-tools {
   margin: 12px 0;
   justify-content: space-between;
-}
-.wb-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--ink-muted);
-}
-.wb-checkbox input {
-  width: auto;
 }
 .wb-tree nav {
   margin-top: 16px;
@@ -334,7 +323,7 @@
   font-size: 20px;
 }
 .wb-modal form,
-.wb-modal label:not(.wb-checkbox) {
+.wb-modal label {
   display: grid;
   gap: 8px;
 }
@@ -440,23 +429,6 @@
   border: 1px solid #ddd;
   border-radius: 8px;
   padding: 10px;
-}
-.wb-preview-build {
-  margin: 24px 0;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 20px;
-  min-width: 0;
-}
-.wb-preview-build pre {
-  max-height: 420px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-}
-.wb-preview-build h2 {
-  font-size: 18px;
 }
 .wb-branch-search {
   width: 150px;

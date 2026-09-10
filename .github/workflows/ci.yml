@@ -85,7 +85,6 @@ jobs:
     timeout-minutes: 35
     env:
       PUSHDOCS_IMAGE: pushdocs:ci
-      PUSHDOCS_PREVIEW_SERVICE_IMAGE: pushdocs-preview:ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,18 +104,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Build preview service image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/preview.Dockerfile
-          load: true
-          tags: pushdocs-preview:ci
-          cache-from: type=gha,scope=preview
-          cache-to: type=gha,mode=max,scope=preview
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
       - run: yarn smoke:install
       - name: Upload installation diagnostics
         if: always()
@@ -127,7 +114,7 @@ jobs:
           retention-days: 7
       - name: Export tested images
         if: github.event_name == 'push'
-        run: docker save pushdocs:ci pushdocs-preview:ci | gzip -1 > /tmp/images.tar.gz
+        run: docker save pushdocs:ci | gzip -1 > /tmp/images.tar.gz
       - name: Upload tested images
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -183,15 +170,13 @@ jobs:
             version=stable
           fi
           repository="ghcr.io/${REPOSITORY,,}"
-          for suffix in '' '-preview'; do
-            image="${repository}${suffix}"
-            docker tag "pushdocs${suffix}:ci" "$image:sha-$COMMIT_SHA"
-            docker tag "pushdocs${suffix}:ci" "$image:$version"
-            docker push "$image:sha-$COMMIT_SHA"
-            docker push "$image:$version"
-            digest=$(docker image inspect "$image:$version" --format '{{index .RepoDigests 0}}')
-            printf '%s\n' "$digest" >> image-digests.txt
-          done
+          image="$repository"
+          docker tag pushdocs:ci "$image:sha-$COMMIT_SHA"
+          docker tag pushdocs:ci "$image:$version"
+          docker push "$image:sha-$COMMIT_SHA"
+          docker push "$image:$version"
+          digest=$(docker image inspect "$image:$version" --format '{{index .RepoDigests 0}}')
+          printf '%s\n' "$digest" > image-digests.txt
           cat image-digests.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

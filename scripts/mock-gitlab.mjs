@@ -1,4 +1,4 @@
-// Local synthetic provider for repeatable UI/runner smoke tests. No external writes.
+// Local synthetic provider for repeatable UI smoke tests. No external writes.
 
 import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";

@@ -19,7 +19,7 @@ export function safePath(value: string): string {
 export function parseProjectConfig(source?: string | null): ProjectConfig {
   const config = projectConfigSchema.parse(source ? JSON.parse(source) : { version: 1 });
   for (const root of [...config.documentRoots, ...config.editableFiles]) safePath(root);
-  safePath(config.preview.output);
+  if (config.preview) safePath(config.preview.output);
   return config;
 }
 

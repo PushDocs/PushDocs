@@ -142,7 +142,7 @@ Front matter включает `recent_article` в 184 файлах, `sidebar_cus
 
 Проект уже собирает точный preview через CI. [.gitlab/preview-sites.json](https://gitlab.sndsy.ru/sendsay-ru/frontend/sendsay-docs/-/blob/9a8fc074742f14befadb5ebf940ec4948d72f9d4/.gitlab/preview-sites.json) задаёт сайт `docs`, Node 20.19.6, установку Yarn 1 и `yarn build`. Код [.gitlab/scripts/preview-utils.mjs](https://gitlab.sndsy.ru/sendsay-ru/frontend/sendsay-docs/-/blob/9a8fc074742f14befadb5ebf940ec4948d72f9d4/.gitlab/scripts/preview-utils.mjs) формирует URL вида `https://pr-<iid>.docs.sendsay.dev`, с возможностью переопределения через окружение.
 
-Источник для CMS, артефакт `preview-metadata/preview-docs.json` из успешной `preview:deploy`. Его поля включают `preview_url`, `conclusion`, `logs_url` и время сборки. SHA берётся из job и pipeline. Артефакт хранится 7 дней, а URL preview изменяемый, поэтому однажды найденная ссылка не считается вечным подтверждением актуальной сборки.
+PushDocs формирует адрес из настроенного шаблона `https://pr-{MR_NUMBER}.docs.sendsay.dev/`. Готовность определяется по успешной job `preview:deploy` для текущего SHA из API провайдера. URL preview изменяемый, поэтому после следующего коммита ссылка снова блокируется до завершения новой сборки.
 
 Бот создаёт или обновляет общий комментарий с маркером `preview-deploy`. PushDocs должен отображать изменения такого комментария без дублирования. Сам текст комментария не заменяет проверку текущей job.
 

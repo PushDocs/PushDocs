@@ -7,7 +7,6 @@ RUN corepack enable
 
 COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json turbo.json biome.json ./
 COPY apps/realtime/package.json ./apps/realtime/package.json
-COPY apps/preview/package.json ./apps/preview/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY apps/worker/package.json ./apps/worker/package.json
 COPY packages/content/package.json ./packages/content/package.json

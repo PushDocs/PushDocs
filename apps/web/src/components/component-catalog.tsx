@@ -150,9 +150,6 @@ function ComponentCard({
                   {example.path}
                 </Link>
               ) : null}
-              <Link href={`/projects/${projectId}/preview?${new URLSearchParams({ branch })}`}>
-                Открыть на сайте
-              </Link>
               {canEdit ? (
                 <button
                   className="pd-button pd-button--secondary"

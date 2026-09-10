@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { externalPreviewUrl } from "@/lib/external-preview";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "PR и MR" };
@@ -47,6 +48,10 @@ export default async function ReviewsPage({
   const readiness = evaluateMergeReadiness(checks);
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
   const providerName = project.provider === "gitlab" ? "GitLab" : "GitHub";
+  const previewUrl = selected
+    ? externalPreviewUrl(process.env.PUSHDOCS_PREVIEW_URL, selected.external_id)
+    : undefined;
+  const previewCheck = checks.find((check) => check.name === "preview:deploy");
 
   return (
     <div className="page">
@@ -116,6 +121,23 @@ export default async function ReviewsPage({
                   Открыть {reviewLabel} в {providerName}
                   <ExternalLink aria-hidden size={15} />
                 </a>
+                {previewUrl && previewCheck?.conclusion === "success" ? (
+                  <a
+                    className="pd-button pd-button--secondary"
+                    href={previewUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Открыть предпросмотр
+                    <ExternalLink aria-hidden size={15} />
+                  </a>
+                ) : previewUrl ? (
+                  <button className="pd-button pd-button--secondary" disabled type="button">
+                    {previewCheck?.conclusion === "failure"
+                      ? "Предпросмотр не собран"
+                      : "Предпросмотр обновляется"}
+                  </button>
+                ) : null}
               </nav>
               <div className="checks-panel">
                 <div className="checks-title">

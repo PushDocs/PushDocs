@@ -9,7 +9,6 @@ import {
   Check,
   ChevronDown,
   Columns2,
-  Eye,
   GitBranch,
   Heading2,
   MessageSquare,
@@ -863,19 +862,6 @@ export function Workbench({
               </button>
             </div>
           </details>
-          <Link
-            href={`/projects/${projectId}/preview?${new URLSearchParams({ branch, path: selected })}`}
-            onClick={async (event) => {
-              event.preventDefault();
-              if (await save())
-                router.push(
-                  `/projects/${projectId}/preview?${new URLSearchParams({ branch, path: selected })}`,
-                );
-            }}
-          >
-            <Eye size={16} />
-            Открыть сайт
-          </Link>
           <Link
             className="wb-primary"
             href={`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`}

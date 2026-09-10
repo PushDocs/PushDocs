@@ -74,7 +74,7 @@ export function AppShell({
       if (!activeProject || !pathname.startsWith("/projects/")) return;
       const query = new URLSearchParams(window.location.search);
       setCurrentBranch(
-        (/\/(documents|changes|preview)$/.test(pathname) ? query.get("branch") : null) ||
+        (/\/(documents|changes)$/.test(pathname) ? query.get("branch") : null) ||
           readProjectBranch(activeProject.id, activeProject.defaultBranch),
       );
     };

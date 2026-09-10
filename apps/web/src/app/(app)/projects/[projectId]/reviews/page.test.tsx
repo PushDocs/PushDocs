@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   reviews: [
     {
       id: "first",
+      external_id: "1",
       source_branch: "other",
       target_branch: "stable",
       title: "Other",
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     },
     {
       id: "selected",
+      external_id: "42",
       source_branch: "docs/fix #1",
       target_branch: "stable",
       title: "Selected",
@@ -43,6 +45,34 @@ import ReviewsPage from "./page";
 afterEach(() => {
   cleanup();
   sessionStorage.clear();
+  vi.unstubAllEnvs();
+});
+
+it("opens the external preview only after its current deploy check succeeds", async () => {
+  vi.stubEnv("PUSHDOCS_PREVIEW_URL", "https://pr-{MR_NUMBER}.docs.example.test/");
+  mocks.checks.mockResolvedValueOnce([
+    { id: "preview", name: "preview:deploy", conclusion: "success", required: false },
+  ]);
+  const ready = renderToStaticMarkup(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected" }),
+    }),
+  );
+  expect(ready).toContain('href="https://pr-42.docs.example.test/"');
+  expect(ready).toContain("Открыть предпросмотр");
+
+  mocks.checks.mockResolvedValueOnce([
+    { id: "preview", name: "preview:deploy", conclusion: "running", required: false },
+  ]);
+  const pending = renderToStaticMarkup(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected" }),
+    }),
+  );
+  expect(pending).not.toContain('href="https://pr-42.docs.example.test/"');
+  expect(pending).toContain("Предпросмотр обновляется");
 });
 
 it("opens the selected review source branch, including URL special characters", async () => {

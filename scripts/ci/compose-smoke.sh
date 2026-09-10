@@ -6,7 +6,6 @@ cd "$(dirname "$0")/../.."
 project="pushdocs-ci-$(date +%s)-$$"
 backup=$(mktemp -d)
 export PUSHDOCS_IMAGE=${PUSHDOCS_IMAGE:-pushdocs:ci}
-export PUSHDOCS_PREVIEW_SERVICE_IMAGE=${PUSHDOCS_PREVIEW_SERVICE_IMAGE:-pushdocs-preview:ci}
 port=${PUSHDOCS_CI_PORT:-18080}
 export PUSHDOCS_HTTP_PORT="127.0.0.1:$port"
 export PUSHDOCS_HTTPS_PORT="127.0.0.1:0"
@@ -19,9 +18,6 @@ export PUSHDOCS_ENCRYPTION_KEY
 PUSHDOCS_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export PUSHDOCS_SESSION_PEPPER
 PUSHDOCS_SESSION_PEPPER=$(openssl rand -hex 32)
-export PUSHDOCS_PREVIEW_KEY
-PUSHDOCS_PREVIEW_KEY=$(openssl rand -hex 32)
-export PUSHDOCS_PREVIEW_DOMAIN=preview.example.test
 unset PUSHDOCS_E2E_RESTORED
 
 compose() { docker compose --env-file /dev/null -p "$project" -f compose.yml "$@"; }
@@ -43,8 +39,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 compose config --quiet
-docker compose --env-file /dev/null -p "$project" -f compose.yml -f compose.preview.yml config --quiet
-docker run --rm --network none --entrypoint docker "$PUSHDOCS_PREVIEW_SERVICE_IMAGE" --version
 compose up --no-build --wait --wait-timeout 180
 health_response=""
 for _ in {1..30}; do

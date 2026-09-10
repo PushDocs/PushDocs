@@ -23,11 +23,11 @@ The repository contains a working MVP:
 - The review screen displays open pull requests or merge requests and their current checks.
 - A project can register custom MDX components. The editor inserts their configured source snippets and shows safe placeholders in preview.
 - The document workbench has a file tree, persisted and closeable tabs, content search, language/version/status filters, highlighted MDX source with line numbers, scalar metadata forms, quick Markdown preview, and side-by-side comparison. It preserves untouched MDX bytes and line endings when editing.
-- Administrators can create and edit `.pushdocs/config.json` in the workbench. The configuration defines document roots, editable technical files, document templates with companion files, media paths and preview commands. It contains no repository-specific rules in application code.
+- Administrators can create and edit `.pushdocs/config.json` in the workbench. The configuration defines document roots, editable technical files, document templates with companion files and media paths. It contains no repository-specific rules in application code.
 - The media library lists existing Git files and uploads, supports drag and drop, progress, cancellation, retry, deletion and link insertion. Uploads require explicit replacement of existing files. Limits are 64 MiB per file, 256 MiB per submission and four active uploads per project.
-- An optional preview runner builds the actual Docusaurus site from an immutable Git SHA with staged text and binary files. A preview does not create a commit or MR.
+- After changes are sent, the review screen links to the documentation preview built by the repository's existing CI pipeline.
 
-The web application and the regular worker do not execute repository JavaScript. Quick preview renders Markdown without executing MDX. Only the optional, isolated preview build container executes the site's components and plugins.
+The web application and worker do not execute repository JavaScript. Quick preview renders Markdown without executing MDX; the repository's CI pipeline renders the complete site after changes are sent.
 
 ## Current limits
 
@@ -36,7 +36,7 @@ The web application and the regular worker do not execute repository JavaScript.
 - Review state is refreshed every 30 seconds. Provider webhooks are not implemented yet.
 - The write path has real local Git and PostgreSQL integration tests. Live provider acceptance requires separately agreed test repositories. Tests never push to sendsay-docs.
 - The updated development plan is only partially implemented. Merge/rebase, provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
-- Preview is experimental and opt-in. Operators can grant runtime profiles to individual projects and must prepare an offline dependency cache. The queue permits two active builds per project. Completed outputs expire after seven days, with up to three successful results per branch. Automated private-dependency preparation and installation-wide disk quotas remain open.
+- A CI preview link becomes available only after the `preview:deploy` check succeeds for the current PR or MR commit.
 
 ## Run with Docker Compose
 
@@ -67,9 +67,15 @@ yarn dev:all
 The web application listens on port 3000, and the realtime process listens on port 4100.
 Set `PUSHDOCS_REALTIME_ORIGIN=http://127.0.0.1:4100` for direct local development. Compose routes `/events` through Caddy. Set `PUSHDOCS_PUBLIC_ORIGIN` to the exact public CMS origin when using a reverse proxy.
 
-## Exact draft preview
+## CI preview
 
-The optional [preview setup guide](development/preview.md) explains the runtime image, offline dependencies, separate domain and Compose overlay. Do not enable the Docker runner on a shared production host for untrusted repositories.
+If the documentation repository already deploys a preview for every PR or MR, add its URL template to `.env` and restart PushDocs:
+
+~~~sh
+PUSHDOCS_PREVIEW_URL=https://pr-{MR_NUMBER}.docs.example.com/
+~~~
+
+PushDocs accepts `{MR_NUMBER}`, `{PR_NUMBER}` and the provider-neutral `{REVIEW_NUMBER}` placeholder. The review page enables **Открыть предпросмотр** after `preview:deploy` succeeds for the current commit. Until then it shows that the preview is updating. The exact site preview therefore uses the same CI deployment that reviewers already use; before sending changes, the editor continues to provide its safe Markdown preview.
 
 The editor's **Конфигурация проекта** button creates or opens the versioned configuration. Saving it stages a draft; it does not commit the file. Templates show their complete list of files before applying. Unsupported navigation and configuration formats remain source files, not executable CMS extensions.
 

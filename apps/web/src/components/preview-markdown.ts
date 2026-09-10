@@ -258,7 +258,7 @@ export function previewPlugin(context: PreviewContext) {
             ];
             element(node, inline ? "span" : "div", {
               className: "wb-preview-component",
-              title: `Компонент ${name}. Полный вид доступен через «Открыть сайт».`,
+              title: `Компонент ${name}. Полный вид доступен в предпросмотре после отправки изменений.`,
             });
           }
         }

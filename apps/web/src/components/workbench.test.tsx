@@ -684,7 +684,7 @@ it("keeps typing entered while an earlier save is in flight", async () => {
   expect(state.files[0]?.content).toBe("вторая");
 });
 
-it("protects unload and saves before sidebar and preview navigation", async () => {
+it("protects unload and saves before sidebar navigation", async () => {
   mount();
   const clean = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(clean);
@@ -707,12 +707,6 @@ it("protects unload and saves before sidebar and preview navigation", async () =
   expect(mocks.push).toHaveBeenCalledWith("/projects");
   anchor.remove();
   fireEvent.click(screen.getByText("Документы"), { ctrlKey: true });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("link", { name: "Открыть сайт" }));
-  });
-  expect(mocks.push).toHaveBeenCalledWith(
-    "/projects/project/preview?branch=main&path=docs%2Fa.mdx",
-  );
 });
 
 it("opens document tabs and manually saves a selected component", async () => {

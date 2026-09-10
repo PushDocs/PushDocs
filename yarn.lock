@@ -1112,20 +1112,6 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@pushdocs/preview@workspace:apps/preview":
-  version: 0.0.0-use.local
-  resolution: "@pushdocs/preview@workspace:apps/preview"
-  dependencies:
-    "@pushdocs/content": "workspace:*"
-    "@pushdocs/db": "workspace:*"
-    "@pushdocs/providers": "workspace:*"
-    "@types/node": "npm:20.19.24"
-    tsx: "npm:4.20.6"
-    typescript: "npm:5.9.3"
-    vitest: "npm:4.1.10"
-  languageName: unknown
-  linkType: soft
-
 "@pushdocs/providers@workspace:*, @pushdocs/providers@workspace:packages/providers":
   version: 0.0.0-use.local
   resolution: "@pushdocs/providers@workspace:packages/providers"

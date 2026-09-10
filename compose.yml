@@ -56,6 +56,7 @@ services:
       <<: *app-environment
       HOSTNAME: "0.0.0.0"
       PUSHDOCS_PUBLIC_ORIGIN: ${PUSHDOCS_PUBLIC_ORIGIN:?Run ./scripts/install.sh first}
+      PUSHDOCS_PREVIEW_URL: ${PUSHDOCS_PREVIEW_URL:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
