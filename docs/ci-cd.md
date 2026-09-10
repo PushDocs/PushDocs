@@ -10,7 +10,7 @@ The `CI` job succeeds only when all three jobs succeed:
 | --- | --- |
 | Quality checks | Immutable Yarn install, lint, format, package boundaries, TypeScript, unit tests and production build |
 | PostgreSQL and Git recovery | Real PostgreSQL 17 and temporary local Git repositories, including retry after an accepted push and concurrent writes |
-| Compose, browser and restore | Both Docker images, Compose configuration, migrations, service health, Chromium sessions, backup and restore |
+| Compose, browser and restore | Generated installation secrets, both Docker images, Compose configuration, migrations, service health, Chromium sessions, backup and restore |
 
 The installation job uses a unique Compose project and fresh volumes. It checks the application through Caddy, including the unauthenticated SSE response. Chromium creates the first operator, checks incorrect credentials, logs in and verifies that a second browser context remains anonymous.
 
@@ -37,6 +37,8 @@ Version tags must have the form `vMAJOR.MINOR.PATCH`, optionally followed by a p
 Set `PUSHDOCS_IMAGE` to the application reference. The optional preview overlay accepts `PUSHDOCS_PREVIEW_SERVICE_IMAGE` for the runner service. `PUSHDOCS_PREVIEW_IMAGE` still identifies the separate runtime that builds a documentation project.
 
 Delivery ends at GHCR. Operators update their own servers using the published digests and their production configuration. Before migrations, stop writers and take a consistent backup of the database and attachments, with the encryption key stored separately. Pull the images, run the one-shot `migrate` service and start the application only after migration succeeds. The smoke test validates restoration of the current schema; it does not prove compatibility with every previous release or allow rollback after an incompatible migration.
+
+The first installation runs `./scripts/install.sh https://docs.example.com`. The installer generates the PostgreSQL password, session pepper and encryption key in a mode 600 `.env` file. It never rotates existing secrets. The public origin remains an explicit input because it depends on the operator's DNS and TLS setup.
 
 ## GitHub setup
 

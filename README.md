@@ -40,17 +40,19 @@ The web application and the regular worker do not execute repository JavaScript.
 
 ## Run with Docker Compose
 
-Create production secrets before exposing the service:
+Run the installer with the public origin of the CMS:
 
 ~~~sh
-export PUSHDOCS_SESSION_PEPPER="$(openssl rand -hex 32)"
-export PUSHDOCS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
-docker compose up --build
+./scripts/install.sh https://docs.example.com
 ~~~
 
-Open `http://localhost:8080` and create the first operator. Add a Git connection, then connect a Docusaurus project. You can paste a repository URL, a GitLab numeric project ID, a GitLab namespace and path, or a GitHub owner and repository name. The worker imports the default branch in the background.
+The installer creates `.env` with a PostgreSQL password, session pepper and encryption key. It sets permission mode 600 and does not replace the file on later runs. Back up `.env` separately from the database and attachments because the encryption key is required to read saved Git credentials.
 
-The defaults in `compose.yml` are for local evaluation only. A production deployment must provide both secrets and a strong PostgreSQL password.
+`PUSHDOCS_PUBLIC_ORIGIN` is the only value the installer cannot generate. It must match the DNS name and TLS address used by browsers. Production installations require an HTTPS origin. Plain HTTP is accepted only for localhost.
+
+Open the configured origin and create the first operator. Add a Git connection, then connect a Docusaurus project. You can paste a repository URL, a GitLab numeric project ID, a GitLab namespace and path, or a GitHub owner and repository name. The worker imports the default branch in the background.
+
+Run the same command again to update or restart the installation. Existing secrets remain unchanged. Use `--prepare-only` to create `.env` without starting containers. For local evaluation, run `./scripts/install.sh http://localhost:8080`.
 
 ## Local development
 

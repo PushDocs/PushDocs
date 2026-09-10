@@ -26,6 +26,7 @@
     "smoke:install": "bash scripts/ci/compose-smoke.sh",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:install": "bash scripts/ci/install.test.sh",
     "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
     "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json"
   },

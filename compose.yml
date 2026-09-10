@@ -6,10 +6,10 @@ x-app: &app
     dockerfile: Dockerfile
   image: ${PUSHDOCS_IMAGE:-pushdocs:local}
   environment: &app-environment
-    DATABASE_URL: postgres://pushdocs:pushdocs@postgres:5432/pushdocs
+    DATABASE_URL: postgres://pushdocs:${POSTGRES_PASSWORD:?Run ./scripts/install.sh first}@postgres:5432/pushdocs
     PUSHDOCS_ATTACHMENTS_DIR: /data/attachments
-    PUSHDOCS_ENCRYPTION_KEY: ${PUSHDOCS_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
-    PUSHDOCS_SESSION_PEPPER: ${PUSHDOCS_SESSION_PEPPER:-development-only-pepper-change-me-1234567890}
+    PUSHDOCS_ENCRYPTION_KEY: ${PUSHDOCS_ENCRYPTION_KEY:?Run ./scripts/install.sh first}
+    PUSHDOCS_SESSION_PEPPER: ${PUSHDOCS_SESSION_PEPPER:?Run ./scripts/install.sh first}
   restart: unless-stopped
   read_only: true
   cap_drop:
@@ -22,7 +22,7 @@ services:
     image: postgres:17.6-alpine3.22
     environment:
       POSTGRES_DB: pushdocs
-      POSTGRES_PASSWORD: pushdocs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/install.sh first}
       POSTGRES_USER: pushdocs
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --data-checksums
     restart: unless-stopped
@@ -55,7 +55,7 @@ services:
     environment:
       <<: *app-environment
       HOSTNAME: "0.0.0.0"
-      PUSHDOCS_PUBLIC_ORIGIN: ${PUSHDOCS_PUBLIC_ORIGIN:-http://localhost:8080}
+      PUSHDOCS_PUBLIC_ORIGIN: ${PUSHDOCS_PUBLIC_ORIGIN:?Run ./scripts/install.sh first}
     depends_on:
       migrate:
         condition: service_completed_successfully

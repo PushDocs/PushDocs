@@ -13,6 +13,8 @@ export PUSHDOCS_HTTPS_PORT="127.0.0.1:0"
 export PUSHDOCS_ADDRESS=:80
 export PUSHDOCS_PUBLIC_ORIGIN="http://localhost:$port"
 export PUSHDOCS_E2E_BASE_URL="$PUSHDOCS_PUBLIC_ORIGIN"
+export POSTGRES_PASSWORD
+POSTGRES_PASSWORD=$(openssl rand -hex 32)
 export PUSHDOCS_ENCRYPTION_KEY
 PUSHDOCS_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export PUSHDOCS_SESSION_PEPPER
@@ -44,7 +46,18 @@ compose config --quiet
 docker compose --env-file /dev/null -p "$project" -f compose.yml -f compose.preview.yml config --quiet
 docker run --rm --network none --entrypoint docker "$PUSHDOCS_PREVIEW_SERVICE_IMAGE" --version
 compose up --no-build --wait --wait-timeout 180
-curl --fail --silent --show-error "$PUSHDOCS_E2E_BASE_URL/api/health"
+health_response=""
+for _ in {1..30}; do
+  if health_response=$(curl --fail --silent "$PUSHDOCS_E2E_BASE_URL/api/health" 2>/dev/null); then
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$health_response" ]]; then
+  echo "The application did not become reachable through Caddy" >&2
+  exit 1
+fi
+echo "$health_response"
 test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$PUSHDOCS_E2E_BASE_URL/events")" = 401
 test "$(compose exec -T worker id -u)" = 1001
 compose exec -T worker git --version
