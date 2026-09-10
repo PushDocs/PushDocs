@@ -203,6 +203,7 @@ jobs:
         env:
           APPLICATION_IMAGE: ${{ needs.publish.outputs.application_image }}
           COMMIT_SHA: ${{ github.sha }}
+          PREVIEW_URL: ${{ vars.PUSHDOCS_PREVIEW_URL }}
           PUBLIC_ORIGIN: ${{ vars.PUSHDOCS_PUBLIC_ORIGIN }}
           RUN_NUMBER: ${{ github.run_number }}
           SSH_HOST: ${{ vars.SSH_HOST }}
@@ -232,6 +233,16 @@ jobs:
             echo "PUSHDOCS_PUBLIC_ORIGIN must be an HTTPS host without a path or port" >&2
             exit 1
           }
+          if [[ -n "$PREVIEW_URL" ]]; then
+            [[ "$PREVIEW_URL" == https://* && "$PREVIEW_URL" != *"'"* && "$PREVIEW_URL" != *$'\n'* && "$PREVIEW_URL" != *$'\r'* ]] || {
+              echo "PUSHDOCS_PREVIEW_URL must be a safe HTTPS URL template" >&2
+              exit 1
+            }
+            [[ "$PREVIEW_URL" == *'{MR_NUMBER}'* || "$PREVIEW_URL" == *'{PR_NUMBER}'* || "$PREVIEW_URL" == *'{REVIEW_NUMBER}'* ]] || {
+              echo "PUSHDOCS_PREVIEW_URL must contain a supported review number placeholder" >&2
+              exit 1
+            }
+          fi
 
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/pushdocs"
@@ -255,4 +266,4 @@ jobs:
           target="$SSH_USER@$SSH_HOST"
           scp "${options[@]}" "$archive" "$target:pushdocs-deploy.tar.gz"
           ssh "${options[@]}" "$target" \
-            "set -e; install -d -m 700 pushdocs; tar -xzf pushdocs-deploy.tar.gz -C pushdocs; rm pushdocs-deploy.tar.gz; cd pushdocs; chmod 700 scripts/install.sh scripts/deploy.sh; ./scripts/deploy.sh '$APPLICATION_IMAGE' '$PUBLIC_ORIGIN' '$RUN_NUMBER' '$COMMIT_SHA'"
+            "set -e; install -d -m 700 pushdocs; tar -xzf pushdocs-deploy.tar.gz -C pushdocs; rm pushdocs-deploy.tar.gz; cd pushdocs; chmod 700 scripts/install.sh scripts/deploy.sh; ./scripts/deploy.sh '$APPLICATION_IMAGE' '$PUBLIC_ORIGIN' '$PREVIEW_URL' '$RUN_NUMBER' '$COMMIT_SHA'"

@@ -5,8 +5,9 @@ cd "$(dirname "$0")/.."
 
 image=${1:-}
 public_origin=${2:-}
-run_number=${3:-}
-revision=${4:-}
+preview_url=${3:-}
+run_number=${4:-}
+revision=${5:-}
 backup_root=${PUSHDOCS_BACKUP_DIR:-$HOME/pushdocs-backups}
 secret_backup_root=${PUSHDOCS_SECRET_BACKUP_DIR:-$HOME/pushdocs-secret-backups}
 
@@ -18,6 +19,17 @@ fi
 if [[ ! "$public_origin" =~ ^https://[A-Za-z0-9.-]+$ ]]; then
   echo "The production public origin must be an HTTPS host without a path or port." >&2
   exit 2
+fi
+
+if [[ -n "$preview_url" ]]; then
+  if [[ "$preview_url" != https://* || "$preview_url" == *"'"* || "$preview_url" == *$'\n'* || "$preview_url" == *$'\r'* ]]; then
+    echo "The preview URL must be a safe HTTPS URL template." >&2
+    exit 2
+  fi
+  if [[ "$preview_url" != *'{MR_NUMBER}'* && "$preview_url" != *'{PR_NUMBER}'* && "$preview_url" != *'{REVIEW_NUMBER}'* ]]; then
+    echo "The preview URL must contain a supported review number placeholder." >&2
+    exit 2
+  fi
 fi
 
 if [[ ! "$run_number" =~ ^[0-9]+$ || ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
@@ -105,6 +117,7 @@ set_setting PUSHDOCS_ADDRESS "$authority"
 set_setting PUSHDOCS_HTTP_PORT 80
 set_setting PUSHDOCS_HTTPS_PORT 443
 set_setting PUSHDOCS_IMAGE "$image"
+set_setting PUSHDOCS_PREVIEW_URL "$preview_url"
 
 "${compose[@]}" config --quiet
 "${compose[@]}" pull

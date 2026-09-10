@@ -54,8 +54,11 @@ Production deployment reads these repository settings:
 | Variable | `SSH_USER` | SSH account with Docker access |
 | Secret | `SSH_KEY` | Private key accepted by that account |
 | Optional variable | `PUSHDOCS_PUBLIC_ORIGIN` | Exact HTTPS origin for a custom DNS name |
+| Optional variable | `PUSHDOCS_PREVIEW_URL` | HTTPS preview URL template with a supported review number placeholder |
 
 When `PUSHDOCS_PUBLIC_ORIGIN` is absent and `SSH_HOST` is an IPv4 address, the first deployment uses `https://pushdocs.<dashed-ip>.sslip.io`. This gives the clean installation a DNS name for automatic TLS without another required setting. Add your own DNS record and set the optional variable when a permanent domain is ready.
+
+Both application variables are copied to the server `.env` on every successful deployment. `PUSHDOCS_PREVIEW_URL` accepts `{MR_NUMBER}`, `{PR_NUMBER}` or `{REVIEW_NUMBER}`. Set it to an empty repository variable to disable the external preview link.
 
 The server's public Ed25519 host key is pinned in `.github/ssh_known_hosts`. A secret is unnecessary because host keys are public. Pinning still matters: SSH must reject a different server instead of sending deployment commands through an unverified connection. Update the checked-in key through an already trusted connection after an intentional SSH host-key rotation.
 
