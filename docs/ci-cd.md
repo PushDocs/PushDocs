@@ -36,7 +36,7 @@ Version tags must have the form `vMAJOR.MINOR.PATCH`, optionally followed by a p
 
 Set `PUSHDOCS_IMAGE` to the application reference. Set `PUSHDOCS_PREVIEW_URL` to the existing CI preview URL template when the review screen should link to it.
 
-Delivery ends at GHCR. Operators update their own servers using the published digests and their production configuration. Before migrations, stop writers and take a consistent backup of the database and attachments, with the encryption key stored separately. Pull the images, run the one-shot `migrate` service and start the application only after migration succeeds. The smoke test validates restoration of the current schema; it does not prove compatibility with every previous release or allow rollback after an incompatible migration.
+Every push to `stable` runs its own complete check set. After successful publication, it is deployed to production. The deployment uses the tested application digest, transfers only the Compose and deployment files over SSH, and pulls the public image without registry credentials. A server lock serializes concurrent deployments, and the run number prevents an older, slower workflow from replacing a newer release. Before migrations, the script stops writers and saves PostgreSQL and attachments under `~/pushdocs-backups`. It stores a mode 600 copy of `.env` separately under `~/pushdocs-secret-backups`. The latest ten deployment backups are retained. The new services start only after the one-shot migration succeeds. The smoke test validates restoration of the current schema; it does not prove compatibility with every previous release or allow rollback after an incompatible migration.
 
 The first installation runs `./scripts/install.sh https://docs.example.com`. The installer generates the PostgreSQL password, session pepper and encryption key in a mode 600 `.env` file. It never rotates existing secrets. The public origin remains an explicit input because it depends on the operator's DNS and TLS setup.
 
@@ -45,6 +45,19 @@ The first installation runs `./scripts/install.sh https://docs.example.com`. The
 GitHub Actions is enabled for the repository. Once the workflow has run, select `CI` as a required status check in **Settings → Rules → Rulesets** for `stable`. The workflow reports results but does not change branch rules.
 
 GHCR publication uses the workflow's `GITHUB_TOKEN`, so no personal token secret is needed. Organization policy must allow package creation. If an existing package is used, give this repository write access in the package's **Settings → Manage Actions access**. For anonymous image pulls, set package visibility to public after the first publication.
+
+Production deployment reads these repository settings:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `SSH_HOST` | Production server host or IP address |
+| Variable | `SSH_USER` | SSH account with Docker access |
+| Secret | `SSH_KEY` | Private key accepted by that account |
+| Optional variable | `PUSHDOCS_PUBLIC_ORIGIN` | Exact HTTPS origin for a custom DNS name |
+
+When `PUSHDOCS_PUBLIC_ORIGIN` is absent and `SSH_HOST` is an IPv4 address, the first deployment uses `https://pushdocs.<dashed-ip>.sslip.io`. This gives the clean installation a DNS name for automatic TLS without another required setting. Add your own DNS record and set the optional variable when a permanent domain is ready.
+
+The server's public Ed25519 host key is pinned in `.github/ssh_known_hosts`. A secret is unnecessary because host keys are public. Pinning still matters: SSH must reject a different server instead of sending deployment commands through an unverified connection. Update the checked-in key through an already trusted connection after an intentional SSH host-key rotation.
 
 Create a version tag on a reviewed commit to request a release. Manual workflow dispatch checks the selected ref without publishing images.
 
