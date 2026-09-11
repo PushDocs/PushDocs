@@ -1,7 +1,7 @@
 "use server";
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   acceptInvitationSchema,
@@ -11,11 +11,15 @@ import {
   createConnectionSchema,
   createDocumentSchema,
   createProjectSchema,
+  deleteConnectionSchema,
+  deleteProjectSchema,
   inviteMemberSchema,
   loginSchema,
   resolveConflictSchema,
   saveDraftSchema,
   submitChangeSetSchema,
+  updateConnectionSchema,
+  updateProjectSchema,
 } from "@pushdocs/contracts";
 import {
   createOpaqueToken,
@@ -95,6 +99,51 @@ export async function createConnectionAction(formData: FormData): Promise<void> 
     revalidatePath(`/projects/${projectId}/settings/connections`);
 }
 
+export async function updateConnectionAction(formData: FormData): Promise<void> {
+  const user = await requireOperator();
+  const input = updateConnectionSchema.parse(Object.fromEntries(formData));
+  const current = await repository().getConnection(input.connectionId);
+  if (!current) throw new Error("CONNECTION_NOT_FOUND");
+  const repositoryIds = await repository().listConnectionRepositories(input.connectionId);
+  const credentialsChanged = Boolean(input.token) || input.baseUrl !== current.base_url;
+  if (credentialsChanged) {
+    if (input.baseUrl !== current.base_url && repositoryIds.length > 0)
+      throw new Error("CONNECTION_BASE_URL_IN_USE");
+    const provider = createProvider({
+      baseUrl: input.baseUrl,
+      kind: current.kind,
+      token: input.token || decryptSecret(current.secret_encrypted),
+    });
+    for (const repositoryId of repositoryIds) await provider.listBranches(repositoryId);
+  }
+  await application().updateConnection(actor(user), {
+    baseUrl: input.baseUrl,
+    connectionId: input.connectionId,
+    name: input.name,
+    ...(input.token ? { secretEncrypted: encryptSecret(input.token) } : {}),
+  });
+  if (credentialsChanged)
+    for (const project of await repository().listConnectionProjects(input.connectionId))
+      await repository().enqueueBranchSync(project.id, project.default_branch);
+  revalidatePath("/settings/connections");
+  revalidatePath("/projects");
+  const projectId = formData.get("projectId");
+  if (typeof projectId === "string" && projectId)
+    revalidatePath(`/projects/${projectId}/settings/connections`);
+}
+
+export async function deleteConnectionAction(formData: FormData): Promise<void> {
+  const user = await requireOperator();
+  const input = deleteConnectionSchema.parse(Object.fromEntries(formData));
+  const current = await repository().getConnection(input.connectionId);
+  if (!current) throw new Error("CONNECTION_NOT_FOUND");
+  if (input.confirmation !== current.name) throw new Error("CONFIRMATION_MISMATCH");
+  await application().deleteConnection(actor(user), input.connectionId);
+  revalidatePath("/settings/connections");
+  revalidatePath("/projects");
+  redirect("/settings/connections");
+}
+
 export async function createProjectAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
   const input = createProjectSchema.parse(Object.fromEntries(formData));
@@ -108,14 +157,62 @@ export async function createProjectAction(formData: FormData): Promise<void> {
   const remote = await provider.getRepository(
     normalizeRepositoryLocator(connection.kind, input.repositoryProviderId),
   );
+  const defaultBranch = input.defaultBranch || remote.defaultBranch;
+  const branches = await provider.listBranches(remote.id);
+  if (!branches.some((branch) => branch.name === defaultBranch))
+    throw new Error("DEFAULT_BRANCH_NOT_FOUND");
   const created = (await application().createProject(actor(user), {
     ...input,
-    defaultBranch: input.defaultBranch || remote.defaultBranch,
+    defaultBranch,
     repositoryFullName: remote.fullName,
     repositoryProviderId: remote.id,
     repositoryUrl: remote.cloneUrl,
   })) as { id: string };
   redirect(`/projects/${created.id}/documents`);
+}
+
+export async function updateProjectAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = updateProjectSchema.parse(Object.fromEntries(formData));
+  await repository().requireProjectAccess(user.id, input.projectId, "project:configure");
+  const current = await repository().getProjectSettings(input.projectId);
+  if (!current) throw new Error("PROJECT_NOT_FOUND");
+  if (current.default_branch !== input.defaultBranch) {
+    const target = await repository().getProjectSyncTarget(input.projectId);
+    if (!target) throw new Error("PROJECT_CONNECTION_NOT_FOUND");
+    const provider = createProvider({
+      baseUrl: target.base_url,
+      kind: target.kind,
+      token: decryptSecret(target.secret_encrypted),
+    });
+    const branches = await provider.listBranches(target.provider_repository_id);
+    if (!branches.some((branch) => branch.name === input.defaultBranch))
+      throw new Error("DEFAULT_BRANCH_NOT_FOUND");
+  }
+  const needsSync =
+    current.default_branch !== input.defaultBranch || current.root_path !== input.rootPath;
+  await application().updateProject(actor(user), input);
+  if (needsSync) await repository().enqueueBranchSync(input.projectId, input.defaultBranch);
+  revalidatePath("/projects");
+  revalidatePath(`/projects/${input.projectId}/settings`);
+  revalidatePath(`/projects/${input.projectId}/documents`);
+}
+
+export async function deleteProjectAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const input = deleteProjectSchema.parse(Object.fromEntries(formData));
+  await repository().requireProjectAccess(user.id, input.projectId, "project:configure");
+  const current = await repository().getProjectSettings(input.projectId);
+  if (!current) throw new Error("PROJECT_NOT_FOUND");
+  if (input.confirmation !== current.slug) throw new Error("CONFIRMATION_MISMATCH");
+  await application().deleteProject(actor(user), input.projectId);
+  const attachmentsRoot = path.resolve(
+    /* turbopackIgnore: true */
+    process.env.PUSHDOCS_ATTACHMENTS_DIR ?? "./data/attachments",
+  );
+  await rm(path.join(attachmentsRoot, input.projectId), { force: true, recursive: true });
+  revalidatePath("/projects");
+  redirect("/projects");
 }
 
 export async function saveDraftAction(
@@ -248,13 +345,14 @@ export async function uploadAttachmentAction(formData: FormData): Promise<void> 
   revalidatePath(`/projects/${projectId}/files`);
 }
 
-export async function synchronizeBranchAction(formData: FormData): Promise<void> {
+export async function synchronizeBranchAction(formData: FormData): Promise<string> {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   const branch = String(formData.get("branch"));
   await repository().requireProjectAccess(user.id, projectId, "project:read");
-  await repository().enqueueBranchSync(projectId, branch);
+  const jobId = await repository().enqueueBranchSync(projectId, branch);
   revalidatePath(`/projects/${projectId}/documents`);
+  return jobId;
 }
 
 export async function submitChangeSetAction(formData: FormData): Promise<void> {

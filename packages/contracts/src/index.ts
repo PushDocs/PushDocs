@@ -119,6 +119,36 @@ export const createConnectionSchema = z.object({
   token: z.string().min(1).max(4000),
 });
 
+export const updateConnectionSchema = z.object({
+  baseUrl: z.url(),
+  connectionId: z.uuid(),
+  name: z.string().trim().min(2).max(100),
+  token: z.string().max(4000).optional().default(""),
+});
+
+export const deleteConnectionSchema = z.object({
+  confirmation: z.string().min(1).max(100),
+  connectionId: z.uuid(),
+});
+
+export const updateProjectSchema = z.object({
+  defaultBranch: z.string().trim().min(1).max(255),
+  name: z.string().trim().min(2).max(120),
+  projectId: z.uuid(),
+  rootPath: z.string().trim().max(500).default("."),
+  slug: z
+    .string()
+    .trim()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+});
+
+export const deleteProjectSchema = z.object({
+  confirmation: z.string().min(1).max(80),
+  projectId: z.uuid(),
+});
+
 export const saveDraftSchema = z.object({
   baseCommitSha: z.string().trim().min(7).max(64),
   branch: z.string().trim().min(1).max(255),

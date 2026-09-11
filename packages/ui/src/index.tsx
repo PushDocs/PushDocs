@@ -21,21 +21,50 @@ export interface SelectOption {
 }
 
 export function Select({
+  ariaDescribedBy,
+  className,
+  defaultValue,
+  disabled,
+  id,
   label,
+  name,
   onValueChange,
   options,
+  required,
   value,
 }: {
+  ariaDescribedBy?: string;
+  className?: string;
+  defaultValue?: string;
+  disabled?: boolean;
+  id?: string;
   label: string;
+  name?: string;
   onValueChange?: (value: string) => void;
   options: SelectOption[];
-  value: string;
+  required?: boolean;
+  value?: string;
 }) {
   return (
-    <BaseSelect.Root value={value} onValueChange={(next) => next && onValueChange?.(next)}>
-      <BaseSelect.Trigger className="pd-select" aria-label={label}>
+    <BaseSelect.Root
+      defaultValue={defaultValue}
+      disabled={disabled}
+      name={name}
+      required={required}
+      value={value}
+      onValueChange={(next) => next !== null && onValueChange?.(next)}
+    >
+      <BaseSelect.Trigger
+        className={clsx("pd-select", className)}
+        aria-describedby={ariaDescribedBy}
+        aria-label={label}
+        disabled={disabled}
+        id={id}
+      >
         <BaseSelect.Value>
-          {options.find((option) => option.value === value)?.label}
+          {(selected: string | null) =>
+            options.find((option) => option.value === selected)?.label ?? "Выберите значение"
+          }
         </BaseSelect.Value>
         <BaseSelect.Icon>
           <ChevronDown aria-hidden size={15} />

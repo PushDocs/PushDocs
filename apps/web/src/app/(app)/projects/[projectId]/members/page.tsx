@@ -1,3 +1,4 @@
+import { Select } from "@pushdocs/ui";
 import { MailPlus, Shield, UserRound, Users } from "lucide-react";
 import type { Metadata } from "next";
 import { inviteMemberAction } from "@/app/actions";
@@ -108,14 +109,22 @@ export default async function MembersPage({
               <span className="sr-only">Email участника</span>
               <input name="email" type="email" placeholder="editor@example.com" required />
             </label>
-            <label>
-              <span className="sr-only">Роль</span>
-              <select name="role" defaultValue="editor">
-                <option value="admin">Администратор</option>
-                <option value="editor">Редактор</option>
-                <option value="reader">Читатель</option>
-              </select>
-            </label>
+            <div className="form-field">
+              <label className="sr-only" htmlFor="invite-role">
+                Роль
+              </label>
+              <Select
+                defaultValue="editor"
+                id="invite-role"
+                label="Роль"
+                name="role"
+                options={[
+                  { label: "Администратор", value: "admin" },
+                  { label: "Редактор", value: "editor" },
+                  { label: "Читатель", value: "reader" },
+                ]}
+              />
+            </div>
             <input name="projectId" type="hidden" value={projectId} />
             <button className="pd-button pd-button--primary" type="submit">
               Создать приглашение

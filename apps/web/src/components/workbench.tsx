@@ -3,6 +3,7 @@
 import { assetLocation } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
+import { Select } from "@pushdocs/ui";
 import {
   ArrowRight,
   Bold,
@@ -811,30 +812,26 @@ export function Workbench({
                 value={branchQuery}
                 onChange={(event) => setBranchQuery(event.target.value)}
               />
-              <select
-                aria-label="Ветка"
-                value={branch}
-                onChange={async (event) => {
-                  const value = event.target.value;
-                  if (await save()) {
-                    router.push(`?branch=${encodeURIComponent(value)}`);
-                    router.refresh();
-                  }
-                }}
-              >
-                {state.branches
+              <Select
+                label="Ветка"
+                options={state.branches
                   .filter(
                     (item) =>
                       item.full_ref === branch ||
                       item.full_ref.toLowerCase().includes(branchQuery.toLowerCase()),
                   )
-                  .map((item) => (
-                    <option key={item.full_ref} value={item.full_ref}>
-                      {item.full_ref}
-                      {item.is_protected ? " · защищена" : ""}
-                    </option>
-                  ))}
-              </select>
+                  .map((item) => ({
+                    label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
+                    value: item.full_ref,
+                  }))}
+                value={branch}
+                onValueChange={async (value) => {
+                  if (await save()) {
+                    router.push(`?branch=${encodeURIComponent(value)}`);
+                    router.refresh();
+                  }
+                }}
+              />
               <button
                 type="button"
                 disabled={projectReadOnly || busy}
@@ -1288,17 +1285,15 @@ export function Workbench({
                           <Puzzle size={16} /> Компонент <ChevronDown size={12} />
                         </summary>
                         <div className="wb-popover">
-                          <select
-                            aria-label="Компонент MDX"
+                          <Select
+                            label="Компонент MDX"
+                            options={components.map((item) => ({
+                              label: item.label,
+                              value: item.snippet,
+                            }))}
                             value={component}
-                            onChange={(event) => setComponent(event.target.value)}
-                          >
-                            {components.map((item) => (
-                              <option key={item.snippet} value={item.snippet}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
+                            onValueChange={setComponent}
+                          />
                           <button
                             type="button"
                             disabled={readOnly}
@@ -1684,16 +1679,19 @@ export function Workbench({
                 ) : null}
                 {dialog === "template" ? (
                   <>
-                    <label>
-                      Шаблон
-                      <select name="template">
-                        {state.config.templates.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <div className="form-field">
+                      <label htmlFor="new-document-template">Шаблон</label>
+                      <Select
+                        defaultValue={state.config.templates[0]?.id}
+                        id="new-document-template"
+                        label="Шаблон"
+                        name="template"
+                        options={state.config.templates.map((item) => ({
+                          label: item.label,
+                          value: item.id,
+                        }))}
+                      />
+                    </div>
                     <label>
                       Имя в URL
                       <input name="slug" required />

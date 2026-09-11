@@ -193,10 +193,40 @@ export class PushDocsRepository {
       .execute();
   }
 
+  async countConnectionProjects(connectionId: string): Promise<number> {
+    const row = await this.database
+      .selectFrom("projects")
+      .innerJoin("repositories", "repositories.id", "projects.repository_id")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("repositories.connection_id", "=", connectionId)
+      .executeTakeFirstOrThrow();
+    return Number(row.count);
+  }
+
+  async listConnectionRepositories(connectionId: string): Promise<string[]> {
+    const rows = await this.database
+      .selectFrom("repositories")
+      .select("provider_repository_id")
+      .where("connection_id", "=", connectionId)
+      .orderBy("provider_repository_id")
+      .execute();
+    return rows.map((row) => row.provider_repository_id);
+  }
+
+  async listConnectionProjects(connectionId: string) {
+    return this.database
+      .selectFrom("projects")
+      .innerJoin("repositories", "repositories.id", "projects.repository_id")
+      .select(["projects.id", "projects.default_branch"])
+      .where("repositories.connection_id", "=", connectionId)
+      .orderBy("projects.created_at")
+      .execute();
+  }
+
   async getConnection(connectionId: string) {
     return this.database
       .selectFrom("provider_connections")
-      .select(["id", "base_url", "kind", "secret_encrypted"])
+      .select(["id", "name", "base_url", "kind", "secret_encrypted"])
       .where("id", "=", connectionId)
       .executeTakeFirst();
   }
@@ -217,6 +247,50 @@ export class PushDocsRepository {
       })
       .returning(["id", "name", "kind", "base_url"])
       .executeTakeFirstOrThrow();
+  }
+
+  async updateConnection(input: {
+    baseUrl: string;
+    connectionId: string;
+    name: string;
+    secretEncrypted?: string;
+  }) {
+    const connection = await this.database
+      .updateTable("provider_connections")
+      .set({
+        base_url: input.baseUrl,
+        name: input.name,
+        updated_at: new Date(),
+        ...(input.secretEncrypted ? { secret_encrypted: input.secretEncrypted } : {}),
+      })
+      .where("id", "=", input.connectionId)
+      .returning(["id", "name", "kind", "base_url"])
+      .executeTakeFirst();
+    if (!connection) throw new NotFoundError("Connection not found");
+    return connection;
+  }
+
+  async deleteConnection(connectionId: string): Promise<void> {
+    await this.database.transaction().execute(async (transaction) => {
+      const usage = await transaction
+        .selectFrom("projects")
+        .innerJoin("repositories", "repositories.id", "projects.repository_id")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("repositories.connection_id", "=", connectionId)
+        .executeTakeFirstOrThrow();
+      if (Number(usage.count) > 0)
+        throw new RevisionConflictError("Сначала удалите проекты этого подключения");
+      await transaction
+        .deleteFrom("repositories")
+        .where("connection_id", "=", connectionId)
+        .execute();
+      const result = await transaction
+        .deleteFrom("provider_connections")
+        .where("id", "=", connectionId)
+        .returning("id")
+        .executeTakeFirst();
+      if (!result) throw new NotFoundError("Connection not found");
+    });
   }
 
   async createProject(input: {
@@ -283,6 +357,76 @@ export class PushDocsRepository {
         type: "project.created",
       });
       return project;
+    });
+  }
+
+  async getProjectSettings(projectId: string) {
+    return this.database
+      .selectFrom("projects")
+      .innerJoin("repositories", "repositories.id", "projects.repository_id")
+      .innerJoin("provider_connections", "provider_connections.id", "repositories.connection_id")
+      .select([
+        "projects.id",
+        "projects.name",
+        "projects.slug",
+        "projects.default_branch",
+        "projects.root_path",
+        "projects.repository_id",
+        "provider_connections.name as provider_name",
+      ])
+      .where("projects.id", "=", projectId)
+      .where("projects.status", "!=", "archived")
+      .executeTakeFirst();
+  }
+
+  async updateProject(input: {
+    defaultBranch: string;
+    name: string;
+    projectId: string;
+    rootPath: string;
+    slug: string;
+  }) {
+    const project = await this.database
+      .updateTable("projects")
+      .set({
+        default_branch: normalizeBranchRef(input.defaultBranch),
+        name: input.name,
+        root_path: input.rootPath || ".",
+        slug: input.slug,
+        status: "active",
+        updated_at: new Date(),
+      })
+      .where("id", "=", input.projectId)
+      .where("status", "!=", "archived")
+      .returning(["id", "name", "slug", "default_branch", "root_path"])
+      .executeTakeFirst();
+    if (!project) throw new NotFoundError("Project not found");
+    return project;
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    await this.database.transaction().execute(async (transaction) => {
+      const project = await transaction
+        .selectFrom("projects")
+        .select(["id", "repository_id"])
+        .where("id", "=", projectId)
+        .executeTakeFirst();
+      if (!project) throw new NotFoundError("Project not found");
+      await transaction
+        .deleteFrom("jobs")
+        .where(sql<string>`payload->>'projectId'`, "=", projectId)
+        .execute();
+      await transaction.deleteFrom("projects").where("id", "=", projectId).execute();
+      const repositoryUsage = await transaction
+        .selectFrom("projects")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("repository_id", "=", project.repository_id)
+        .executeTakeFirstOrThrow();
+      if (Number(repositoryUsage.count) === 0)
+        await transaction
+          .deleteFrom("repositories")
+          .where("id", "=", project.repository_id)
+          .execute();
     });
   }
 

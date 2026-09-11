@@ -16,8 +16,12 @@ const mocks = vi.hoisted(() => {
       createComment: vi.fn(),
       createConnection: vi.fn(),
       createProject: vi.fn(),
+      deleteConnection: vi.fn(),
+      deleteProject: vi.fn(),
       inviteMember: vi.fn(),
       saveDraft: vi.fn(),
+      updateConnection: vi.fn(),
+      updateProject: vi.fn(),
     },
     argonHash: vi.fn(),
     argonVerify: vi.fn(),
@@ -37,6 +41,7 @@ const mocks = vi.hoisted(() => {
       throw new Error(`REDIRECT:${destination}`);
     }),
     rename: vi.fn(),
+    rm: vi.fn(),
     repo: {
       acceptInvitation: vi.fn(),
       createOperator: vi.fn(),
@@ -51,6 +56,10 @@ const mocks = vi.hoisted(() => {
       findUserByEmail: vi.fn(),
       getConnection: vi.fn(),
       getInvitation: vi.fn(),
+      getProjectSettings: vi.fn(),
+      getProjectSyncTarget: vi.fn(),
+      listConnectionProjects: vi.fn().mockResolvedValue([]),
+      listConnectionRepositories: vi.fn(),
       queueChangeSetSubmission: vi.fn(),
       retryChangeSetSubmission: vi.fn(),
       recordAttachment: vi.fn(),
@@ -68,6 +77,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("node:fs/promises", () => ({
   mkdir: mocks.mkdir,
   rename: mocks.rename,
+  rm: mocks.rm,
   writeFile: mocks.writeFile,
 }));
 vi.mock("argon2", () => ({
@@ -120,6 +130,8 @@ import {
   createDocumentAction,
   createProjectAction,
   createProjectComponentAction,
+  deleteConnectionAction,
+  deleteProjectAction,
   gitOperationStatusAction,
   inviteMemberAction,
   loginAction,
@@ -130,6 +142,8 @@ import {
   startGitOperationAction,
   submitChangeSetAction,
   synchronizeBranchAction,
+  updateConnectionAction,
+  updateProjectAction,
   uploadAttachmentAction,
 } from "./actions";
 
@@ -163,6 +177,10 @@ beforeEach(() => {
       id: "42",
       webUrl: "https://git.test/acme/docs",
     }),
+    listBranches: vi.fn().mockResolvedValue([
+      { name: "main", sha: "head" },
+      { name: "stable", sha: "stable-head" },
+    ]),
   });
 });
 
@@ -300,6 +318,7 @@ describe("installation actions", () => {
         repositoryUrl: "https://git.test/acme/docs.git",
       }),
     );
+    expect(mocks.createProvider.mock.results[0]?.value.listBranches).toHaveBeenCalledWith("42");
   });
 
   it("keeps an explicit default branch", async () => {
@@ -337,6 +356,102 @@ describe("installation actions", () => {
         }),
       ),
     ).rejects.toThrow("CONNECTION_NOT_FOUND");
+  });
+
+  it("verifies and encrypts replacement connection credentials", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    mocks.repo.listConnectionRepositories.mockResolvedValue(["42"]);
+    mocks.repo.listConnectionProjects.mockResolvedValue([
+      { default_branch: "main", id: projectId },
+    ]);
+    await updateConnectionAction(
+      form({
+        baseUrl: "https://gitlab.test",
+        connectionId,
+        name: "GitLab updated",
+        token: "new-token",
+      }),
+    );
+    const provider = mocks.createProvider.mock.results.at(-1)?.value;
+    expect(provider.listBranches).toHaveBeenCalledWith("42");
+    expect(mocks.app.updateConnection).toHaveBeenCalledWith(expect.anything(), {
+      baseUrl: "https://gitlab.test",
+      connectionId,
+      name: "GitLab updated",
+      secretEncrypted: "encrypted:new-token",
+    });
+    expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "main");
+  });
+
+  it("keeps the current connection token when only metadata changes", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    await updateConnectionAction(
+      form({ baseUrl: "https://gitlab.test", connectionId, name: "GitLab renamed" }),
+    );
+    expect(mocks.createProvider).not.toHaveBeenCalled();
+    expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ secretEncrypted: expect.anything() }),
+    );
+  });
+
+  it("requires the connection name before deletion", async () => {
+    mocks.repo.getConnection.mockResolvedValue({ name: "GitLab" });
+    await expect(
+      deleteConnectionAction(form({ confirmation: "wrong", connectionId })),
+    ).rejects.toThrow("CONFIRMATION_MISMATCH");
+    expect(mocks.app.deleteConnection).not.toHaveBeenCalled();
+    await expect(
+      deleteConnectionAction(form({ confirmation: "GitLab", connectionId })),
+    ).rejects.toThrow("REDIRECT:/settings/connections");
+    expect(mocks.app.deleteConnection).toHaveBeenCalledWith(expect.anything(), connectionId);
+  });
+
+  it("updates project settings and queues the configured branch", async () => {
+    mocks.repo.getProjectSettings.mockResolvedValue({ default_branch: "stable", slug: "docs" });
+    await updateProjectAction(
+      form({
+        defaultBranch: "stable",
+        name: "Docs updated",
+        projectId,
+        rootPath: "website",
+        slug: "docs-updated",
+      }),
+    );
+    expect(mocks.app.updateProject).toHaveBeenCalledWith(expect.anything(), {
+      defaultBranch: "stable",
+      name: "Docs updated",
+      projectId,
+      rootPath: "website",
+      slug: "docs-updated",
+    });
+    expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "stable");
+  });
+
+  it("requires the project slug before deleting data and attachments", async () => {
+    mocks.repo.getProjectSettings.mockResolvedValue({ slug: "docs" });
+    await expect(deleteProjectAction(form({ confirmation: "wrong", projectId }))).rejects.toThrow(
+      "CONFIRMATION_MISMATCH",
+    );
+    expect(mocks.app.deleteProject).not.toHaveBeenCalled();
+    await expect(deleteProjectAction(form({ confirmation: "docs", projectId }))).rejects.toThrow(
+      "REDIRECT:/projects",
+    );
+    expect(mocks.app.deleteProject).toHaveBeenCalledWith(expect.anything(), projectId);
+    expect(mocks.rm).toHaveBeenCalledWith(expect.stringContaining(projectId), {
+      force: true,
+      recursive: true,
+    });
   });
 });
 
@@ -391,7 +506,10 @@ describe("document and review actions", () => {
   });
 
   it("queues branch synchronization after checking access", async () => {
-    await synchronizeBranchAction(form({ branch: "docs/update", projectId }));
+    mocks.repo.enqueueBranchSync.mockResolvedValueOnce("job");
+    await expect(synchronizeBranchAction(form({ branch: "docs/update", projectId }))).resolves.toBe(
+      "job",
+    );
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
     expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "docs/update");
   });

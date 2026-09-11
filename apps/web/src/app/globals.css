@@ -769,6 +769,18 @@ textarea:where(:not(.monaco-editor *)):focus {
   min-height: 66px;
 }
 
+.connection-card {
+  border-top: 1px solid var(--line);
+}
+
+.connection-card:first-of-type {
+  border-top: 0;
+}
+
+.connection-card .connection-row {
+  border-top: 0;
+}
+
 .connection-row > span:nth-child(2) {
   display: grid;
 }
@@ -798,6 +810,69 @@ textarea:where(:not(.monaco-editor *)):focus {
   color: var(--ink-muted);
   font-family: monospace;
   font-size: 11px;
+}
+
+.connection-editor {
+  border-top: 1px solid var(--line);
+  padding: 0 0 16px 50px;
+}
+
+.connection-editor > summary,
+.danger-zone > summary {
+  align-items: center;
+  color: var(--violet-deep);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 7px;
+  list-style: none;
+  padding: 12px 0;
+}
+
+.connection-editor > summary::-webkit-details-marker,
+.danger-zone > summary::-webkit-details-marker {
+  display: none;
+}
+
+.connection-edit-form,
+.connection-danger form,
+.danger-zone form {
+  display: grid;
+  gap: 14px;
+}
+
+.connection-edit-form label,
+.connection-danger label,
+.danger-zone label {
+  color: var(--ink-muted);
+  display: grid;
+  font-size: 11px;
+  gap: 6px;
+}
+
+.connection-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.connection-danger {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.connection-danger h3 {
+  color: var(--danger);
+  font-size: 13px;
+  margin-bottom: 7px;
+}
+
+.connection-danger p,
+.danger-zone p {
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .back-link {
@@ -840,6 +915,27 @@ textarea:where(:not(.monaco-editor *)):focus {
   display: grid;
   gap: 17px;
   grid-template-columns: 1fr 1fr;
+}
+
+.project-form .pd-select,
+.settings-form .pd-select,
+.invite-form .pd-select,
+.metadata-editor .pd-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.form-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.project-form .form-field > label,
+.settings-form .form-field > label {
+  color: #4d4f5a;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .wide-field {
@@ -1891,6 +1987,40 @@ textarea:where(:not(.monaco-editor *)):focus {
   color: var(--danger);
 }
 
+.project-settings-management {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.danger-zone {
+  background: var(--paper);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 12px;
+  padding: 0 22px;
+}
+
+.danger-zone > summary {
+  color: var(--danger);
+  min-height: 54px;
+}
+
+.danger-zone > div {
+  border-top: 1px solid var(--line);
+  padding: 20px 0 22px;
+}
+
+.danger-zone h2 {
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+
+.danger-zone form {
+  align-items: end;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 16px;
+}
+
 .submit-panel label.checkbox-field {
   align-items: center;
   color: var(--ink-muted);
@@ -2406,6 +2536,15 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 
 @media (max-width: 640px) {
+  .connection-editor {
+    padding-left: 0;
+  }
+
+  .danger-zone form {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
   .setting-sections article {
     grid-template-columns: 24px minmax(0, 1fr);
     align-items: start;

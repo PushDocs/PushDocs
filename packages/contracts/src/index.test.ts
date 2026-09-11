@@ -7,6 +7,8 @@ import {
   createConnectionSchema,
   createDocumentSchema,
   createProjectSchema,
+  deleteConnectionSchema,
+  deleteProjectSchema,
   inviteMemberSchema,
   loginSchema,
   providerKindSchema,
@@ -14,6 +16,8 @@ import {
   roleSchema,
   saveDraftSchema,
   submitChangeSetSchema,
+  updateConnectionSchema,
+  updateProjectSchema,
 } from "./index";
 
 const projectId = "3b63fe90-f569-4e0e-89e9-153948ba5a9e";
@@ -121,6 +125,46 @@ describe("installation and project commands", () => {
       ).toBe(false);
     },
   );
+
+  it("accepts connection edits without requiring a replacement token", () => {
+    expect(
+      updateConnectionSchema.parse({
+        baseUrl: "https://gitlab.internal.test",
+        connectionId: "9d2c893f-8785-4b03-8568-e32655679be8",
+        name: "Internal GitLab",
+      }),
+    ).toMatchObject({ token: "" });
+    expect(
+      deleteConnectionSchema.parse({
+        confirmation: "Internal GitLab",
+        connectionId: "9d2c893f-8785-4b03-8568-e32655679be8",
+      }).confirmation,
+    ).toBe("Internal GitLab");
+  });
+
+  it("validates editable project settings and guarded deletion", () => {
+    expect(
+      updateProjectSchema.parse({
+        defaultBranch: "stable",
+        name: "Sendsay Docs",
+        projectId,
+        rootPath: "website",
+        slug: "sendsay-docs",
+      }),
+    ).toMatchObject({ defaultBranch: "stable", rootPath: "website" });
+    expect(deleteProjectSchema.parse({ confirmation: "sendsay-docs", projectId }).projectId).toBe(
+      projectId,
+    );
+    expect(
+      updateProjectSchema.safeParse({
+        defaultBranch: "stable",
+        name: "Sendsay Docs",
+        projectId,
+        rootPath: ".",
+        slug: "Invalid slug",
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("document commands", () => {

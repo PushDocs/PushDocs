@@ -9,6 +9,50 @@ import { Workbench, type WorkbenchState } from "./workbench";
 const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => mocks }));
 vi.mock("next/link", () => ({ default: (props: Record<string, unknown>) => <a {...props} /> }));
+vi.mock("@pushdocs/ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@pushdocs/ui")>();
+  return {
+    ...actual,
+    Select: ({
+      defaultValue,
+      disabled,
+      id,
+      label,
+      name,
+      onValueChange,
+      options,
+      required,
+      value,
+    }: {
+      defaultValue?: string;
+      disabled?: boolean;
+      id?: string;
+      label: string;
+      name?: string;
+      onValueChange?: (value: string) => void;
+      options: Array<{ label: string; value: string }>;
+      required?: boolean;
+      value?: string;
+    }) => (
+      <select
+        aria-label={label}
+        defaultValue={defaultValue}
+        disabled={disabled}
+        id={id}
+        name={name}
+        onChange={(event) => onValueChange?.(event.target.value)}
+        required={required}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    ),
+  };
+});
 vi.mock("./file-comments", () => ({
   FileComments: ({ path }: { path: string }) => <div>Обсуждение {path}</div>,
 }));

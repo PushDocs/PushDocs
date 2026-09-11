@@ -121,6 +121,59 @@ afterEach(async () => {
   await database?.destroy();
 });
 
+describe("project and connection administration", () => {
+  it("updates connection credentials without exposing the stored secret", async () => {
+    const fixture = await projectFixture();
+    await repository.updateConnection({
+      baseUrl: "https://gitlab.changed.test",
+      connectionId: fixture.connectionId,
+      name: "GitLab updated",
+      secretEncrypted: "replacement-secret",
+    });
+    expect(await repository.getConnection(fixture.connectionId)).toMatchObject({
+      base_url: "https://gitlab.changed.test",
+      name: "GitLab updated",
+      secret_encrypted: "replacement-secret",
+    });
+    expect(await repository.listConnectionRepositories(fixture.connectionId)).toEqual(["42"]);
+    expect(await repository.listConnectionProjects(fixture.connectionId)).toEqual([
+      { default_branch: "main", id: fixture.projectId },
+    ]);
+    expect(await repository.countConnectionProjects(fixture.connectionId)).toBe(1);
+  });
+
+  it("updates editable project settings", async () => {
+    const fixture = await projectFixture();
+    await repository.updateProject({
+      defaultBranch: "stable",
+      name: "Renamed Docs",
+      projectId: fixture.projectId,
+      rootPath: "website",
+      slug: "renamed-docs",
+    });
+    expect(await repository.getProjectSettings(fixture.projectId)).toMatchObject({
+      default_branch: "stable",
+      name: "Renamed Docs",
+      provider_name: "GitLab",
+      root_path: "website",
+      slug: "renamed-docs",
+    });
+  });
+
+  it("requires projects to be deleted before their connection", async () => {
+    const fixture = await projectFixture();
+    await expect(repository.deleteConnection(fixture.connectionId)).rejects.toThrow(
+      "Сначала удалите проекты",
+    );
+    await repository.deleteProject(fixture.projectId);
+    expect(await repository.getProjectSettings(fixture.projectId)).toBeUndefined();
+    expect(await repository.countConnectionProjects(fixture.connectionId)).toBe(0);
+    expect(await repository.listConnectionRepositories(fixture.connectionId)).toEqual([]);
+    await expect(repository.deleteConnection(fixture.connectionId)).resolves.toBeUndefined();
+    expect(await repository.getConnection(fixture.connectionId)).toBeUndefined();
+  });
+});
+
 describe("editorial file operations", () => {
   it("refreshes branch protection without advancing the cached working tree", async () => {
     const fixture = await synchronizedProject();

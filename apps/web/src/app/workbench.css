@@ -65,6 +65,11 @@
   font: inherit;
   font-size: 12px;
 }
+.workbench .pd-select {
+  border-color: var(--line);
+  font-size: 12px;
+  min-width: 0;
+}
 .wb-actions select {
   max-width: 220px;
 }
@@ -323,7 +328,8 @@
   font-size: 20px;
 }
 .wb-modal form,
-.wb-modal label {
+.wb-modal label,
+.wb-modal .form-field {
   display: grid;
   gap: 8px;
 }
@@ -867,7 +873,8 @@
   justify-content: flex-start;
 }
 .wb-popover select,
-.wb-popover input {
+.wb-popover input,
+.wb-popover .pd-select {
   width: 100%;
   max-width: none;
 }

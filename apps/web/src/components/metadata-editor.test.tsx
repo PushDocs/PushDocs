@@ -3,8 +3,40 @@
 import { parseProjectConfig } from "@pushdocs/content";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { MetadataEditor } from "./metadata-editor";
+
+vi.mock("@pushdocs/ui", () => ({
+  Select: ({
+    disabled,
+    id,
+    label,
+    onValueChange,
+    options,
+    value,
+  }: {
+    disabled?: boolean;
+    id?: string;
+    label: string;
+    onValueChange?: (value: string) => void;
+    options: Array<{ label: string; value: string }>;
+    value?: string;
+  }) => (
+    <select
+      aria-label={label}
+      disabled={disabled}
+      id={id}
+      onChange={(event) => onValueChange?.(event.target.value)}
+      value={value}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 
 afterEach(cleanup);
 function Example({ source = "# Body", readOnly = false }) {

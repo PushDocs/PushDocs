@@ -7,10 +7,14 @@ function repository(): CoreRepository {
     createConnection: vi.fn().mockResolvedValue({ id: "connection" }),
     createInvitation: vi.fn().mockResolvedValue({ id: "invitation" }),
     createProject: vi.fn().mockResolvedValue({ id: "project" }),
+    deleteConnection: vi.fn().mockResolvedValue(undefined),
+    deleteProject: vi.fn().mockResolvedValue(undefined),
     listDocuments: vi.fn().mockResolvedValue([{ path: "docs/a.md" }]),
     listProjects: vi.fn().mockResolvedValue([{ id: "project" }]),
     requireProjectAccess: vi.fn().mockResolvedValue({ role: "editor" }),
     saveDraft: vi.fn().mockResolvedValue({ changeSetId: "change", revision: 2 }),
+    updateConnection: vi.fn().mockResolvedValue({ id: "connection" }),
+    updateProject: vi.fn().mockResolvedValue({ id: "project" }),
   } as CoreRepository;
 }
 
@@ -120,7 +124,50 @@ describe("PushDocs installation commands", () => {
     expect(port.createConnection).toHaveBeenCalledWith(input);
   });
 
-  it.each(["createProject", "createConnection"] as const)(
+  it("updates and deletes provider connections under the installation operator", async () => {
+    const port = repository();
+    const app = new PushDocs(port);
+    const input = {
+      baseUrl: "https://git.example.test",
+      connectionId: "connection",
+      name: "GitLab updated",
+      secretEncrypted: "replacement",
+    };
+    await app.updateConnection(operator, input);
+    await app.deleteConnection(operator, "connection");
+    expect(port.updateConnection).toHaveBeenCalledWith(input);
+    expect(port.deleteConnection).toHaveBeenCalledWith("connection");
+  });
+
+  it("checks project administration before editing or deleting a project", async () => {
+    const port = repository();
+    const app = new PushDocs(port);
+    const input = {
+      defaultBranch: "stable",
+      name: "Docs updated",
+      projectId: "project",
+      rootPath: ".",
+      slug: "docs-updated",
+    };
+    await app.updateProject(editor, input);
+    await app.deleteProject(editor, "project");
+    expect(port.requireProjectAccess).toHaveBeenNthCalledWith(
+      1,
+      "user",
+      "project",
+      "project:configure",
+    );
+    expect(port.requireProjectAccess).toHaveBeenNthCalledWith(
+      2,
+      "user",
+      "project",
+      "project:configure",
+    );
+    expect(port.updateProject).toHaveBeenCalledWith(input);
+    expect(port.deleteProject).toHaveBeenCalledWith("project");
+  });
+
+  it.each(["createProject", "createConnection", "updateConnection", "deleteConnection"] as const)(
     "keeps %s separate from project roles",
     (command) => {
       const app = new PushDocs(repository());
@@ -144,7 +191,14 @@ describe("PushDocs installation commands", () => {
             };
       expect(() => {
         if (command === "createProject") app.createProject(editor, input as never);
-        else app.createConnection(editor, input as never);
+        else if (command === "createConnection") app.createConnection(editor, input as never);
+        else if (command === "updateConnection")
+          app.updateConnection(editor, {
+            baseUrl: "https://git.example.test",
+            connectionId: "connection",
+            name: "GitLab",
+          });
+        else app.deleteConnection(editor, "connection");
       }).toThrow("INSTANCE_OPERATOR_REQUIRED");
     },
   );

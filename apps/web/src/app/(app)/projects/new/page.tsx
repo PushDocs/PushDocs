@@ -1,3 +1,4 @@
+import { Select } from "@pushdocs/ui";
 import { ArrowLeft, GitBranch, LockKeyhole } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -38,16 +39,20 @@ export default async function NewProjectPage() {
             <div className="form-section-body">
               <h2>Репозиторий</h2>
               <div className="form-grid">
-                <label>
-                  Подключение
-                  <select name="connectionId" required>
-                    {connections.map((connection) => (
-                      <option value={connection.id} key={connection.id}>
-                        {connection.name} ({connection.kind})
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="form-field">
+                  <label htmlFor="project-connection">Подключение</label>
+                  <Select
+                    defaultValue={connections[0]?.id}
+                    id="project-connection"
+                    label="Подключение"
+                    name="connectionId"
+                    options={connections.map((connection) => ({
+                      label: `${connection.name} (${connection.kind})`,
+                      value: connection.id,
+                    }))}
+                    required
+                  />
+                </div>
                 <label>
                   URL, ID или путь репозитория
                   <input

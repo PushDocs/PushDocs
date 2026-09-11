@@ -1,6 +1,7 @@
 "use client";
 import { patchMetadata, readMetadata, removeMetadata } from "@pushdocs/content/metadata";
 import type { MetadataField } from "@pushdocs/contracts";
+import { Select } from "@pushdocs/ui";
 import { RotateCcw } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 
@@ -108,10 +109,23 @@ export function MetadataEditor({
         {blocked ? (
           <input id={inputId} disabled value="Задано в исходнике" readOnly />
         ) : field.type === "boolean" ? (
-          <select
+          <Select
+            ariaDescribedBy={hint ? `${inputId}-hint` : undefined}
             id={inputId}
-            aria-describedby={hint ? `${inputId}-hint` : undefined}
             disabled={readOnly}
+            label={label}
+            options={
+              field.name === "draft"
+                ? [
+                    { value: "false", label: "Показывать после публикации" },
+                    { value: "true", label: "Исключить из публикации" },
+                  ]
+                : [
+                    { value: "", label: "По умолчанию" },
+                    { value: "true", label: "Да" },
+                    { value: "false", label: "Нет" },
+                  ]
+            }
             value={
               field.name === "draft"
                 ? String(current ?? false)
@@ -119,26 +133,8 @@ export function MetadataEditor({
                   ? ""
                   : String(current)
             }
-            onChange={(event) =>
-              update(
-                field.name,
-                event.target.value === "" ? undefined : event.target.value === "true",
-              )
-            }
-          >
-            {field.name === "draft" ? (
-              <>
-                <option value="false">Показывать после публикации</option>
-                <option value="true">Исключить из публикации</option>
-              </>
-            ) : (
-              <>
-                <option value="">По умолчанию</option>
-                <option value="true">Да</option>
-                <option value="false">Нет</option>
-              </>
-            )}
-          </select>
+            onValueChange={(next) => update(field.name, next === "" ? undefined : next === "true")}
+          />
         ) : field.type === "number" ? (
           <NumberField
             id={inputId}

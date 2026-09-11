@@ -44,6 +44,8 @@ export interface CoreRepository {
     rootPath: string;
     slug: string;
   }): Promise<unknown>;
+  deleteConnection(connectionId: string): Promise<void>;
+  deleteProject(projectId: string): Promise<void>;
   listDocuments(projectId: string, branch: string): Promise<DocumentSummary[]>;
   listProjects(userId: string): Promise<ProjectSummary[]>;
   requireProjectAccess(
@@ -60,6 +62,19 @@ export interface CoreRepository {
     projectId: string;
     userId: string;
   }): Promise<{ changeSetId: string; revision: number }>;
+  updateConnection(input: {
+    baseUrl: string;
+    connectionId: string;
+    name: string;
+    secretEncrypted?: string;
+  }): Promise<unknown>;
+  updateProject(input: {
+    defaultBranch: string;
+    name: string;
+    projectId: string;
+    rootPath: string;
+    slug: string;
+  }): Promise<unknown>;
 }
 
 export class PushDocs {
@@ -125,6 +140,26 @@ export class PushDocs {
   createConnection(actor: Actor, input: Parameters<CoreRepository["createConnection"]>[0]) {
     this.assertOperator(actor);
     return this.repository.createConnection(input);
+  }
+
+  updateConnection(actor: Actor, input: Parameters<CoreRepository["updateConnection"]>[0]) {
+    this.assertOperator(actor);
+    return this.repository.updateConnection(input);
+  }
+
+  deleteConnection(actor: Actor, connectionId: string) {
+    this.assertOperator(actor);
+    return this.repository.deleteConnection(connectionId);
+  }
+
+  async updateProject(actor: Actor, input: Parameters<CoreRepository["updateProject"]>[0]) {
+    await this.repository.requireProjectAccess(actor.id, input.projectId, "project:configure");
+    return this.repository.updateProject(input);
+  }
+
+  async deleteProject(actor: Actor, projectId: string) {
+    await this.repository.requireProjectAccess(actor.id, projectId, "project:configure");
+    return this.repository.deleteProject(projectId);
   }
 
   private assertOperator(actor: Actor): void {

@@ -2,21 +2,21 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { synchronizeBranchAction } from "@/app/actions";
+import { gitOperationStatusAction, synchronizeBranchAction } from "@/app/actions";
 import { ProjectContext } from "./project-context";
 
 export function BranchImport({ projectId, branch }: { projectId: string; branch: string }) {
   const router = useRouter();
-  const requestRef = useRef<{ attempt: number; promise: Promise<void> } | null>(null);
+  const requestRef = useRef<{ attempt: number; promise: Promise<string> } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
-    let interval: ReturnType<typeof setInterval> | undefined;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {
       active = false;
-      clearInterval(interval);
+      clearTimeout(pollTimer);
       setError("Ветка ещё не загрузилась. Попробуйте повторить загрузку.");
     }, 300_000);
     const data = new FormData();
@@ -27,19 +27,41 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
     }
     const request = requestRef.current.promise;
     void request
-      .then(() => {
+      .then((jobId) => {
         if (!active) return;
-        router.refresh();
-        interval = setInterval(() => router.refresh(), 2000);
+        const poll = async () => {
+          try {
+            const job = await gitOperationStatusAction(projectId, jobId);
+            if (!active) return;
+            if (job.status === "done") {
+              active = false;
+              clearTimeout(timeout);
+              router.refresh();
+              return;
+            }
+            if (job.status === "failed") {
+              active = false;
+              clearTimeout(timeout);
+              setError("Не удалось загрузить ветку. Проверьте подключение и повторите попытку.");
+              return;
+            }
+            pollTimer = setTimeout(poll, 2000);
+          } catch {
+            if (!active) return;
+            pollTimer = setTimeout(poll, 5000);
+          }
+        };
+        void poll();
       })
       .catch(() => {
         if (!active) return;
+        active = false;
         clearTimeout(timeout);
         setError("Не удалось загрузить ветку. Проверьте подключение и повторите попытку.");
       });
     return () => {
       active = false;
-      clearInterval(interval);
+      clearTimeout(pollTimer);
       clearTimeout(timeout);
     };
   }, [projectId, branch, router, attempt]);
