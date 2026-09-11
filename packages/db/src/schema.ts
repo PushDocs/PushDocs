@@ -30,6 +30,8 @@ export interface ProviderConnectionsTable {
   name: string;
   secret_encrypted: string;
   updated_at: GeneratedTimestamp;
+  vpn_profile_encrypted: string | null;
+  vpn_slot: number | null;
 }
 
 export interface RepositoriesTable {

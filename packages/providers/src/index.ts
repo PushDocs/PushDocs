@@ -35,6 +35,7 @@ export class ProviderConflictError extends Error {
 }
 
 export type ProviderFileStatus = { path: string; status: "add" | "modify" | "delete" };
+export type ProviderRequest = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 export interface GitProvider {
   compareFiles?(repositoryId: string, base: string, head: string): Promise<ProviderFileStatus[]>;
@@ -172,12 +173,13 @@ export class GitLabProvider implements GitProvider {
   constructor(
     baseUrl: string,
     private readonly token: string,
+    private readonly requestFn?: ProviderRequest,
   ) {
     this.apiUrl = new URL("/api/v4/", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).toString();
   }
 
   private request(path: string, init?: RequestInit): Promise<Response> {
-    return fetch(new URL(path, this.apiUrl), {
+    return (this.requestFn ?? fetch)(new URL(path, this.apiUrl), {
       ...init,
       headers: {
         "PRIVATE-TOKEN": this.token,
@@ -460,6 +462,7 @@ export class GitHubProvider implements GitProvider {
   constructor(
     baseUrl: string,
     private readonly token: string,
+    private readonly requestFn?: ProviderRequest,
   ) {
     this.apiUrl =
       new URL(baseUrl).hostname === "github.com"
@@ -468,7 +471,7 @@ export class GitHubProvider implements GitProvider {
   }
 
   private request(path: string, init?: RequestInit): Promise<Response> {
-    return fetch(new URL(path, this.apiUrl), {
+    return (this.requestFn ?? fetch)(new URL(path, this.apiUrl), {
       ...init,
       headers: {
         Accept: "application/vnd.github+json",
@@ -707,11 +710,12 @@ export class GitHubProvider implements GitProvider {
 export function createProvider(input: {
   baseUrl: string;
   kind: ProviderKind;
+  request?: ProviderRequest;
   token: string;
 }): GitProvider {
   return input.kind === "github"
-    ? new GitHubProvider(input.baseUrl, input.token)
-    : new GitLabProvider(input.baseUrl, input.token);
+    ? new GitHubProvider(input.baseUrl, input.token, input.request)
+    : new GitLabProvider(input.baseUrl, input.token, input.request);
 }
 
 export function normalizeRepositoryLocator(kind: ProviderKind, value: string): string {

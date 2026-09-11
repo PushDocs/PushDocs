@@ -10,6 +10,7 @@ x-app: &app
     PUSHDOCS_ATTACHMENTS_DIR: /data/attachments
     PUSHDOCS_ENCRYPTION_KEY: ${PUSHDOCS_ENCRYPTION_KEY:?Run ./scripts/install.sh first}
     PUSHDOCS_SESSION_PEPPER: ${PUSHDOCS_SESSION_PEPPER:?Run ./scripts/install.sh first}
+    PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
   restart: unless-stopped
   read_only: true
   cap_drop:
@@ -68,6 +69,7 @@ services:
     networks:
       - default
       - database
+      - vpn-control
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
@@ -88,6 +90,56 @@ services:
     networks:
       - default
       - database
+      - vpn-control
+
+  vpn-gateway-1: &vpn-gateway
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${PUSHDOCS_IMAGE:-pushdocs:local}
+    command: ["yarn", "workspace", "@pushdocs/vpn-gateway", "start"]
+    environment:
+      PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
+      PUSHDOCS_VPN_SLOT: "1"
+    user: root
+    restart: unless-stopped
+    read_only: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run/pushdocs-vpn:rw,noexec,nosuid,nodev,mode=700
+    networks:
+      - vpn-control
+      - vpn-egress
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready',{headers:{authorization:'Bearer '+process.env.PUSHDOCS_VPN_GATEWAY_TOKEN}}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  vpn-gateway-2:
+    <<: *vpn-gateway
+    environment:
+      PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
+      PUSHDOCS_VPN_SLOT: "2"
+
+  vpn-gateway-3:
+    <<: *vpn-gateway
+    environment:
+      PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
+      PUSHDOCS_VPN_SLOT: "3"
+
+  vpn-gateway-4:
+    <<: *vpn-gateway
+    environment:
+      PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
+      PUSHDOCS_VPN_SLOT: "4"
 
   realtime:
     <<: *app
@@ -144,3 +196,6 @@ volumes:
 networks:
   database:
     internal: true
+  vpn-control:
+    internal: true
+  vpn-egress:

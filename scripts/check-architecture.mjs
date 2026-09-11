@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const packages = ["contracts", "domain", "core", "db", "providers", "content", "ui"];
+const packages = ["contracts", "domain", "core", "db", "providers", "content", "ui", "vpn"];
 const allowed = {
   contracts: [],
   domain: ["contracts"],
@@ -11,6 +11,7 @@ const allowed = {
   providers: ["contracts"],
   content: ["contracts"],
   ui: [],
+  vpn: [],
 };
 
 const violations = [];

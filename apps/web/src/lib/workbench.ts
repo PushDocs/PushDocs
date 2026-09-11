@@ -1,7 +1,6 @@
 import "server-only";
 import { isEditableFile, parseProjectConfig, safePath } from "@pushdocs/content";
-import { decryptSecret } from "@pushdocs/db";
-import { createProvider } from "@pushdocs/providers";
+import { providerForConnection } from "./provider";
 import { repository, requireUser } from "./server";
 
 export async function workbenchContext(projectId: string, branch: string) {
@@ -15,11 +14,7 @@ export async function workbenchContext(projectId: string, branch: string) {
     (file) => file.path === ".pushdocs/config.json" && file.status !== "delete",
   );
   const config = parseProjectConfig(configFile?.content);
-  const provider = createProvider({
-    baseUrl: target.base_url,
-    kind: target.kind,
-    token: decryptSecret(target.secret_encrypted),
-  });
+  const provider = await providerForConnection(target);
   return { user, store, access, target, state, config, provider };
 }
 

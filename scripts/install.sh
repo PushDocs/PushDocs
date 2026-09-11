@@ -57,6 +57,12 @@ if [[ -f "$env_file" ]]; then
     PUSHDOCS_ENCRYPTION_KEY; do
     require_setting "$setting"
   done
+  if ! grep -q '^PUSHDOCS_VPN_GATEWAY_TOKEN=' "$env_file"; then
+    require_command openssl
+    umask 077
+    printf 'PUSHDOCS_VPN_GATEWAY_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$env_file"
+    echo "Added the VPN gateway secret to the existing $env_file."
+  fi
   chmod 600 "$env_file"
   echo "Using the existing $env_file. Secrets were not changed."
 else
@@ -120,11 +126,13 @@ else
   postgres_password=$(openssl rand -hex 32)
   session_pepper=$(openssl rand -hex 32)
   encryption_key=$(openssl rand -base64 32)
+  vpn_gateway_token=$(openssl rand -hex 32)
   {
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'PUSHDOCS_PUBLIC_ORIGIN=%s\n' "$public_origin"
     printf 'PUSHDOCS_SESSION_PEPPER=%s\n' "$session_pepper"
     printf 'PUSHDOCS_ENCRYPTION_KEY=%s\n' "$encryption_key"
+    printf 'PUSHDOCS_VPN_GATEWAY_TOKEN=%s\n' "$vpn_gateway_token"
     printf 'PUSHDOCS_ADDRESS=%s\n' "$caddy_address"
     printf 'PUSHDOCS_HTTP_PORT=%s\n' "$http_port"
     printf 'PUSHDOCS_HTTPS_PORT=%s\n' "$https_port"

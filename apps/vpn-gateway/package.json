@@ -1,5 +1,5 @@
 {
-  "name": "@pushdocs/worker",
+  "name": "@pushdocs/vpn-gateway",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@pushdocs/content": "workspace:*",
-    "@pushdocs/db": "workspace:*",
-    "@pushdocs/providers": "workspace:*",
     "@pushdocs/vpn": "workspace:*"
   },
   "devDependencies": {

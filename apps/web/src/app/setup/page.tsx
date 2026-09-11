@@ -10,7 +10,7 @@ export default async function SetupPage() {
   if (await repository().isBootstrapped()) redirect("/login");
   return (
     <AuthPanel
-      title="Создайте оператора установки"
+      title="Создайте владельца"
       description="Эта учётная запись будет управлять установкой."
     >
       <form action={bootstrapAction} className="auth-form">

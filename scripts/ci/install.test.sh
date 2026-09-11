@@ -37,8 +37,10 @@ fi
 postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$environment_file")
 session_pepper=$(sed -n 's/^PUSHDOCS_SESSION_PEPPER=//p' "$environment_file")
 encryption_key=$(sed -n 's/^PUSHDOCS_ENCRYPTION_KEY=//p' "$environment_file")
+vpn_gateway_token=$(sed -n 's/^PUSHDOCS_VPN_GATEWAY_TOKEN=//p' "$environment_file")
 [[ ${#postgres_password} == 64 ]]
 [[ ${#session_pepper} == 64 ]]
+[[ ${#vpn_gateway_token} == 64 ]]
 decoded_key_length=$(printf '%s' "$encryption_key" | openssl base64 -d -A | wc -c | tr -d ' ')
 [[ "$decoded_key_length" == 32 ]]
 

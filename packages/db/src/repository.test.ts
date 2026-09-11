@@ -142,6 +142,30 @@ describe("project and connection administration", () => {
     expect(await repository.countConnectionProjects(fixture.connectionId)).toBe(1);
   });
 
+  it("assigns and releases an isolated VPN slot", async () => {
+    const connection = await repository.createConnection({
+      baseUrl: "https://gitlab.internal.test",
+      kind: "gitlab",
+      name: "GitLab VPN",
+      secretEncrypted: "token",
+      vpnProfileEncrypted: "encrypted-profile",
+    });
+    await expect(repository.getConnection(connection.id)).resolves.toMatchObject({
+      vpn_profile_encrypted: "encrypted-profile",
+      vpn_slot: 1,
+    });
+    await repository.updateConnection({
+      baseUrl: "https://gitlab.internal.test",
+      connectionId: connection.id,
+      name: "GitLab VPN",
+      vpnProfileEncrypted: null,
+    });
+    await expect(repository.getConnection(connection.id)).resolves.toMatchObject({
+      vpn_profile_encrypted: null,
+      vpn_slot: null,
+    });
+  });
+
   it("updates editable project settings", async () => {
     const fixture = await projectFixture();
     await repository.updateProject({

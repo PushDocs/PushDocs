@@ -13,6 +13,7 @@ Installation -> Projects -> Branches -> Documents
 The repository contains a working MVP:
 
 - The first operator creates the installation and can add encrypted GitHub or GitLab connections.
+- A GitLab connection can store an encrypted inline OpenVPN profile. Provider requests and Git HTTPS traffic then pass through an isolated VPN gateway. The installation supports four active VPN profiles.
 - One installation can import and manage several projects. Each project has its own members and roles.
 - The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
@@ -51,6 +52,10 @@ The installer creates `.env` with a PostgreSQL password, session pepper and encr
 `PUSHDOCS_PUBLIC_ORIGIN` is the only value the installer cannot generate. It must match the DNS name and TLS address used by browsers. Production installations require an HTTPS origin. Plain HTTP is accepted only for localhost.
 
 Open the configured origin and create the first operator. Add a Git connection, then connect a Docusaurus project. You can paste a repository URL, a GitLab numeric project ID, a GitLab namespace and path, or a GitHub owner and repository name. The worker imports the default branch in the background.
+
+An operator can attach an optional `.ovpn` file to a GitLab HTTPS connection. The profile must use a TUN device and contain its CA, client certificate, and unencrypted private key in inline blocks. PushDocs rejects profiles that run scripts, load plugins, refer to external credential files, or omit server certificate verification. If the VPN is unavailable, PushDocs does not try the provider without the VPN.
+
+VPN profiles use four gateway containers named `vpn-gateway-1` through `vpn-gateway-4`. Each container has its own network routes and receives `NET_ADMIN` and `/dev/net/tun`. The web and worker containers do not receive these permissions. The host must provide `/dev/net/tun` to Docker.
 
 Run the same command again to update or restart the installation. Existing secrets remain unchanged. Use `--prepare-only` to create `.env` without starting containers. For local evaluation, run `./scripts/install.sh http://localhost:8080`.
 

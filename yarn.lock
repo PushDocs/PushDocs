@@ -1149,6 +1149,28 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@pushdocs/vpn-gateway@workspace:apps/vpn-gateway":
+  version: 0.0.0-use.local
+  resolution: "@pushdocs/vpn-gateway@workspace:apps/vpn-gateway"
+  dependencies:
+    "@pushdocs/vpn": "workspace:*"
+    "@types/node": "npm:20.19.24"
+    tsx: "npm:4.20.6"
+    typescript: "npm:5.9.3"
+    vitest: "npm:4.1.10"
+  languageName: unknown
+  linkType: soft
+
+"@pushdocs/vpn@workspace:*, @pushdocs/vpn@workspace:packages/vpn":
+  version: 0.0.0-use.local
+  resolution: "@pushdocs/vpn@workspace:packages/vpn"
+  dependencies:
+    "@types/node": "npm:20.19.24"
+    typescript: "npm:5.9.3"
+    vitest: "npm:4.1.10"
+  languageName: unknown
+  linkType: soft
+
 "@pushdocs/web@workspace:apps/web":
   version: 0.0.0-use.local
   resolution: "@pushdocs/web@workspace:apps/web"
@@ -1160,6 +1182,7 @@ __metadata:
     "@pushdocs/domain": "workspace:*"
     "@pushdocs/providers": "workspace:*"
     "@pushdocs/ui": "workspace:*"
+    "@pushdocs/vpn": "workspace:*"
     "@types/node": "npm:20.19.24"
     "@types/react": "npm:19.2.14"
     "@types/react-dom": "npm:19.2.3"
@@ -1188,6 +1211,7 @@ __metadata:
     "@pushdocs/content": "workspace:*"
     "@pushdocs/db": "workspace:*"
     "@pushdocs/providers": "workspace:*"
+    "@pushdocs/vpn": "workspace:*"
     "@types/node": "npm:20.19.24"
     tsx: "npm:4.20.6"
     typescript: "npm:5.9.3"

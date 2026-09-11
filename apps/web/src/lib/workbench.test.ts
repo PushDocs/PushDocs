@@ -7,15 +7,18 @@ const mocks = vi.hoisted(() => ({
   getProjectSyncTarget: vi.fn(),
   listWorkingFiles: vi.fn(),
   createProvider: vi.fn(),
+  providerForConnection: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("./server", () => ({ requireUser: mocks.requireUser, repository: () => mocks }));
 vi.mock("@pushdocs/providers", () => ({ createProvider: mocks.createProvider }));
 vi.mock("@pushdocs/db", () => ({ decryptSecret: () => "token" }));
+vi.mock("./provider", () => ({ providerForConnection: mocks.providerForConnection }));
 
 import { apiError, assertEditable, assertSameOrigin, workbenchContext } from "./workbench";
 
 beforeEach(() => {
+  mocks.providerForConnection.mockImplementation(async () => mocks.createProvider());
   mocks.requireUser.mockResolvedValue({ id: "user" });
   mocks.requireProjectAccess.mockResolvedValue({ role: "editor" });
   mocks.getProjectSyncTarget.mockResolvedValue({

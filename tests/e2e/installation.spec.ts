@@ -12,7 +12,7 @@ test("operator setup, isolated sessions, login and logout", async ({ page, brows
   if (restored) {
     await expect(page).toHaveURL(/\/login$/);
   } else {
-    await expect(page.getByRole("heading", { name: "Создайте оператора установки" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Создайте владельца" })).toBeVisible();
     await page.getByLabel("Имя", { exact: true }).fill("CI Operator");
     await page.getByLabel("Email", { exact: true }).fill(email);
     await page.getByLabel(/^Пароль/).fill(password);

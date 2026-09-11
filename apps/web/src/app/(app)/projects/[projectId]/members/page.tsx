@@ -5,7 +5,7 @@ import { inviteMemberAction } from "@/app/actions";
 import { SettingsNavigation } from "@/components/settings-navigation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
-export const metadata: Metadata = { title: "Участники" };
+export const metadata: Metadata = { title: "Пользователи" };
 
 export default async function MembersPage({
   params,
@@ -27,7 +27,7 @@ export default async function MembersPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>Участники</h1>
+          <h1>Пользователи</h1>
         </div>
       </header>
       <SettingsNavigation
@@ -38,7 +38,7 @@ export default async function MembersPage({
       <div className="members-layout">
         <section className="members-table">
           <div className="members-head">
-            <span>Участник</span>
+            <span>Пользователь</span>
             <span>Роль</span>
             <span>Статус</span>
           </div>
@@ -71,7 +71,7 @@ export default async function MembersPage({
             <Shield aria-hidden />
             <p>
               <strong>Администратор</strong>
-              <span>Управляет участниками и настройками проекта.</span>
+              <span>Управляет пользователями и настройками проекта.</span>
             </p>
           </div>
           <div>
@@ -95,7 +95,7 @@ export default async function MembersPage({
           {invitationToken ? (
             <div className="invitation-result" role="status">
               <strong>Приглашение создано</strong>
-              <p>Передайте участнику одноразовую ссылку. Она действует семь дней.</p>
+              <p>Передайте пользователю одноразовую ссылку. Она действует семь дней.</p>
               <input
                 readOnly
                 value={`/invite/${invitationToken}`}
@@ -106,7 +106,7 @@ export default async function MembersPage({
           <form action={inviteMemberAction} className="invite-form">
             <MailPlus aria-hidden />
             <label>
-              <span className="sr-only">Email участника</span>
+              <span className="sr-only">Email пользователя</span>
               <input name="email" type="email" placeholder="editor@example.com" required />
             </label>
             <div className="form-field">

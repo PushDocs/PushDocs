@@ -334,6 +334,25 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               await sql`alter table branch_contexts drop column is_protected`.execute(database);
             },
           },
+          "010-connection-vpn": {
+            async up(database) {
+              await sql`
+                alter table provider_connections
+                  add column vpn_profile_encrypted text,
+                  add column vpn_slot integer unique check (vpn_slot between 1 and 4),
+                  add constraint provider_connections_vpn_pair
+                    check ((vpn_profile_encrypted is null) = (vpn_slot is null))
+              `.execute(database);
+            },
+            async down(database) {
+              await sql`
+                alter table provider_connections
+                  drop constraint provider_connections_vpn_pair,
+                  drop column vpn_slot,
+                  drop column vpn_profile_encrypted
+              `.execute(database);
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

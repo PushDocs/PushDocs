@@ -25,6 +25,7 @@ export interface CoreRepository {
     kind: ProviderKind;
     name: string;
     secretEncrypted: string;
+    vpnProfileEncrypted?: string;
   }): Promise<unknown>;
   createInvitation(input: {
     email: string;
@@ -67,6 +68,7 @@ export interface CoreRepository {
     connectionId: string;
     name: string;
     secretEncrypted?: string;
+    vpnProfileEncrypted?: string | null;
   }): Promise<unknown>;
   updateProject(input: {
     defaultBranch: string;

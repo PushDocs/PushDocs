@@ -7,6 +7,7 @@ RUN corepack enable
 
 COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json turbo.json biome.json ./
 COPY apps/realtime/package.json ./apps/realtime/package.json
+COPY apps/vpn-gateway/package.json ./apps/vpn-gateway/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY apps/worker/package.json ./apps/worker/package.json
 COPY packages/content/package.json ./packages/content/package.json
@@ -16,6 +17,7 @@ COPY packages/db/package.json ./packages/db/package.json
 COPY packages/domain/package.json ./packages/domain/package.json
 COPY packages/providers/package.json ./packages/providers/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
+COPY packages/vpn/package.json ./packages/vpn/package.json
 
 RUN yarn install --immutable
 
@@ -29,7 +31,8 @@ RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static 
 
 FROM node:20.19.6-bookworm-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && apt-get clean
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openvpn iproute2 iptables \
+  && apt-get clean
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -43,6 +46,8 @@ RUN mkdir /corepack \
   && chown -R pushdocs:pushdocs /corepack
 
 COPY --from=build --chown=pushdocs:pushdocs /app /app
+
+RUN chmod 755 /app/apps/vpn-gateway/scripts/up.sh /app/apps/vpn-gateway/scripts/down.sh
 
 RUN mkdir -p /app/apps/worker/data/git /data/attachments \
   && chown -R pushdocs:pushdocs /app/apps/worker/data /data/attachments

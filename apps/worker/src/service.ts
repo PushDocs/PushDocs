@@ -9,6 +9,7 @@ import {
 } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { createProvider, type GitProvider, type ProviderFileChange } from "@pushdocs/providers";
+import { prepareVpnAccess, type VpnAccess, type VpnConnection } from "@pushdocs/vpn";
 import { GitTransport, type GitTransportOptions } from "./git-transport";
 
 export type WorkerRepository = Pick<
@@ -37,6 +38,7 @@ export type WorkerRepository = Pick<
 interface ProviderInput {
   baseUrl: string;
   kind: "github" | "gitlab";
+  request?: VpnAccess["fetch"];
   token: string;
 }
 
@@ -47,6 +49,7 @@ export interface WorkerServiceOptions {
   createProvider?: (input: ProviderInput) => GitProvider;
   decryptSecret?: (value: string) => string;
   logger?: Pick<Console, "error">;
+  prepareVpnAccess?: (connection: VpnConnection) => Promise<VpnAccess>;
   readAttachment?: (filePath: string) => Promise<Uint8Array>;
   repository: WorkerRepository;
 }
@@ -105,20 +108,43 @@ export function createWorkerService(options: WorkerServiceOptions) {
   const decrypt = options.decryptSecret ?? decryptSecret;
   const logger = options.logger ?? console;
   const readStoredAttachment = options.readAttachment ?? readFile;
+  const vpnAccess = options.prepareVpnAccess ?? prepareVpnAccess;
   const attachmentsRoot = path.resolve(
     options.attachmentsRoot ?? process.env.PUSHDOCS_ATTACHMENTS_DIR ?? "./data/attachments",
   );
 
-  const providerFor = (target: {
+  const providerAccessFor = async (target: {
     base_url: string;
+    connection_id: string;
     kind: "github" | "gitlab";
     secret_encrypted: string;
-  }) =>
-    providerFactory({
-      baseUrl: target.base_url,
-      kind: target.kind,
-      token: decrypt(target.secret_encrypted),
-    });
+    vpn_profile_encrypted: string | null;
+    vpn_slot: number | null;
+  }) => {
+    const profile = target.vpn_profile_encrypted
+      ? decrypt(target.vpn_profile_encrypted)
+      : undefined;
+    const access = profile
+      ? await vpnAccess({
+          allowedOrigin: target.base_url,
+          connectionId: target.connection_id,
+          profile,
+          slot: target.vpn_slot,
+        })
+      : { fetch: (input: string | URL, init?: RequestInit) => fetch(input, init) };
+    return {
+      access,
+      provider: providerFactory({
+        baseUrl: target.base_url,
+        kind: target.kind,
+        ...(profile ? { request: access.fetch } : {}),
+        token: decrypt(target.secret_encrypted),
+      }),
+    };
+  };
+
+  const providerFor = async (target: Parameters<typeof providerAccessFor>[0]) =>
+    (await providerAccessFor(target)).provider;
 
   async function synchronizeReviews(
     projectId: string,
@@ -161,7 +187,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
-    const client = provider ?? providerFor(target);
+    const client = provider ?? (await providerFor(target));
     const branches = await client.listBranches(target.provider_repository_id);
     await repository.ensureBranches(projectId, branches);
     const branch = branches.find((item) => item.name === branchName);
@@ -222,7 +248,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
   async function synchronizeProject(projectId: string): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
-    const provider = providerFor(target);
+    const provider = await providerFor(target);
     const branches = await provider.listBranches(target.provider_repository_id);
     await repository.ensureBranches(projectId, branches);
     await synchronizeBranch(projectId, target.default_branch, provider);
@@ -254,7 +280,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     if (!target || target.project_id !== projectId) throw new Error("Change set is unavailable");
     if (target.status === "submitted") return;
     if (target.status !== "submitting") throw new Error("Change set is not ready for submission");
-    const provider = providerFor(target);
+    const { access, provider } = await providerAccessFor(target);
     const branches = await provider.listBranches(target.provider_repository_id);
     let current = branches.find((branch) => branch.name === target.branch);
     if (payload && typeof payload === "object" && "newBranch" in payload && payload.newBranch) {
@@ -412,6 +438,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
       ),
       remote: target.clone_url,
       authorization: `Authorization: Basic ${Buffer.from(`${target.kind === "gitlab" ? "oauth2" : "x-access-token"}:${token}`).toString("base64")}`,
+      proxyUrl: access.gitProxyUrl,
     });
     const prepared = await transport.prepare({
       branch: target.branch,
@@ -487,7 +514,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
         if (!target) throw new Error("Подключение проекта недоступно");
         const branch = stringFromPayload(job.payload, "branch");
         if (branch === target.default_branch) throw new Error("Для PR / MR нужна отдельная ветка");
-        const provider = providerFor(target);
+        const provider = await providerFor(target);
         const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
           (review) => review.sourceBranch === branch && review.state === "open",
         );
@@ -544,7 +571,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
       try {
         const target = await repository.getProjectSyncTarget(projectId);
         if (!target) continue;
-        const provider = providerFor(target);
+        const provider = await providerFor(target);
         await synchronizeReviews(projectId, provider, target.provider_repository_id);
       } catch (error) {
         logger.error(

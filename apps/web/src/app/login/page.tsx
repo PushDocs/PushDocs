@@ -36,7 +36,7 @@ export default async function LoginPage({
       </form>
       <details className="auth-help">
         <summary>Не получается войти?</summary>
-        <p>Для восстановления доступа обратитесь к оператору установки.</p>
+        <p>Для восстановления доступа обратитесь к владельцу.</p>
       </details>
     </AuthPanel>
   );

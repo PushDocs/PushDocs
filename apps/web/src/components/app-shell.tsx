@@ -217,7 +217,7 @@ export function AppShell({
           <span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>
           <span className="profile-copy">
             <strong>{user.displayName}</strong>
-            <small>{user.isInstanceOperator ? "Оператор установки" : user.email}</small>
+            <small>{user.isInstanceOperator ? "Владелец" : user.email}</small>
           </span>
           <form action={logoutAction}>
             <button className="icon-button" type="submit" aria-label="Выйти">

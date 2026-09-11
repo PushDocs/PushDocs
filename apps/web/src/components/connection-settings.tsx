@@ -1,18 +1,13 @@
 import { Select } from "@pushdocs/ui";
-import { Cable, Code2, GitBranch, Pencil, Plus, Trash2 } from "lucide-react";
+import { Cable, Plus } from "lucide-react";
 import {
   createConnectionAction,
   deleteConnectionAction,
-  updateConnectionAction,
+  saveConnectionSettingsAction,
 } from "@/app/actions";
 import { repository, requireOperator } from "@/lib/server";
+import { ConnectionCard } from "./connection-card";
 import { SettingsNavigation } from "./settings-navigation";
-
-function projectsLabel(count: number): string {
-  const form = new Intl.PluralRules("ru").select(count);
-  const noun = form === "one" ? "проект" : form === "few" ? "проекта" : "проектов";
-  return `${count} ${noun}`;
-}
 
 export async function ConnectionSettings({ projectId }: { projectId?: string }) {
   const user = await requireOperator();
@@ -45,82 +40,20 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
             </div>
           ) : (
             connectionRows.map((connection) => (
-              <article className="connection-card" key={connection.id}>
-                <div className="connection-row">
-                  <span className="provider-icon">
-                    {connection.kind === "github" ? (
-                      <Code2 aria-hidden />
-                    ) : (
-                      <GitBranch aria-hidden />
-                    )}
-                  </span>
-                  <span>
-                    <strong>{connection.name}</strong>
-                    <small>{connection.base_url}</small>
-                    <small>{projectsLabel(connection.projectCount)}</small>
-                  </span>
-                  <span className="connection-kind">{connection.kind}</span>
-                </div>
-                <details className="connection-editor">
-                  <summary>
-                    <Pencil aria-hidden size={15} />
-                    Редактировать
-                  </summary>
-                  <form action={updateConnectionAction} className="connection-edit-form">
-                    <input name="connectionId" type="hidden" value={connection.id} />
-                    {projectId ? <input name="projectId" type="hidden" value={projectId} /> : null}
-                    <label>
-                      Название
-                      <input name="name" defaultValue={connection.name} required />
-                    </label>
-                    <label>
-                      Адрес
-                      <input
-                        name="baseUrl"
-                        type="url"
-                        defaultValue={connection.base_url}
-                        readOnly={connection.projectCount > 0}
-                        required
-                      />
-                      {connection.projectCount > 0 ? (
-                        <small>Адрес нельзя менять, пока подключение используется проектами.</small>
-                      ) : null}
-                    </label>
-                    <label>
-                      Новый access token
-                      <input
-                        name="token"
-                        type="password"
-                        autoComplete="off"
-                        placeholder="Оставьте пустым, чтобы сохранить текущий"
-                      />
-                    </label>
-                    <div className="connection-actions">
-                      <button className="pd-button pd-button--primary" type="submit">
-                        Сохранить
-                      </button>
-                    </div>
-                  </form>
-                  <div className="connection-danger">
-                    <h3>Удалить подключение</h3>
-                    {connection.projectCount > 0 ? (
-                      <p>Сначала удалите все проекты, которые используют это подключение.</p>
-                    ) : (
-                      <form action={deleteConnectionAction}>
-                        <input name="connectionId" type="hidden" value={connection.id} />
-                        <label>
-                          Введите <strong>{connection.name}</strong> для подтверждения
-                          <input name="confirmation" required autoComplete="off" />
-                        </label>
-                        <button className="pd-button pd-button--danger" type="submit">
-                          <Trash2 aria-hidden size={15} />
-                          Удалить подключение
-                        </button>
-                      </form>
-                    )}
-                  </div>
-                </details>
-              </article>
+              <ConnectionCard
+                key={connection.id}
+                connection={{
+                  id: connection.id,
+                  name: connection.name,
+                  baseUrl: connection.base_url,
+                  kind: connection.kind,
+                  projectCount: connection.projectCount,
+                  vpnSlot: connection.vpn_slot,
+                }}
+                projectId={projectId}
+                updateAction={saveConnectionSettingsAction}
+                deleteAction={deleteConnectionAction}
+              />
             ))
           )}
         </div>
@@ -159,6 +92,15 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
           <label>
             Access token
             <input name="token" type="password" autoComplete="off" required />
+          </label>
+          <label>
+            Профиль OpenVPN
+            <input
+              name="vpnProfile"
+              type="file"
+              accept=".ovpn,application/x-openvpn-profile,text/plain"
+            />
+            <small>Необязательно. Поддерживается для GitLab по HTTPS.</small>
           </label>
           <button className="pd-button pd-button--primary" type="submit">
             Сохранить подключение

@@ -16,6 +16,7 @@ export interface GitTransportOptions {
   directory: string;
   remote: string;
   authorization?: string;
+  proxyUrl?: string;
   /** Only local integration fixtures may enable filesystem transport. Never read this from a repository. */
   allowLocal?: boolean;
 }
@@ -47,12 +48,17 @@ export class GitTransport {
       GIT_COMMITTER_NAME: "PushDocs",
       GIT_COMMITTER_EMAIL: "noreply@pushdocs.invalid",
     });
-    if (options.authorization)
+    const configuration = [
+      ...(options.authorization ? [["http.extraHeader", options.authorization]] : []),
+      ...(options.proxyUrl ? [["http.proxy", options.proxyUrl]] : []),
+    ];
+    Object.assign(this.environment, { GIT_CONFIG_COUNT: String(configuration.length) });
+    configuration.forEach(([key, value], index) => {
       Object.assign(this.environment, {
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.extraHeader",
-        GIT_CONFIG_VALUE_0: options.authorization,
+        [`GIT_CONFIG_KEY_${index}`]: key,
+        [`GIT_CONFIG_VALUE_${index}`]: value,
       });
+    });
   }
 
   private run(args: string[], input?: Uint8Array | string, dates?: string): Promise<Buffer> {
@@ -106,14 +112,13 @@ export class GitTransport {
         clearTimeout(timeout);
         if (code === 0) resolve(Buffer.concat(output));
         else {
-          const detail = this.options.authorization
-            ? error
-                .replaceAll(this.options.authorization, "[redacted]")
-                .replaceAll(
-                  this.options.authorization.replace(/^Authorization: \S+ /, ""),
-                  "[redacted]",
-                )
-            : error;
+          let detail = error;
+          const secrets = [
+            this.options.authorization,
+            this.options.authorization?.replace(/^Authorization: \S+ /, ""),
+            this.options.proxyUrl,
+          ].filter((value): value is string => Boolean(value));
+          for (const secret of secrets) detail = detail.replaceAll(secret, "[redacted]");
           reject(new Error(`Git ${args[0]} failed (${code}): ${detail}`));
         }
       });

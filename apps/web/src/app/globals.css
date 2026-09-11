@@ -765,7 +765,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 12px;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
   min-height: 66px;
 }
 
@@ -781,8 +781,13 @@ textarea:where(:not(.monaco-editor *)):focus {
   border-top: 0;
 }
 
-.connection-row > span:nth-child(2) {
+.connection-summary {
   display: grid;
+  min-width: 0;
+}
+
+.connection-summary small {
+  overflow-wrap: anywhere;
 }
 
 .connection-row small {
@@ -812,12 +817,13 @@ textarea:where(:not(.monaco-editor *)):focus {
   font-size: 11px;
 }
 
-.connection-editor {
-  border-top: 1px solid var(--line);
-  padding: 0 0 16px 50px;
+.connection-vpn-status {
+  align-items: center;
+  color: #237a4b;
+  display: inline-flex;
+  gap: 5px;
 }
 
-.connection-editor > summary,
 .danger-zone > summary {
   align-items: center;
   color: var(--violet-deep);
@@ -830,9 +836,130 @@ textarea:where(:not(.monaco-editor *)):focus {
   padding: 12px 0;
 }
 
-.connection-editor > summary::-webkit-details-marker,
 .danger-zone > summary::-webkit-details-marker {
   display: none;
+}
+
+.connection-edit-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--violet-deep);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.connection-edit-trigger:hover {
+  background: var(--violet-wash);
+}
+
+.connection-edit-trigger:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--violet) 24%, transparent);
+  outline-offset: 2px;
+}
+
+.settings-modal-backdrop {
+  background: rgb(23 19 35 / 40%);
+  display: grid;
+  inset: 0;
+  padding: 20px;
+  place-items: center;
+  position: fixed;
+  z-index: 100;
+}
+
+.settings-modal {
+  background: var(--paper);
+  border-radius: 14px;
+  box-shadow: 0 20px 80px rgb(0 0 0 / 20%);
+  max-height: min(760px, calc(100dvh - 40px));
+  overflow-y: auto;
+  padding: 24px;
+  width: min(560px, 100%);
+}
+
+.settings-modal > header {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.settings-modal > header h2 {
+  font-size: 20px;
+  margin: 0 0 4px;
+}
+
+.settings-modal > header p {
+  color: var(--ink-muted);
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-modal > header > button,
+.settings-notification > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.settings-modal > header > button:hover,
+.settings-notification > button:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.settings-modal .connection-edit-form {
+  margin-top: 22px;
+}
+
+.settings-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.settings-notification {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgb(39 42 51 / 16%);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 10px 10px 13px;
+  position: fixed;
+  right: 20px;
+  top: 20px;
+  z-index: 120;
+}
+
+.settings-notification--success {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--line));
+  color: var(--success);
+}
+
+.settings-notification--error {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+  color: var(--danger);
 }
 
 .connection-edit-form,
@@ -849,6 +976,18 @@ textarea:where(:not(.monaco-editor *)):focus {
   display: grid;
   font-size: 11px;
   gap: 6px;
+}
+
+.connection-edit-form .checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.connection-edit-form .checkbox-row input {
+  height: 16px;
+  min-height: 0;
+  width: 16px;
 }
 
 .connection-actions {
@@ -2536,8 +2675,19 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 
 @media (max-width: 640px) {
-  .connection-editor {
-    padding-left: 0;
+  .connection-row {
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+    padding-block: 10px;
+  }
+
+  .connection-kind {
+    display: none;
+  }
+
+  .connection-edit-trigger {
+    grid-column: 2 / -1;
+    justify-self: start;
+    margin-left: -9px;
   }
 
   .danger-zone form {

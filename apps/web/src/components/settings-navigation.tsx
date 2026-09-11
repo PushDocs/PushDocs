@@ -16,7 +16,7 @@ export function SettingsNavigation({
         Проект
       </Link>
       <Link href={`${base}/members`} aria-current={active === "members" ? "page" : undefined}>
-        Участники
+        Пользователи
       </Link>
       {canManageConnections ? (
         <Link

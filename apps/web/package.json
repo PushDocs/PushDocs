@@ -17,6 +17,7 @@
     "@pushdocs/domain": "workspace:*",
     "@pushdocs/providers": "workspace:*",
     "@pushdocs/ui": "workspace:*",
+    "@pushdocs/vpn": "workspace:*",
     "argon2": "0.44.0",
     "diff": "9.0.0",
     "lucide-react": "1.27.0",

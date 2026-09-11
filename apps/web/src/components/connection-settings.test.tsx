@@ -18,7 +18,7 @@ vi.mock("@/lib/server", () => ({
 vi.mock("@/app/actions", () => ({
   createConnectionAction: vi.fn(),
   deleteConnectionAction: vi.fn(),
-  updateConnectionAction: vi.fn(),
+  saveConnectionSettingsAction: vi.fn(),
 }));
 
 import { ConnectionSettings } from "./connection-settings";
@@ -41,7 +41,7 @@ it("supports installation setup without a project", async () => {
   expect(html).not.toContain('name="projectId"');
 });
 
-it("renders edit and guarded delete controls for an unused connection", async () => {
+it("renders an edit action for an unused connection", async () => {
   mocks.connections.mockResolvedValueOnce([
     {
       base_url: "https://gitlab.example.test",
@@ -52,12 +52,10 @@ it("renders edit and guarded delete controls for an unused connection", async ()
   ]);
   const html = renderToStaticMarkup(await ConnectionSettings({}));
   expect(html).toContain("Редактировать");
-  expect(html).toContain('name="token"');
-  expect(html).toContain("Удалить подключение");
-  expect(html).toContain('name="confirmation"');
+  expect(html).toContain("0 проектов");
 });
 
-it("blocks connection deletion while projects use it", async () => {
+it("shows how many projects use a connection", async () => {
   mocks.connections.mockResolvedValueOnce([
     {
       base_url: "https://gitlab471.test",
@@ -68,6 +66,29 @@ it("blocks connection deletion while projects use it", async () => {
   ]);
   mocks.projectCount.mockResolvedValueOnce(1);
   const html = renderToStaticMarkup(await ConnectionSettings({}));
-  expect(html).toContain("Сначала удалите все проекты");
-  expect(html).not.toContain('name="confirmation"');
+  expect(html).toContain("1 проект");
+});
+
+it("keeps a separate edit action in every connection row", async () => {
+  mocks.connections.mockResolvedValueOnce([
+    { base_url: "https://one.test", id: "one", kind: "gitlab", name: "One" },
+    { base_url: "https://two.test", id: "two", kind: "github", name: "Two" },
+  ]);
+  const html = renderToStaticMarkup(await ConnectionSettings({}));
+  expect(html.match(/connection-edit-trigger/g)).toHaveLength(2);
+});
+
+it("shows and allows replacing an attached OpenVPN profile", async () => {
+  mocks.connections.mockResolvedValueOnce([
+    {
+      base_url: "https://gitlab.internal.test",
+      id: "vpn-connection",
+      kind: "gitlab",
+      name: "Corporate GitLab",
+      vpn_slot: 2,
+    },
+  ]);
+  const html = renderToStaticMarkup(await ConnectionSettings({}));
+  expect(html).toContain("VPN настроен");
+  expect(html).not.toContain("BEGIN PRIVATE KEY");
 });

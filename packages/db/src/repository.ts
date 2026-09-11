@@ -188,7 +188,7 @@ export class PushDocsRepository {
   async listConnections() {
     return this.database
       .selectFrom("provider_connections")
-      .select(["id", "name", "kind", "base_url", "updated_at"])
+      .select(["id", "name", "kind", "base_url", "updated_at", "vpn_slot"])
       .orderBy("name")
       .execute();
   }
@@ -226,7 +226,15 @@ export class PushDocsRepository {
   async getConnection(connectionId: string) {
     return this.database
       .selectFrom("provider_connections")
-      .select(["id", "name", "base_url", "kind", "secret_encrypted"])
+      .select([
+        "id",
+        "name",
+        "base_url",
+        "kind",
+        "secret_encrypted",
+        "vpn_profile_encrypted",
+        "vpn_slot",
+      ])
       .where("id", "=", connectionId)
       .executeTakeFirst();
   }
@@ -236,17 +244,33 @@ export class PushDocsRepository {
     kind: ProviderKind;
     name: string;
     secretEncrypted: string;
+    vpnProfileEncrypted?: string;
   }) {
-    return this.database
-      .insertInto("provider_connections")
-      .values({
-        base_url: input.baseUrl,
-        kind: input.kind,
-        name: input.name,
-        secret_encrypted: input.secretEncrypted,
-      })
-      .returning(["id", "name", "kind", "base_url"])
-      .executeTakeFirstOrThrow();
+    return this.database.transaction().execute(async (transaction) => {
+      let vpnSlot: number | null = null;
+      if (input.vpnProfileEncrypted) {
+        const rows = await transaction
+          .selectFrom("provider_connections")
+          .select("vpn_slot")
+          .where("vpn_slot", "is not", null)
+          .execute();
+        const used = new Set(rows.map((row) => row.vpn_slot));
+        vpnSlot = [1, 2, 3, 4].find((slot) => !used.has(slot)) ?? null;
+        if (!vpnSlot) throw new Error("VPN_CONNECTION_LIMIT");
+      }
+      return transaction
+        .insertInto("provider_connections")
+        .values({
+          base_url: input.baseUrl,
+          kind: input.kind,
+          name: input.name,
+          secret_encrypted: input.secretEncrypted,
+          vpn_profile_encrypted: input.vpnProfileEncrypted ?? null,
+          vpn_slot: vpnSlot,
+        })
+        .returning(["id", "name", "kind", "base_url"])
+        .executeTakeFirstOrThrow();
+    });
   }
 
   async updateConnection(input: {
@@ -254,20 +278,47 @@ export class PushDocsRepository {
     connectionId: string;
     name: string;
     secretEncrypted?: string;
+    vpnProfileEncrypted?: string | null;
   }) {
-    const connection = await this.database
-      .updateTable("provider_connections")
-      .set({
-        base_url: input.baseUrl,
-        name: input.name,
-        updated_at: new Date(),
-        ...(input.secretEncrypted ? { secret_encrypted: input.secretEncrypted } : {}),
-      })
-      .where("id", "=", input.connectionId)
-      .returning(["id", "name", "kind", "base_url"])
-      .executeTakeFirst();
-    if (!connection) throw new NotFoundError("Connection not found");
-    return connection;
+    return this.database.transaction().execute(async (transaction) => {
+      const current = await transaction
+        .selectFrom("provider_connections")
+        .select(["vpn_profile_encrypted", "vpn_slot"])
+        .where("id", "=", input.connectionId)
+        .executeTakeFirst();
+      if (!current) throw new NotFoundError("Connection not found");
+      const profile =
+        input.vpnProfileEncrypted === undefined
+          ? current.vpn_profile_encrypted
+          : input.vpnProfileEncrypted;
+      let vpnSlot = profile ? current.vpn_slot : null;
+      if (profile && !vpnSlot) {
+        const rows = await transaction
+          .selectFrom("provider_connections")
+          .select("vpn_slot")
+          .where("vpn_slot", "is not", null)
+          .execute();
+        const used = new Set(rows.map((row) => row.vpn_slot));
+        vpnSlot = [1, 2, 3, 4].find((slot) => !used.has(slot)) ?? null;
+        if (!vpnSlot) throw new Error("VPN_CONNECTION_LIMIT");
+      }
+      const connection = await transaction
+        .updateTable("provider_connections")
+        .set({
+          base_url: input.baseUrl,
+          name: input.name,
+          updated_at: new Date(),
+          ...(input.secretEncrypted ? { secret_encrypted: input.secretEncrypted } : {}),
+          ...(input.vpnProfileEncrypted !== undefined
+            ? { vpn_profile_encrypted: profile, vpn_slot: vpnSlot }
+            : {}),
+        })
+        .where("id", "=", input.connectionId)
+        .returning(["id", "name", "kind", "base_url", "vpn_slot"])
+        .executeTakeFirst();
+      if (!connection) throw new NotFoundError("Connection not found");
+      return connection;
+    });
   }
 
   async deleteConnection(connectionId: string): Promise<void> {
@@ -447,8 +498,11 @@ export class PushDocsRepository {
         "projects.root_path",
         "repositories.provider_repository_id",
         "provider_connections.base_url",
+        "provider_connections.id as connection_id",
         "provider_connections.kind",
         "provider_connections.secret_encrypted",
+        "provider_connections.vpn_profile_encrypted",
+        "provider_connections.vpn_slot",
       ])
       .where("projects.id", "=", projectId)
       .where("projects.status", "!=", "archived")
@@ -1727,8 +1781,11 @@ export class PushDocsRepository {
         "repositories.clone_url",
         "repositories.id as repository_id",
         "provider_connections.base_url",
+        "provider_connections.id as connection_id",
         "provider_connections.kind",
         "provider_connections.secret_encrypted",
+        "provider_connections.vpn_profile_encrypted",
+        "provider_connections.vpn_slot",
       ])
       .where("change_sets.id", "=", changeSetId)
       .executeTakeFirst();

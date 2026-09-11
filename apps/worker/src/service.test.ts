@@ -276,6 +276,60 @@ describe("branch and review synchronization", () => {
 });
 
 describe("change set submission", () => {
+  it("uses one VPN access path for provider requests and Git", async () => {
+    const port = repository();
+    const client = provider();
+    const target = {
+      ...submissionTarget,
+      connection_id: "connection",
+      vpn_profile_encrypted: "encrypted-profile",
+      vpn_slot: 3,
+    };
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(target as never);
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(target as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    const request = vi.fn(async () => new Response());
+    const createProvider = vi.fn(() => client);
+    let transportInput:
+      | Parameters<NonNullable<WorkerServiceOptions["createGitTransport"]>>[0]
+      | undefined;
+    const worker = createService({
+      createGitTransport: (input) => {
+        transportInput = input;
+        return {
+          prepare: async (value) => ({
+            branch: value.branch,
+            parentSha: value.baseSha,
+            sha: "commit-sha",
+          }),
+          publish: async (value) => ({ alreadyApplied: false, sha: value.sha }),
+        };
+      },
+      createProvider,
+      decryptSecret: (value) => `decrypted:${value}`,
+      prepareVpnAccess: vi.fn().mockResolvedValue({
+        fetch: request,
+        gitProxyUrl: "http://pushdocs:secret@vpn-gateway-3:8080",
+      }),
+      repository: port,
+    });
+
+    await worker.submitChangeSet({
+      changeSetId: "change",
+      createReview: false,
+      createdAt: "2026-09-08T00:00:00Z",
+      message: "Edit",
+      operationId: "operation",
+      projectId: "project",
+      userId: "actor",
+    });
+
+    expect(createProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ request, token: "decrypted:encrypted" }),
+    );
+    expect(transportInput?.proxyUrl).toBe("http://pushdocs:secret@vpn-gateway-3:8080");
+  });
+
   it("creates a new working branch and sends its first commit to a review", async () => {
     const port = repository();
     const client = provider();

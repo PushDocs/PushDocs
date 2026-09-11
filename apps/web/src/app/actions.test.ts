@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => {
     mkdir: vi.fn(),
     normalizeRepositoryLocator: vi.fn((_kind: string, value: string) => `normalized:${value}`),
     optionalUser: vi.fn(),
+    providerForConnection: vi.fn(),
     redirect: vi.fn((destination: string) => {
       throw new Error(`REDIRECT:${destination}`);
     }),
@@ -111,6 +112,7 @@ vi.mock("@pushdocs/providers", () => ({
   createProvider: mocks.createProvider,
   normalizeRepositoryLocator: mocks.normalizeRepositoryLocator,
 }));
+vi.mock("@/lib/provider", () => ({ providerForConnection: mocks.providerForConnection }));
 vi.mock("@/lib/server", () => ({
   actor: mocks.actor,
   application: () => mocks.app,
@@ -138,6 +140,7 @@ import {
   logoutAction,
   resolveConflictAction,
   retryChangeSetSubmissionAction,
+  saveConnectionSettingsAction,
   saveDraftAction,
   startGitOperationAction,
   submitChangeSetAction,
@@ -156,6 +159,28 @@ function form(values: Record<string, string | File>): FormData {
 const projectId = "3b63fe90-f569-4e0e-89e9-153948ba5a9e";
 const connectionId = "9d2c893f-8785-4b03-8568-e32655679be8";
 const changeSetId = "3532ba1e-d459-4d52-98af-27c958504046";
+const vpnProfile = `client
+tls-client
+dev tun
+proto tcp
+remote vpn.example.test 1194
+pull
+remote-cert-tls server
+<ca>
+-----BEGIN CERTIFICATE-----
+ca
+-----END CERTIFICATE-----
+</ca>
+<cert>
+-----BEGIN CERTIFICATE-----
+cert
+-----END CERTIFICATE-----
+</cert>
+<key>
+-----BEGIN PRIVATE KEY-----
+key
+-----END PRIVATE KEY-----
+</key>`;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -182,6 +207,7 @@ beforeEach(() => {
       { name: "stable", sha: "stable-head" },
     ]),
   });
+  mocks.providerForConnection.mockImplementation(async () => mocks.createProvider());
 });
 
 describe("authentication actions", () => {
@@ -291,6 +317,22 @@ describe("installation actions", () => {
     expect(mocks.revalidatePath).toHaveBeenCalledWith("/settings/connections");
   });
 
+  it("validates and encrypts an uploaded OpenVPN profile", async () => {
+    await createConnectionAction(
+      form({
+        baseUrl: "https://gitlab.internal.test",
+        kind: "gitlab",
+        name: "Corporate GitLab",
+        token: "plain-token",
+        vpnProfile: new File([vpnProfile], "client.ovpn", { type: "text/plain" }),
+      }),
+    );
+    expect(mocks.app.createConnection).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ vpnProfileEncrypted: expect.stringMatching(/^encrypted:client/) }),
+    );
+  });
+
   it("imports verified repository metadata and its default branch", async () => {
     mocks.repo.getConnection.mockResolvedValue({
       base_url: "https://gitlab.test",
@@ -386,6 +428,28 @@ describe("installation actions", () => {
       secretEncrypted: "encrypted:new-token",
     });
     expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "main");
+  });
+
+  it("returns a safe result for connection settings forms", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    mocks.repo.listConnectionRepositories.mockResolvedValue(["42"]);
+    await expect(
+      saveConnectionSettingsAction(
+        form({
+          baseUrl: "https://other-gitlab.test",
+          connectionId,
+          name: "GitLab",
+        }),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      message: "Адрес нельзя изменить, пока подключение используется проектами.",
+    });
   });
 
   it("keeps the current connection token when only metadata changes", async () => {

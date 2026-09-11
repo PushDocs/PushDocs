@@ -137,7 +137,7 @@ describe("AppShell", () => {
       "/projects/one/reviews?branch=main",
     );
     expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Участники" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Пользователи" })).toBeNull();
     expect(screen.getByRole("link", { name: "Настройки" })).toBeTruthy();
     expect(container.querySelector(".app-frame")?.className).toBe("app-frame");
 
@@ -301,7 +301,7 @@ it.each([
     </AppShell>,
   );
   expect(screen.getByRole("link", { name: "Настройки" }).className).toBe("active");
-  expect(screen.queryByRole("link", { name: "Участники" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Пользователи" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
 });
 it("keeps Settings accessible for an operator before any project exists", () => {

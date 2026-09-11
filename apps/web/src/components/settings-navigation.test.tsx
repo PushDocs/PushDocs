@@ -9,10 +9,12 @@ it("links settings sections within the project and highlights the current sectio
   expect(screen.getByRole("link", { name: "Проект" }).getAttribute("href")).toBe(
     "/projects/project/settings",
   );
-  expect(screen.getByRole("link", { name: "Участники" }).getAttribute("href")).toBe(
+  expect(screen.getByRole("link", { name: "Пользователи" }).getAttribute("href")).toBe(
     "/projects/project/settings/members",
   );
-  expect(screen.getByRole("link", { name: "Участники" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("link", { name: "Пользователи" }).getAttribute("aria-current")).toBe(
+    "page",
+  );
   expect(screen.getByRole("link", { name: "Подключения" }).getAttribute("href")).toBe(
     "/projects/project/settings/connections",
   );
@@ -20,5 +22,5 @@ it("links settings sections within the project and highlights the current sectio
 it("hides installation connections from non-operators while keeping project members accessible", () => {
   render(<SettingsNavigation projectId="project" active="project" canManageConnections={false} />);
   expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Участники" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Пользователи" })).toBeTruthy();
 });

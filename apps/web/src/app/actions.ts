@@ -23,17 +23,18 @@ import {
 } from "@pushdocs/contracts";
 import {
   createOpaqueToken,
-  decryptSecret,
   encryptSecret,
   hashInvitationToken,
   hashOpaqueToken,
   RevisionConflictError,
 } from "@pushdocs/db";
-import { createProvider, normalizeRepositoryLocator } from "@pushdocs/providers";
+import { normalizeRepositoryLocator } from "@pushdocs/providers";
+import { clearVpnAccess, validateVpnProfile, vpnProfileLimit } from "@pushdocs/vpn";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { providerForConnection } from "@/lib/provider";
 import {
   actor,
   application,
@@ -43,6 +44,14 @@ import {
   requireUser,
   sessionCookieName,
 } from "@/lib/server";
+
+async function uploadedVpnProfile(formData: FormData): Promise<string | undefined> {
+  const value = formData.get("vpnProfile");
+  if (!(value instanceof File) || value.size === 0) return undefined;
+  if (value.size > vpnProfileLimit || !value.name.toLowerCase().endsWith(".ovpn"))
+    throw new Error("VPN_PROFILE_INVALID_FILE");
+  return validateVpnProfile(await value.text());
+}
 
 async function createBrowserSession(userId: string): Promise<void> {
   const token = randomBytes(32).toString("base64url");
@@ -87,11 +96,15 @@ export async function logoutAction(): Promise<void> {
 export async function createConnectionAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
   const input = createConnectionSchema.parse(Object.fromEntries(formData));
+  const vpnProfile = await uploadedVpnProfile(formData);
+  if (vpnProfile && (input.kind !== "gitlab" || new URL(input.baseUrl).protocol !== "https:"))
+    throw new Error("VPN_REQUIRES_HTTPS_GITLAB");
   await application().createConnection(actor(user), {
     baseUrl: input.baseUrl,
     kind: input.kind,
     name: input.name,
     secretEncrypted: encryptSecret(input.token),
+    ...(vpnProfile ? { vpnProfileEncrypted: encryptSecret(vpnProfile) } : {}),
   });
   revalidatePath("/settings/connections");
   const projectId = formData.get("projectId");
@@ -104,23 +117,37 @@ export async function updateConnectionAction(formData: FormData): Promise<void> 
   const input = updateConnectionSchema.parse(Object.fromEntries(formData));
   const current = await repository().getConnection(input.connectionId);
   if (!current) throw new Error("CONNECTION_NOT_FOUND");
+  const vpnProfile = await uploadedVpnProfile(formData);
+  if (vpnProfile && (current.kind !== "gitlab" || new URL(input.baseUrl).protocol !== "https:"))
+    throw new Error("VPN_REQUIRES_HTTPS_GITLAB");
+  const removeVpn = formData.get("removeVpn") === "on";
+  if (vpnProfile && removeVpn) throw new Error("VPN_PROFILE_CHANGE_CONFLICT");
   const repositoryIds = await repository().listConnectionRepositories(input.connectionId);
-  const credentialsChanged = Boolean(input.token) || input.baseUrl !== current.base_url;
-  if (credentialsChanged) {
-    if (input.baseUrl !== current.base_url && repositoryIds.length > 0)
-      throw new Error("CONNECTION_BASE_URL_IN_USE");
-    const provider = createProvider({
-      baseUrl: input.baseUrl,
-      kind: current.kind,
-      token: input.token || decryptSecret(current.secret_encrypted),
+  const vpnChanged = Boolean(vpnProfile) || removeVpn;
+  const credentialsChanged =
+    Boolean(input.token) || input.baseUrl !== current.base_url || vpnChanged;
+  if (input.baseUrl !== current.base_url && repositoryIds.length > 0)
+    throw new Error("CONNECTION_BASE_URL_IN_USE");
+  if (credentialsChanged && !vpnChanged) {
+    const provider = await providerForConnection({
+      ...current,
+      base_url: input.baseUrl,
+      connection_id: current.id,
+      secret_encrypted: input.token ? encryptSecret(input.token) : current.secret_encrypted,
     });
     for (const repositoryId of repositoryIds) await provider.listBranches(repositoryId);
   }
+  if (removeVpn) await clearVpnAccess(current.vpn_slot).catch(() => undefined);
   await application().updateConnection(actor(user), {
     baseUrl: input.baseUrl,
     connectionId: input.connectionId,
     name: input.name,
     ...(input.token ? { secretEncrypted: encryptSecret(input.token) } : {}),
+    ...(vpnProfile
+      ? { vpnProfileEncrypted: encryptSecret(vpnProfile) }
+      : removeVpn
+        ? { vpnProfileEncrypted: null }
+        : {}),
   });
   if (credentialsChanged)
     for (const project of await repository().listConnectionProjects(input.connectionId))
@@ -132,12 +159,40 @@ export async function updateConnectionAction(formData: FormData): Promise<void> 
     revalidatePath(`/projects/${projectId}/settings/connections`);
 }
 
+function connectionSettingsError(error: unknown): string {
+  if (!(error instanceof Error)) return "Не удалось сохранить настройки. Повторите попытку.";
+  switch (error.message) {
+    case "CONNECTION_BASE_URL_IN_USE":
+      return "Адрес нельзя изменить, пока подключение используется проектами.";
+    case "CONNECTION_NOT_FOUND":
+      return "Подключение не найдено. Обновите страницу.";
+    case "VPN_PROFILE_INVALID_FILE":
+      return "Выберите корректный файл OpenVPN в формате .ovpn.";
+    case "VPN_PROFILE_CHANGE_CONFLICT":
+      return "Нельзя одновременно заменить и отключить VPN-профиль.";
+    default:
+      return "Не удалось сохранить настройки. Проверьте данные и повторите попытку.";
+  }
+}
+
+export async function saveConnectionSettingsAction(
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await updateConnectionAction(formData);
+    return { ok: true, message: "Настройки подключения сохранены" };
+  } catch (error) {
+    return { ok: false, message: connectionSettingsError(error) };
+  }
+}
+
 export async function deleteConnectionAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
   const input = deleteConnectionSchema.parse(Object.fromEntries(formData));
   const current = await repository().getConnection(input.connectionId);
   if (!current) throw new Error("CONNECTION_NOT_FOUND");
   if (input.confirmation !== current.name) throw new Error("CONFIRMATION_MISMATCH");
+  await clearVpnAccess(current.vpn_slot).catch(() => undefined);
   await application().deleteConnection(actor(user), input.connectionId);
   revalidatePath("/settings/connections");
   revalidatePath("/projects");
@@ -149,11 +204,7 @@ export async function createProjectAction(formData: FormData): Promise<void> {
   const input = createProjectSchema.parse(Object.fromEntries(formData));
   const connection = await repository().getConnection(input.connectionId);
   if (!connection) throw new Error("CONNECTION_NOT_FOUND");
-  const provider = createProvider({
-    baseUrl: connection.base_url,
-    kind: connection.kind,
-    token: decryptSecret(connection.secret_encrypted),
-  });
+  const provider = await providerForConnection({ ...connection, connection_id: connection.id });
   const remote = await provider.getRepository(
     normalizeRepositoryLocator(connection.kind, input.repositoryProviderId),
   );
@@ -180,11 +231,7 @@ export async function updateProjectAction(formData: FormData): Promise<void> {
   if (current.default_branch !== input.defaultBranch) {
     const target = await repository().getProjectSyncTarget(input.projectId);
     if (!target) throw new Error("PROJECT_CONNECTION_NOT_FOUND");
-    const provider = createProvider({
-      baseUrl: target.base_url,
-      kind: target.kind,
-      token: decryptSecret(target.secret_encrypted),
-    });
+    const provider = await providerForConnection(target);
     const branches = await provider.listBranches(target.provider_repository_id);
     if (!branches.some((branch) => branch.name === input.defaultBranch))
       throw new Error("DEFAULT_BRANCH_NOT_FOUND");
