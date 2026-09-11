@@ -10,8 +10,9 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { CriticalForm } from "./critical-form";
+import { SettingsModal, SettingsModalCancel } from "./settings-modal";
 
 type SaveResult = { ok: boolean; message: string };
 
@@ -21,6 +22,7 @@ interface ConnectionItem {
   baseUrl: string;
   kind: "github" | "gitlab";
   projectCount: number;
+  projects?: Array<{ id: string; name: string }>;
   vpnSlot?: number | null;
 }
 
@@ -43,27 +45,6 @@ export function ConnectionCard({
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [notification, setNotification] = useState<SaveResult>();
-  const modal = useRef<HTMLElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const node = modal.current;
-    node?.querySelector<HTMLInputElement>('input[name="name"]')?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || pending) return;
-      setOpen(false);
-      queueMicrotask(() => trigger.current?.focus());
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, pending]);
-
-  const close = () => {
-    if (pending) return;
-    setOpen(false);
-    queueMicrotask(() => trigger.current?.focus());
-  };
 
   return (
     <article className="connection-card">
@@ -85,8 +66,8 @@ export function ConnectionCard({
         <button
           className="connection-edit-trigger"
           type="button"
-          ref={trigger}
-          onClick={() => {
+          onClick={(event) => {
+            event.currentTarget.focus();
             setNotification(undefined);
             setOpen(true);
           }}
@@ -118,118 +99,105 @@ export function ConnectionCard({
       ) : null}
 
       {open ? (
-        <div className="settings-modal-backdrop">
-          <section
-            className="settings-modal connection-modal"
-            ref={modal}
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Настройки подключения ${connection.name}`}
-          >
-            <header>
-              <div>
-                <h2>{connection.name}</h2>
-                <p>{connection.baseUrl}</p>
-              </div>
-              <button type="button" aria-label="Закрыть" disabled={pending} onClick={close}>
-                <X aria-hidden size={18} />
-              </button>
-            </header>
-            <CriticalForm
-              className="connection-edit-form"
-              action={async (data) => {
-                setPending(true);
-                try {
-                  const result = await updateAction(data);
-                  if (result.ok) {
-                    setNotification(result);
-                    setOpen(false);
-                  }
-                  return result;
-                } finally {
-                  setPending(false);
+        <SettingsModal
+          title={`Настройки подключения ${connection.name}`}
+          onClose={() => setOpen(false)}
+        >
+          <p>Общее подключение. Изменения затронут все использующие его проекты.</p>
+          {connection.projects?.length ? (
+            <ul>
+              {connection.projects.map((project) => (
+                <li key={project.id}>{project.name}</li>
+              ))}
+            </ul>
+          ) : null}
+          <CriticalForm
+            className="connection-edit-form"
+            action={async (data) => {
+              setPending(true);
+              try {
+                const result = await updateAction(data);
+                if (result.ok) {
+                  setNotification(result);
+                  setOpen(false);
                 }
-              }}
-            >
-              <input name="connectionId" type="hidden" value={connection.id} />
-              {projectId ? <input name="projectId" type="hidden" value={projectId} /> : null}
-              <label>
-                Название
-                <input name="name" defaultValue={connection.name} required />
-              </label>
-              <label>
-                Адрес
-                <input
-                  name="baseUrl"
-                  type="url"
-                  defaultValue={connection.baseUrl}
-                  readOnly={connection.projectCount > 0}
-                  required
-                />
-                {connection.projectCount > 0 ? (
-                  <small>Адрес нельзя менять, пока подключение используется проектами.</small>
-                ) : null}
-              </label>
-              <label>
-                Новый access token
-                <input
-                  name="token"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="Оставьте пустым, чтобы сохранить текущий"
-                />
-              </label>
-              {connection.kind === "gitlab" ? (
-                <label>
-                  {connection.vpnSlot ? "Заменить профиль OpenVPN" : "Профиль OpenVPN"}
-                  <input
-                    name="vpnProfile"
-                    type="file"
-                    accept=".ovpn,application/x-openvpn-profile,text/plain"
-                  />
-                  <small>Самодостаточный .ovpn с встроенными CA, сертификатом и ключом.</small>
-                </label>
-              ) : null}
-              {connection.kind === "gitlab" && connection.vpnSlot ? (
-                <label className="checkbox-row">
-                  <input name="removeVpn" type="checkbox" />
-                  Отключить VPN для этого подключения
-                </label>
-              ) : null}
-              <footer className="settings-modal-actions">
-                <button
-                  className="pd-button pd-button--secondary"
-                  type="button"
-                  disabled={pending}
-                  onClick={close}
-                >
-                  Отмена
-                </button>
-                <button className="pd-button pd-button--primary" type="submit" disabled={pending}>
-                  {pending ? "Сохраняем…" : "Сохранить изменения"}
-                </button>
-              </footer>
-            </CriticalForm>
-            <div className="connection-danger">
-              <h3>Удалить подключение</h3>
+                return result;
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            <input name="connectionId" type="hidden" value={connection.id} />
+            {projectId ? <input name="projectId" type="hidden" value={projectId} /> : null}
+            <label>
+              Название
+              <input name="name" defaultValue={connection.name} required />
+            </label>
+            <label>
+              Адрес
+              <input
+                name="baseUrl"
+                type="url"
+                defaultValue={connection.baseUrl}
+                readOnly={connection.projectCount > 0}
+                required
+              />
               {connection.projectCount > 0 ? (
-                <p>Сначала удалите все проекты, которые используют это подключение.</p>
-              ) : (
-                <CriticalForm kind="deleteConnection">
-                  <input name="connectionId" type="hidden" value={connection.id} />
-                  <label>
-                    Введите <strong>{connection.name}</strong> для подтверждения
-                    <input name="confirmation" required autoComplete="off" />
-                  </label>
-                  <button className="pd-button pd-button--danger" type="submit" disabled={pending}>
-                    <Trash2 aria-hidden size={15} />
-                    Удалить подключение
-                  </button>
-                </CriticalForm>
-              )}
-            </div>
-          </section>
-        </div>
+                <small>Адрес нельзя менять, пока подключение используется проектами.</small>
+              ) : null}
+            </label>
+            <label>
+              Новый access token
+              <input
+                name="token"
+                type="password"
+                autoComplete="off"
+                placeholder="Оставьте пустым, чтобы сохранить текущий"
+              />
+            </label>
+            {connection.kind === "gitlab" ? (
+              <label>
+                {connection.vpnSlot ? "Заменить профиль OpenVPN" : "Профиль OpenVPN"}
+                <input
+                  name="vpnProfile"
+                  type="file"
+                  accept=".ovpn,application/x-openvpn-profile,text/plain"
+                />
+                <small>Самодостаточный .ovpn с встроенными CA, сертификатом и ключом.</small>
+              </label>
+            ) : null}
+            {connection.kind === "gitlab" && connection.vpnSlot ? (
+              <label className="checkbox-row">
+                <input name="removeVpn" type="checkbox" />
+                Отключить VPN для этого подключения
+              </label>
+            ) : null}
+            <footer className="settings-modal-actions">
+              <SettingsModalCancel />
+              <button className="pd-button pd-button--primary" type="submit" disabled={pending}>
+                {pending ? "Сохраняем…" : "Сохранить изменения"}
+              </button>
+            </footer>
+          </CriticalForm>
+          <div className="connection-danger">
+            <h3>Удалить подключение</h3>
+            {connection.projectCount > 0 ? (
+              <p>Сначала удалите все проекты, которые используют это подключение.</p>
+            ) : (
+              <CriticalForm kind="deleteConnection">
+                <input name="connectionId" type="hidden" value={connection.id} />
+                <label>
+                  Введите <strong>{connection.name}</strong> для подтверждения
+                  <input name="confirmation" required autoComplete="off" />
+                </label>
+                <button className="pd-button pd-button--danger" type="submit" disabled={pending}>
+                  <Trash2 aria-hidden size={15} />
+                  Удалить подключение
+                </button>
+              </CriticalForm>
+            )}
+          </div>
+        </SettingsModal>
       ) : null}
     </article>
   );

@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/workbench", async (original) => ({
   ...(await original<typeof import("@/lib/workbench")>()),
-  workbenchContext: mocks.context,
+  localWorkbenchContext: mocks.context,
 }));
 
 import { GET, POST } from "./route";

@@ -1,7 +1,9 @@
 import { Select } from "@pushdocs/ui";
 import { Cable } from "lucide-react";
 import { deleteConnectionAction, saveConnectionSettingsAction } from "@/app/actions";
+import { SettingsProjectPicker } from "@/components/settings-project-picker";
 import { repository, requireOperator } from "@/lib/server";
+import { settingsProjectChoices } from "@/lib/settings-project";
 import { ConnectionCard } from "./connection-card";
 import { CreateConnectionDialog } from "./create-connection-dialog";
 import { CriticalForm } from "./critical-form";
@@ -15,6 +17,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
     connections.map(async (connection) => ({
       ...connection,
       projectCount: await repository().countConnectionProjects(connection.id),
+      projects: await repository().listConnectionProjects(connection.id),
     })),
   );
   return (
@@ -30,6 +33,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
       ) : (
         <SettingsNavigation active="connections" canManageConnections />
       )}
+      {!projectId ? <SettingsProjectPicker projects={await settingsProjectChoices(user)} /> : null}
       <section className="connections-layout">
         <div className="settings-list">
           <h2>Подключено</h2>
@@ -48,6 +52,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
                   baseUrl: connection.base_url,
                   kind: connection.kind,
                   projectCount: connection.projectCount,
+                  projects: connection.projects,
                   vpnSlot: connection.vpn_slot,
                 }}
                 projectId={projectId}
@@ -59,7 +64,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
         </div>
 
         <CreateConnectionDialog>
-          <CriticalForm kind="createConnection" className="connection-edit-form">
+          <CriticalForm warnBefore kind="createConnection" className="connection-edit-form">
             {projectId ? <input type="hidden" name="projectId" value={projectId} /> : null}
             <label>
               Название

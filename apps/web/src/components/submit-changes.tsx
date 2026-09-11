@@ -32,6 +32,15 @@ export function SubmitChanges({
     <form action={submitChangeSetAction} className="submit-panel">
       <h2>{reviewTitle ? `Обновить ${reviewLabel}` : "Отправить изменения"}</h2>
       {reviewTitle ? <p>{reviewTitle}</p> : null}
+      <p>
+        <code>{needsBranch && createReview ? newBranch : branch}</code>
+        {createReview ? (
+          <>
+            {" "}
+            → <code>{defaultBranch}</code>
+          </>
+        ) : null}
+      </p>
       <input name="projectId" type="hidden" value={projectId} />
       <input name="changeSetId" type="hidden" value={changeSetId} />
       <input name="branch" type="hidden" value={branch} />

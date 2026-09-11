@@ -15,7 +15,13 @@ vi.mock("@pushdocs/providers", () => ({ createProvider: mocks.createProvider }))
 vi.mock("@pushdocs/db", () => ({ decryptSecret: () => "token" }));
 vi.mock("./provider", () => ({ providerForConnection: mocks.providerForConnection }));
 
-import { apiError, assertEditable, assertSameOrigin, workbenchContext } from "./workbench";
+import {
+  apiError,
+  assertEditable,
+  assertSameOrigin,
+  localWorkbenchContext,
+  workbenchContext,
+} from "./workbench";
 
 beforeEach(() => {
   mocks.providerForConnection.mockImplementation(async () => mocks.createProvider());
@@ -70,4 +76,11 @@ it("rejects cross-origin mutations and gives typed error statuses", async () => 
   expect(apiError(new Error("NEXT_REDIRECT")).status).toBe(401);
   expect(apiError(null).status).toBe(400);
   expect(await apiError(new Error("Failed")).json()).toEqual({ error: "Failed" });
+});
+
+it("opens local documents without waiting for a Git or VPN connection", async () => {
+  mocks.providerForConnection.mockRejectedValue(new Error("VPN unavailable"));
+  const context = await localWorkbenchContext("project", "main");
+  expect(context.config.version).toBe(1);
+  expect(mocks.providerForConnection).not.toHaveBeenCalled();
 });

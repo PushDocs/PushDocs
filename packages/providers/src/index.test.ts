@@ -726,3 +726,48 @@ it("maps GitHub comparison statuses and rejects potentially truncated file lists
   );
   await expect(provider.compareFiles("org/repo", "main", "sha")).rejects.toThrow("ограничил");
 });
+
+it.each(["gitlab", "github"] as const)(
+  "loads all %s review states beyond the first page while default lookups remain open-only",
+  async (kind) => {
+    const row =
+      kind === "gitlab"
+        ? {
+            iid: 1,
+            sha: "sha",
+            source_branch: "work",
+            target_branch: "main",
+            state: "merged",
+            title: "Done",
+            web_url: "https://git.test/1",
+          }
+        : {
+            number: 1,
+            head: { ref: "work", sha: "sha" },
+            base: { ref: "main" },
+            state: "closed",
+            merged_at: "2026-09-11",
+            title: "Done",
+            html_url: "https://git.test/1",
+          };
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(json(Array.from({ length: 100 }, () => row)))
+      .mockResolvedValueOnce(json([row]))
+      .mockResolvedValueOnce(json([]));
+    vi.stubGlobal("fetch", request);
+    const provider =
+      kind === "gitlab"
+        ? new GitLabProvider("https://gitlab.test", "token")
+        : new GitHubProvider("https://github.com", "token");
+    const reviews = await provider.listChangeRequests("team/docs", "all");
+    expect(reviews).toHaveLength(101);
+    expect(reviews.every((review) => review.state === "merged")).toBe(true);
+    expect(String(request.mock.calls[1]?.[0])).toContain("page=2");
+    expect(String(request.mock.calls[0]?.[0])).toContain("state=all");
+    await provider.listChangeRequests("team/docs");
+    expect(String(request.mock.calls[2]?.[0])).toContain(
+      kind === "gitlab" ? "state=opened" : "state=open",
+    );
+  },
+);

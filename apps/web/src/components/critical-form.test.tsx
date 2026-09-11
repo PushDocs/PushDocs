@@ -51,3 +51,16 @@ it("offers setup without asking for an impossible code when 2FA is disabled", as
   fireEvent.click(screen.getByRole("button", { name: "Вернуться к форме" }));
   expect(screen.getByLabelText("Название")).toHaveProperty("value", "Docs");
 });
+
+it("keeps the action and object visible on the code step and restores input on back", async () => {
+  mocks.status.mockResolvedValue(true);
+  setup();
+  fireEvent.change(screen.getByLabelText("Название"), { target: { value: "Sendsay" } });
+  fireEvent.click(screen.getByText("Сохранить"));
+  const code = await screen.findByLabelText("Код 2FA");
+  expect(screen.getByRole("heading").textContent).toBe("Создать подключение: Sendsay");
+  expect(document.activeElement).toBe(code);
+  fireEvent.click(screen.getByText("Назад"));
+  expect(screen.getByLabelText("Название")).toHaveProperty("value", "Sendsay");
+  expect(mocks.save).not.toHaveBeenCalled();
+});

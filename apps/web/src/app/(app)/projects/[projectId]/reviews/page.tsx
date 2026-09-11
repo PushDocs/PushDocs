@@ -1,5 +1,5 @@
 import { evaluateMergeReadiness } from "@pushdocs/domain";
-import { Status } from "@pushdocs/ui";
+import { Select, Status } from "@pushdocs/ui";
 import {
   CheckCircle2,
   CircleDot,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { GitOperation } from "@/components/git-operation";
 import { externalPreviewUrl } from "@/lib/external-preview";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
@@ -20,7 +21,7 @@ export default async function ReviewsPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ review?: string; branch?: string }>;
+  searchParams: Promise<{ review?: string; branch?: string; q?: string; state?: string }>;
 }) {
   const user = await requireUser();
   const { projectId } = await params;
@@ -29,8 +30,19 @@ export default async function ReviewsPage({
   );
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
   await repository().requireProjectAccess(user.id, projectId);
-  const reviews = await repository().listChangeRequests(projectId);
+  const allReviews = await repository().listChangeRequests(projectId);
   const query = await searchParams;
+  const needle = query.q?.trim().toLocaleLowerCase() ?? "";
+  const filterState = ["open", "merged", "closed"].includes(query.state ?? "")
+    ? query.state
+    : "all";
+  const reviews = allReviews.filter(
+    (review) =>
+      (filterState === "all" || review.state === filterState) &&
+      `${review.title} ${review.external_id} ${review.source_branch}`
+        .toLocaleLowerCase()
+        .includes(needle),
+  );
   const selected =
     reviews.find((review) => review.id === query.review) ??
     reviews.find((review) => review.source_branch === query.branch && review.state === "open") ??
@@ -60,11 +72,45 @@ export default async function ReviewsPage({
           <h1>{reviewLabel}</h1>
         </div>
       </header>
+      <form className="review-filters" method="get">
+        <label>
+          Найти запрос
+          <input name="q" defaultValue={query.q} placeholder="Название, номер или ветка" />
+        </label>
+        <Select
+          name="state"
+          label="Состояние"
+          defaultValue={filterState}
+          options={[
+            { value: "all", label: "Все состояния" },
+            { value: "open", label: "Открытые" },
+            { value: "merged", label: "Слитые" },
+            { value: "closed", label: "Закрытые" },
+          ]}
+        />
+        <button type="submit">Найти</button>
+        {needle || filterState !== "all" ? (
+          <Link href={`/projects/${projectId}/reviews`}>Сбросить</Link>
+        ) : null}
+      </form>
+      <GitOperation projectId={projectId} branch={project.defaultBranch} reviewsOnly />
+      {selected?.updated_at ? (
+        <p className="muted">
+          Обновлено из Git:{" "}
+          <time dateTime={new Date(selected.updated_at).toISOString()}>
+            {new Date(selected.updated_at).toLocaleString("ru-RU")}
+          </time>
+        </p>
+      ) : null}
       {reviews.length === 0 ? (
         <section className="empty-state">
           <GitPullRequest aria-hidden />
-          <h2>Нет открытых запросов на слияние</h2>
-          <p>После создания {reviewLabel} здесь появятся результаты проверок.</p>
+          <h2>{allReviews.length ? "Запросы не найдены" : "Нет запросов на слияние"}</h2>
+          <p>
+            {allReviews.length
+              ? "Измените запрос или сбросьте фильтры."
+              : `После создания ${reviewLabel} здесь появятся результаты проверок.`}
+          </p>
         </section>
       ) : (
         <div className="reviews-layout">
@@ -72,7 +118,7 @@ export default async function ReviewsPage({
             {reviews.map((review) => (
               <Link
                 className={review.id === selected?.id ? "active" : ""}
-                href={`?review=${review.id}`}
+                href={`?${new URLSearchParams({ review: review.id, q: query.q ?? "", state: filterState ?? "all" })}`}
                 key={review.id}
               >
                 <GitPullRequest aria-hidden size={17} />

@@ -2,6 +2,7 @@ import { Status } from "@pushdocs/ui";
 import { ArrowRight, CircleAlert, GitBranch, Plus, Search } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ProjectResumeLink } from "@/components/project-resume-link";
 import { actor, application, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Проекты" };
@@ -86,9 +87,10 @@ export default async function ProjectsPage({
             <span />
           </div>
           {projects.map((project) => (
-            <Link
+            <ProjectResumeLink
               className="project-row"
-              href={`/projects/${project.id}/documents`}
+              projectId={project.id}
+              defaultBranch={project.defaultBranch}
               key={project.id}
             >
               <span className="project-title-cell">
@@ -118,7 +120,7 @@ export default async function ProjectsPage({
                 )}
               </span>
               <ArrowRight className="row-arrow" aria-hidden size={18} />
-            </Link>
+            </ProjectResumeLink>
           ))}
         </section>
       )}

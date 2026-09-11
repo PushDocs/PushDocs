@@ -44,7 +44,7 @@ it("closes after saving and announces the result", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: "Редактировать" }));
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
-  await screen.findByRole("heading", { name: "Подтвердите действие" });
+  await screen.findByRole("heading", { name: /Сохранить настройки/ });
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
   expect((await screen.findByRole("status")).textContent).toBe("Настройки подключения сохранены");
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -65,7 +65,7 @@ it("keeps the dialog open and announces an error when saving fails", async () =>
   );
   fireEvent.click(screen.getByRole("button", { name: "Редактировать" }));
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
-  await screen.findByRole("heading", { name: "Подтвердите действие" });
+  await screen.findByRole("heading", { name: /Сохранить настройки/ });
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
   expect((await screen.findByRole("alert")).textContent).toContain(
     "Адрес нельзя изменить, пока подключение используется проектами",
@@ -126,8 +126,38 @@ it("closes the dialog with Escape and returns focus to the row action", async ()
   );
   const edit = screen.getByRole("button", { name: "Редактировать" });
   fireEvent.click(edit);
-  fireEvent.keyDown(document, { key: "Escape" });
+  fireEvent(screen.getByRole("dialog"), new Event("cancel", { bubbles: true, cancelable: true }));
   expect(screen.queryByRole("dialog")).toBeNull();
   await Promise.resolve();
   expect(document.activeElement).toBe(edit);
+});
+
+it("cancel uses the same unsaved-data confirmation as Escape", () => {
+  render(<ConnectionCard connection={connection} updateAction={vi.fn()} deleteAction={vi.fn()} />);
+  fireEvent.click(screen.getByText("Редактировать"));
+  fireEvent.change(screen.getByLabelText("Название"), { target: { value: "Unsaved" } });
+  fireEvent.click(screen.getByText("Отмена"));
+  expect(screen.getByRole("alert").textContent).toContain("Закрыть без сохранения");
+  fireEvent.click(screen.getByText("Продолжить редактирование"));
+  expect(screen.getByLabelText("Название")).toHaveProperty("value", "Unsaved");
+});
+
+it("lists the projects affected by an installation-wide connection", () => {
+  render(
+    <ConnectionCard
+      connection={{
+        ...connection,
+        projects: [
+          { id: "a", name: "Alpha docs" },
+          { id: "b", name: "Beta docs" },
+        ],
+      }}
+      updateAction={vi.fn()}
+      deleteAction={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByText("Редактировать"));
+  expect(screen.getByRole("dialog").textContent).toContain("Изменения затронут все");
+  expect(screen.getByText("Alpha docs")).toBeTruthy();
+  expect(screen.getByText("Beta docs")).toBeTruthy();
 });

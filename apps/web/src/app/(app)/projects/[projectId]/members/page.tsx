@@ -2,10 +2,12 @@ import { Select } from "@pushdocs/ui";
 import { MailPlus, Shield, UserRound, Users } from "lucide-react";
 import type { Metadata } from "next";
 import { inviteMemberAction } from "@/app/actions";
+import { CriticalForm } from "@/components/critical-form";
+import { CopyInvitation, MemberActions } from "@/components/member-actions";
 import { SettingsNavigation } from "@/components/settings-navigation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
-export const metadata: Metadata = { title: "Пользователи" };
+export const metadata: Metadata = { title: "Участники" };
 
 export default async function MembersPage({
   params,
@@ -22,12 +24,13 @@ export default async function MembersPage({
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
   const access = await repository().requireProjectAccess(user.id, projectId);
   const members = await repository().listMembers(projectId);
+  const invitations = access.role === "admin" ? await repository().listInvitations(projectId) : [];
   const invitationToken = (await searchParams).invitation;
   return (
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>Пользователи</h1>
+          <h1>Участники</h1>
         </div>
       </header>
       <SettingsNavigation
@@ -35,61 +38,6 @@ export default async function MembersPage({
         active="members"
         canManageConnections={user.isInstanceOperator}
       />
-      <div className="members-layout">
-        <section className="members-table">
-          <div className="members-head">
-            <span>Пользователь</span>
-            <span>Роль</span>
-            <span>Статус</span>
-          </div>
-          {members.map((member) => (
-            <div className="member-row" key={member.id}>
-              <span className="member-name">
-                <span className="avatar">{member.display_name.slice(0, 1).toUpperCase()}</span>
-                <span>
-                  <strong>{member.display_name}</strong>
-                  <small>{member.email}</small>
-                </span>
-              </span>
-              <span className="role-label">
-                <Shield aria-hidden size={15} />
-                {member.role === "admin"
-                  ? "Администратор"
-                  : member.role === "editor"
-                    ? "Редактор"
-                    : "Читатель"}
-              </span>
-              <span className={member.status === "active" ? "active-state" : "blocked-state"}>
-                {member.status === "active" ? "Активен" : "Заблокирован"}
-              </span>
-            </div>
-          ))}
-        </section>
-        <section className="roles-panel" aria-labelledby="roles-heading">
-          <h2 id="roles-heading">Права ролей</h2>
-          <div>
-            <Shield aria-hidden />
-            <p>
-              <strong>Администратор</strong>
-              <span>Управляет пользователями и настройками проекта.</span>
-            </p>
-          </div>
-          <div>
-            <UserRound aria-hidden />
-            <p>
-              <strong>Редактор</strong>
-              <span>Редактирует документы и отправляет изменения.</span>
-            </p>
-          </div>
-          <div>
-            <Users aria-hidden />
-            <p>
-              <strong>Читатель</strong>
-              <span>Читает документы и оставляет комментарии.</span>
-            </p>
-          </div>
-        </section>
-      </div>
       {access.role === "admin" ? (
         <>
           {invitationToken ? (
@@ -100,10 +48,8 @@ export default async function MembersPage({
                 пользователя, действует 24 часа и после принятия больше не работает. Письмо не
                 отправляется.
               </p>
-              <input
-                readOnly
+              <CopyInvitation
                 value={`${process.env.PUSHDOCS_PUBLIC_ORIGIN ?? "http://localhost:3000"}/invite/${invitationToken}`}
-                aria-label="Ссылка приглашения"
               />
             </div>
           ) : null}
@@ -136,6 +82,97 @@ export default async function MembersPage({
           </form>
         </>
       ) : null}
+      {invitations.length ? (
+        <section className="pending-invitations">
+          <h2>Ожидают приглашения</h2>
+          {invitations.map((invitation) => (
+            <div key={invitation.id}>
+              <span>
+                {invitation.email} ·{" "}
+                {invitation.role === "admin"
+                  ? "Администратор"
+                  : invitation.role === "editor"
+                    ? "Редактор"
+                    : "Читатель"}{" "}
+                · до {new Date(invitation.expires_at).toLocaleString("ru-RU")}
+              </span>
+              <CriticalForm
+                kind="revokeInvitation"
+                description={`Отменить приглашение: ${invitation.email}`}
+              >
+                <input type="hidden" name="projectId" value={projectId} />
+                <input type="hidden" name="invitationId" value={invitation.id} />
+                <button type="submit">Отменить приглашение</button>
+              </CriticalForm>
+            </div>
+          ))}
+        </section>
+      ) : null}
+      <div className="members-layout">
+        <section className="members-table">
+          <div className="members-head">
+            <span>Пользователь</span>
+            <span>Роль</span>
+            <span>Статус</span>
+            <span className="sr-only">Действия</span>
+          </div>
+          {members.map((member) => (
+            <div className="member-row" key={member.id}>
+              <span className="member-name">
+                <span className="avatar">{member.display_name.slice(0, 1).toUpperCase()}</span>
+                <span>
+                  <strong>{member.display_name}</strong>
+                  <small>{member.email}</small>
+                </span>
+              </span>
+              <span className="role-label">
+                <Shield aria-hidden size={15} />
+                {member.role === "admin"
+                  ? "Администратор"
+                  : member.role === "editor"
+                    ? "Редактор"
+                    : "Читатель"}
+              </span>
+              <span className={member.status === "active" ? "active-state" : "blocked-state"}>
+                {member.status === "active" ? "Активен" : "Заблокирован"}
+              </span>
+              {access.role === "admin" ? (
+                <MemberActions
+                  key={member.role}
+                  projectId={projectId}
+                  userId={member.id}
+                  name={member.display_name}
+                  role={member.role}
+                />
+              ) : null}
+            </div>
+          ))}
+        </section>
+        <section className="roles-panel" aria-labelledby="roles-heading">
+          <h2 id="roles-heading">Права ролей</h2>
+          <div>
+            <Shield aria-hidden />
+            <p>
+              <strong>Администратор</strong>
+              <span>Управляет пользователями и настройками проекта.</span>
+            </p>
+          </div>
+          <div>
+            <UserRound aria-hidden />
+            <p>
+              <strong>Редактор</strong>
+              <span>Редактирует документы и отправляет изменения.</span>
+            </p>
+          </div>
+          <div>
+            <Users aria-hidden />
+            <p>
+              <strong>Читатель</strong>
+              <span>Читает документы и оставляет комментарии.</span>
+            </p>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

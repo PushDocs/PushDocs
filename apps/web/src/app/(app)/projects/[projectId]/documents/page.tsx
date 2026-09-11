@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { BranchImport } from "@/components/branch-import";
 import { Workbench } from "@/components/workbench";
 import { actor, application, repository, requireUser } from "@/lib/server";
-import { workbenchContext } from "@/lib/workbench";
+import { localWorkbenchContext } from "@/lib/workbench";
 
 export const metadata: Metadata = { title: "Документы" };
 
@@ -24,7 +24,7 @@ export default async function DocumentsPage({
   const branches = await repository().listBranches(projectId);
   if (!branches.some((item) => item.full_ref === branch))
     return <BranchImport key={branch} projectId={projectId} branch={branch} />;
-  const { state, config, access } = await workbenchContext(projectId, branch);
+  const { state, config, access } = await localWorkbenchContext(projectId, branch);
   if (
     state.branch.repository_paths.length === 0 &&
     state.files.length === 0 &&

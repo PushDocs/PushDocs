@@ -21,7 +21,7 @@ vi.mock("@/lib/server", () => ({
     ],
   }),
 }));
-vi.mock("@/lib/workbench", () => ({ workbenchContext: mocks.context }));
+vi.mock("@/lib/workbench", () => ({ localWorkbenchContext: mocks.context }));
 vi.mock("@/components/workbench", () => ({ Workbench: () => null }));
 vi.mock("@/components/branch-import", () => ({ BranchImport: () => null }));
 

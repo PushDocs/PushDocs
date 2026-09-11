@@ -239,7 +239,7 @@ export class PushDocsRepository extends SecurityRepository {
     return this.database
       .selectFrom("projects")
       .innerJoin("repositories", "repositories.id", "projects.repository_id")
-      .select(["projects.id", "projects.default_branch"])
+      .select(["projects.id", "projects.name", "projects.default_branch"])
       .where("repositories.connection_id", "=", connectionId)
       .orderBy("projects.created_at")
       .execute();
@@ -751,6 +751,15 @@ export class PushDocsRepository extends SecurityRepository {
           .doUpdateSet({ is_protected: sql<boolean>`excluded.is_protected` }),
       )
       .execute();
+  }
+
+  async enqueueReviewsSync(projectId: string): Promise<string> {
+    const job = await this.database
+      .insertInto("jobs")
+      .values({ kind: "reviews.sync", payload: { projectId } })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    return job.id;
   }
 
   async enqueueBranchSync(projectId: string, branch: string): Promise<string> {
@@ -2403,6 +2412,72 @@ export class PushDocsRepository extends SecurityRepository {
       });
       return { projectId: invitation.project_id };
     });
+  }
+
+  async manageMember(input: {
+    actorId: string;
+    projectId: string;
+    userId: string;
+    role: ProjectRole | null;
+  }) {
+    return this.database.transaction().execute(async (trx) => {
+      await trx
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", input.projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const members = await trx
+        .selectFrom("project_memberships")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .execute();
+      const actor = members.find((member) => member.user_id === input.actorId);
+      if (!actor) throw new NotFoundError("Project not found");
+      assertCan(actor.role, "member:manage");
+      const target = members.find((member) => member.user_id === input.userId);
+      if (!target) throw new NotFoundError("Участник не найден");
+      if (
+        target.role === "admin" &&
+        input.role !== "admin" &&
+        members.filter((member) => member.role === "admin").length === 1
+      )
+        throw new Error("Нельзя удалить или понизить роль последнего администратора");
+      if (input.role)
+        await trx
+          .updateTable("project_memberships")
+          .set({ role: input.role })
+          .where("project_id", "=", input.projectId)
+          .where("user_id", "=", input.userId)
+          .execute();
+      else
+        await trx
+          .deleteFrom("project_memberships")
+          .where("project_id", "=", input.projectId)
+          .where("user_id", "=", input.userId)
+          .execute();
+    });
+  }
+
+  async listInvitations(projectId: string) {
+    return this.database
+      .selectFrom("project_invitations")
+      .select(["id", "email", "role", "expires_at"])
+      .where("project_id", "=", projectId)
+      .where("accepted_at", "is", null)
+      .where("expires_at", ">", new Date())
+      .orderBy("created_at", "desc")
+      .execute();
+  }
+
+  async revokeInvitation(actorId: string, projectId: string, invitationId: string) {
+    await this.requireProjectAccess(actorId, projectId, "member:manage");
+    await this.database
+      .deleteFrom("project_invitations")
+      .where("project_id", "=", projectId)
+      .where("id", "=", invitationId)
+      .where("accepted_at", "is", null)
+      .execute();
   }
 
   async listMembers(projectId: string) {

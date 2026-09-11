@@ -23,14 +23,14 @@ export function SettingsNavigation({
         </>
       ) : null}
       <Link href={`${base}/profile`} aria-current={active === "profile" ? "page" : undefined}>
-        Профиль
+        Мой профиль
       </Link>
       {canManageConnections ? (
         <Link
           href={`${base}/connections`}
           aria-current={active === "connections" ? "page" : undefined}
         >
-          Подключения
+          Git-подключения
         </Link>
       ) : null}
     </nav>

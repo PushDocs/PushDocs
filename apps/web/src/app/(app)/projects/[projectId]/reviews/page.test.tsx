@@ -38,6 +38,10 @@ vi.mock("@/lib/server", () => ({
   }),
 }));
 
+vi.mock("@/app/actions", () => ({
+  startGitOperationAction: vi.fn(),
+  gitOperationStatusAction: vi.fn(),
+}));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
 import ReviewsPage from "./page";
@@ -145,5 +149,31 @@ it("browses MR details without changing the working branch", async () => {
   expect(screen.getByRole("link", { name: "Переключиться на ветку" }).getAttribute("href")).toBe(
     "/projects/project/documents?branch=docs%2Ffix+%231",
   );
-  expect(screen.getByRole("link", { name: /^Other/ }).getAttribute("href")).toBe("?review=first");
+  expect(screen.getByRole("link", { name: /^Other/ }).getAttribute("href")).toBe(
+    "?review=first&q=&state=all",
+  );
+});
+
+it("filters by branch or number and retains filters while browsing details", async () => {
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ q: "42" }),
+    }),
+  );
+  expect(screen.queryByRole("link", { name: /^Other/ })).toBeNull();
+  expect(screen.getByRole("link", { name: /^Selected/ }).getAttribute("href")).toContain("q=42");
+});
+it("shows an actionable empty state for unmatched state filters", async () => {
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ state: "merged" }),
+    }),
+  );
+  expect(screen.getByText("Запросы не найдены")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Сбросить" }).getAttribute("href")).toBe(
+    "/projects/project/reviews",
+  );
+  expect(mocks.checks).not.toHaveBeenCalled();
 });

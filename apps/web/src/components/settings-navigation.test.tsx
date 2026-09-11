@@ -15,13 +15,13 @@ it("links settings sections within the project and highlights the current sectio
     "/projects/project/settings/members",
   );
   expect(screen.getByRole("link", { name: "Участники" }).getAttribute("aria-current")).toBe("page");
-  expect(screen.getByRole("link", { name: "Подключения" }).getAttribute("href")).toBe(
+  expect(screen.getByRole("link", { name: "Git-подключения" }).getAttribute("href")).toBe(
     "/projects/project/settings/connections",
   );
 });
 it("hides installation connections from non-operators while keeping project members accessible", () => {
   render(<SettingsNavigation projectId="project" active="project" canManageConnections={false} />);
-  expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Git-подключения" })).toBeNull();
   expect(screen.getByRole("link", { name: "Участники" })).toBeTruthy();
 });
 
@@ -45,5 +45,5 @@ it("does not invent a project in global settings", () => {
   );
   expect(html).toContain('href="/settings/profile"');
   expect(html).not.toContain("Участники");
-  expect(html).not.toContain("Подключения");
+  expect(html).not.toContain("Git-подключения");
 });

@@ -1,7 +1,15 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    "jsx": "react-jsx"
   },
-  "include": ["playwright.config.ts", "tests/e2e/**/*.ts", "scripts/ci/**/*.ts"]
+  "include": [
+    "playwright.config.ts",
+    "tests/e2e/**/*.ts",
+    "scripts/ci/**/*.ts",
+    "playwright.ui.config.ts",
+    "tests/ui/**/*.ts",
+    "tests/ui/**/*.tsx"
+  ]
 }

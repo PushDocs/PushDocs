@@ -29,7 +29,8 @@
     "test:install": "bash scripts/ci/install.test.sh",
     "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
     "test:security": "yarn workspace @pushdocs/db exec tsx src/security.integration.ts",
-    "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json"
+    "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json",
+    "test:ui": "playwright test -c playwright.ui.config.ts"
   },
   "dependenciesMeta": {
     "argon2": {
@@ -49,6 +50,7 @@
     "@testing-library/react": "16.3.0",
     "@types/node": "20.19.24",
     "@vitest/coverage-v8": "4.1.10",
+    "esbuild": "0.28.2",
     "jsdom": "26.1.0",
     "pg-mem": "3.0.5",
     "react": "19.2.8",

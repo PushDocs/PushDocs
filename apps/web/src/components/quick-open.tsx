@@ -112,6 +112,12 @@ export function QuickOpen({
           }
         }}
       />
+      {content ? (
+        <p className="muted">
+          Поиск в импортированных статьях Markdown и MDX текущей ветки. Код и другие файлы не входят
+          в поиск.
+        </p>
+      ) : null}
       <div
         ref={list}
         id={resultId}
@@ -140,7 +146,11 @@ export function QuickOpen({
         ))}
         {!results.length ? (
           <p>
-            {content && !query.trim() ? "Введите текст для поиска в статьях." : "Файлы не найдены."}
+            {content && !query.trim()
+              ? "Введите текст для поиска в статьях."
+              : content
+                ? "Совпадений в статьях не найдено."
+                : "Файлы не найдены."}
           </p>
         ) : null}
         {results.length === 100 ? <small>Первые 100 результатов. Уточните запрос.</small> : null}

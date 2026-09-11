@@ -7,10 +7,12 @@ import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions
 export function GitOperation({
   projectId,
   branch,
+  reviewsOnly = false,
   createReview = false,
   reviewLabel = "PR / MR",
   disabled = false,
 }: {
+  reviewsOnly?: boolean;
   projectId: string;
   branch: string;
   createReview?: boolean;
@@ -39,7 +41,9 @@ export function GitOperation({
             job.status === "done"
               ? createReview
                 ? `${reviewLabel} создан`
-                : "Изменения получены"
+                : reviewsOnly
+                  ? "Состояние запросов обновлено"
+                  : "Изменения получены"
               : "Операция не завершена. Повторите попытку.",
           );
           router.refresh();
@@ -57,7 +61,7 @@ export function GitOperation({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [jobId, projectId, router, createReview, reviewLabel]);
+  }, [jobId, projectId, router, createReview, reviewLabel, reviewsOnly]);
   return (
     <form
       className="git-operation"
@@ -71,6 +75,7 @@ export function GitOperation({
             await startGitOperationAction({
               projectId,
               branch,
+              ...(reviewsOnly ? { reviewsOnly: true } : {}),
               ...(createReview ? { title } : {}),
             }),
           );
@@ -107,10 +112,14 @@ export function GitOperation({
         {busy
           ? createReview
             ? `Создаём ${reviewLabel}…`
-            : "Получаем изменения…"
+            : reviewsOnly
+              ? "Обновляем запросы…"
+              : "Получаем изменения…"
           : createReview
             ? `Создать ${reviewLabel}`
-            : "Получить из Git"}
+            : reviewsOnly
+              ? "Обновить из Git"
+              : "Получить из Git"}
       </button>
       {message ? <p role={error ? "alert" : "status"}>{message}</p> : null}
     </form>

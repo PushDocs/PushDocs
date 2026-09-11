@@ -259,8 +259,8 @@ export function FileExplorer({
           ) : null}
           <button
             type="button"
-            aria-label="Обновить файлы"
-            title="Обновить файлы"
+            aria-label="Получить из Git"
+            title="Получить из Git"
             disabled={busy}
             onClick={onRefresh}
           >

@@ -6,7 +6,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { draftKey, readDraft, writeDraft } from "./draft-storage";
 import { Workbench, type WorkbenchState } from "./workbench";
 
-const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  refresh: vi.fn(),
+  start: vi.fn(),
+  status: vi.fn(),
+}));
+vi.mock("@/app/actions", () => ({
+  startGitOperationAction: mocks.start,
+  gitOperationStatusAction: mocks.status,
+}));
 vi.mock("next/navigation", () => ({ useRouter: () => mocks }));
 vi.mock("next/link", () => ({ default: (props: Record<string, unknown>) => <a {...props} /> }));
 vi.mock("@pushdocs/ui", async (importOriginal) => {
@@ -60,6 +69,8 @@ let state: WorkbenchState;
 let requests: Array<Record<string, unknown>>;
 beforeEach(() => {
   vi.useFakeTimers();
+  mocks.start.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({ status: "done" });
   sessionStorage.clear();
   localStorage.clear();
   requests = [];
@@ -486,7 +497,7 @@ it("saves before navigating to changes or another branch", async () => {
   mount();
   fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "черновик" } });
   await act(async () => {
-    fireEvent.click(screen.getByRole("link", { name: "К изменениям" }));
+    fireEvent.click(screen.getByRole("link", { name: /^К изменениям/ }));
   });
   expect(state.files[0]?.content).toBe("черновик");
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/changes?branch=main");
@@ -703,8 +714,11 @@ it("polls safely and displays offline state", async () => {
   await tick(15000);
   expect(screen.getByText(/Нет связи с сервером/)).toBeTruthy();
   await click("Закрыть");
-  await click("Обновить");
-  expect(requests[0]).toMatchObject({ action: "sync" });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0]!);
+  });
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
+  expect(screen.getByText("Изменения получены из Git")).toBeTruthy();
 });
 it("keeps typing entered while an earlier save is in flight", async () => {
   mount();
@@ -717,7 +731,7 @@ it("keeps typing entered while an earlier save is in flight", async () => {
   );
   fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "первая" } });
   await act(async () => {
-    fireEvent.click(screen.getByRole("link", { name: "К изменениям" }));
+    fireEvent.click(screen.getByRole("link", { name: /^К изменениям/ }));
   });
   fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "вторая" } });
   await act(async () => {
@@ -783,8 +797,10 @@ it("keeps a failed operation visible and handles failed reload, sync and events"
   );
   await click("Перечитать состояние");
   expect(screen.getByRole("alert").textContent).toContain("Нет связи с сервером");
-  vi.mocked(fetch).mockRejectedValueOnce(new Error("sync failed"));
-  await click("Обновить");
+  mocks.start.mockRejectedValueOnce(new Error("sync failed"));
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0]!);
+  });
   expect(screen.getByRole("alert").textContent).toContain("sync failed");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("offline"));
   await act(async () => {

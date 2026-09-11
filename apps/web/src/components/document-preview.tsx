@@ -24,7 +24,12 @@ export function DocumentPreview({
   locale,
   media,
   onErrorLine,
-}: PreviewContext & { source: string; onErrorLine?: (line: number) => void }) {
+  sitePreviewUrl,
+}: PreviewContext & {
+  source: string;
+  onErrorLine?: (line: number) => void;
+  sitePreviewUrl?: string;
+}) {
   const plugin = useMemo(
     () => previewPlugin({ projectId, branch, path, repositoryPaths, locale, media }),
     [projectId, branch, path, repositoryPaths, locale, media],
@@ -33,14 +38,34 @@ export function DocumentPreview({
     const lines: number[] = [];
     return { source: preparePreviewSource(source, lines), lines };
   }, [source]);
+  const previewLink = (
+    <a
+      href={sitePreviewUrl ?? `/projects/${projectId}/reviews?${new URLSearchParams({ branch })}`}
+      target={sitePreviewUrl ? "_blank" : undefined}
+      rel="noreferrer"
+    >
+      {sitePreviewUrl ? "Открыть предпросмотр сайта" : "Открыть MR / PR для предпросмотра"}
+    </a>
+  );
   return (
     <article className="wb-markdown">
       <PreviewBoundary key={source} onErrorLine={onErrorLine} lineMap={prepared.lines}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMdx, remarkDirective, plugin]}
           components={{
+            span: ({ node: _node, children, className, ...props }) => (
+              <span className={className} {...props}>
+                {children}
+                {className === "wb-preview-component" ? previewLink : null}
+              </span>
+            ),
             div: ({ node: _node, children, className, ...props }) =>
-              className === "wb-preview-tabs" ? (
+              className === "wb-preview-component" ? (
+                <div className={className} {...props}>
+                  {children}
+                  {previewLink}
+                </div>
+              ) : className === "wb-preview-tabs" ? (
                 <TabsPreview>{children}</TabsPreview>
               ) : (
                 <div className={className} {...props}>

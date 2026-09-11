@@ -50,5 +50,5 @@ it("opens the keyboard-selected search result at its matching line", () => {
   fireEvent.change(input, { target: { value: "несуществующий" } });
   fireEvent.keyDown(input, { key: "Enter" });
   expect(open).toHaveBeenCalledTimes(1);
-  expect(screen.getByText("Файлы не найдены.")).toBeTruthy();
+  expect(screen.getByText("Совпадений в статьях не найдено.")).toBeTruthy();
 });

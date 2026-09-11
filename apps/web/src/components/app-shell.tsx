@@ -46,6 +46,13 @@ export function AppShell({
   const activeProject = projects.find((project) => project.id === projectId);
 
   useEffect(() => {
+    if (activeProject) {
+      // biome-ignore lint/suspicious/noDocumentCookie: Keep project context available to server routes and browsers without Cookie Store.
+      document.cookie = `pushdocs_project=${encodeURIComponent(activeProject.id)}; Path=/; SameSite=Lax`;
+    }
+  }, [activeProject]);
+
+  useEffect(() => {
     const dismissOutside = (event: PointerEvent) => {
       const menu = projectSwitcherRef.current;
       if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {

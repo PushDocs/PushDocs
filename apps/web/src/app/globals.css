@@ -3254,3 +3254,86 @@ textarea:where(:not(.monaco-editor *)):focus {
 .create-connection-dialog::backdrop {
   background: rgb(23 19 35 / 40%);
 }
+
+.profile-form {
+  width: 100%;
+  max-width: 560px;
+}
+.profile-form button {
+  justify-self: start;
+  align-self: start;
+  width: fit-content;
+}
+
+.pending-invitations {
+  margin: 20px 0;
+}
+.pending-invitations > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+@media (min-width: 1100px) {
+  .members-head,
+  .member-row {
+    grid-template-columns: minmax(180px, 2fr) minmax(100px, 1fr) minmax(80px, 1fr) auto;
+  }
+}
+.roles-panel > div {
+  padding: 10px 16px;
+}
+.invite-form {
+  margin: 16px 0;
+}
+.settings-modal form {
+  min-width: 0;
+}
+.settings-modal::backdrop {
+  background: rgb(23 19 35 / 40%);
+}
+.settings-modal button {
+  width: auto;
+}
+.review-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 20px;
+}
+.review-filters input {
+  max-width: 420px;
+}
+
+.settings-project-picker {
+  margin-bottom: 24px;
+}
+.settings-project-picker nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-block: 12px;
+}
+
+.project-import-form {
+  width: 100%;
+  max-width: 720px;
+  padding: 24px;
+  gap: 20px;
+}
+.project-import-form .form-actions {
+  padding: 0;
+  flex-wrap: wrap;
+}
+.project-import-form .critical-fields > button {
+  justify-self: start;
+}
+.project-import-form details > label {
+  margin-top: 14px;
+}
+.project-import-form details > .pd-select {
+  margin-top: 7px;
+}

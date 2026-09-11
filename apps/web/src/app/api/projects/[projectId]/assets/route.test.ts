@@ -19,6 +19,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/workbench", async (original) => ({
   ...(await original<typeof import("@/lib/workbench")>()),
   workbenchContext: mocks.context,
+  localWorkbenchContext: mocks.context,
 }));
 vi.mock("@pushdocs/db", async (original) => ({
   ...(await original<typeof import("@pushdocs/db")>()),

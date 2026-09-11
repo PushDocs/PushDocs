@@ -3,7 +3,7 @@
 import { Select as BaseSelect } from "@base-ui/react/select";
 import clsx from "clsx";
 import { Check, ChevronDown } from "lucide-react";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { type ButtonHTMLAttributes, type ReactNode, useEffect, useRef, useState } from "react";
 
 export function Button({
   className,
@@ -45,6 +45,11 @@ export function Select({
   required?: boolean;
   value?: string;
 }) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [portalContainer, setPortalContainer] = useState<HTMLElement | undefined>();
+  useEffect(() => {
+    setPortalContainer(trigger.current?.closest("dialog") ?? undefined);
+  }, []);
   return (
     <BaseSelect.Root
       defaultValue={defaultValue}
@@ -52,9 +57,15 @@ export function Select({
       name={name}
       required={required}
       value={value}
-      onValueChange={(next) => next !== null && onValueChange?.(next)}
+      onValueChange={(next) => {
+        if (next !== null) {
+          onValueChange?.(next);
+          trigger.current?.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }}
     >
       <BaseSelect.Trigger
+        ref={trigger}
         className={clsx("pd-select", className)}
         aria-describedby={ariaDescribedBy}
         aria-label={label}
@@ -70,7 +81,7 @@ export function Select({
           <ChevronDown aria-hidden size={15} />
         </BaseSelect.Icon>
       </BaseSelect.Trigger>
-      <BaseSelect.Portal>
+      <BaseSelect.Portal container={portalContainer}>
         <BaseSelect.Positioner className="pd-select-positioner" sideOffset={6}>
           <BaseSelect.Popup className="pd-select-popup">
             {options.map((option) => (

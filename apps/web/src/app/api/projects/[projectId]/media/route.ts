@@ -1,7 +1,7 @@
 import { assetLocation, isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
-import { apiError, assertSameOrigin, workbenchContext } from "@/lib/workbench";
+import { apiError, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
 
 type Context = { params: Promise<{ projectId: string }> };
 const command = z.object({
@@ -18,7 +18,7 @@ export async function GET(request: Request, context: Context) {
     const { projectId } = await context.params;
     const query = new URL(request.url).searchParams;
     const branch = query.get("branch") ?? "";
-    const { config, state, store, access } = await workbenchContext(projectId, branch);
+    const { config, state, store, access } = await localWorkbenchContext(projectId, branch);
     const document = query.get("document") ?? "";
     const locale =
       query.get("locale") ??
@@ -57,7 +57,7 @@ export async function POST(request: Request, context: Context) {
     assertSameOrigin(request);
     const { projectId } = await context.params;
     const input = command.parse(await readJsonBody(request));
-    const { config, store, user } = await workbenchContext(projectId, input.branch);
+    const { config, store, user } = await localWorkbenchContext(projectId, input.branch);
     await store.requireProjectAccess(user.id, projectId, "document:write");
     const filePath = safePath(input.path);
     const location = assetLocation(

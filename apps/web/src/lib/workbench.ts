@@ -3,7 +3,7 @@ import { isEditableFile, parseProjectConfig, safePath } from "@pushdocs/content"
 import { providerForConnection } from "./provider";
 import { repository, requireUser } from "./server";
 
-export async function workbenchContext(projectId: string, branch: string) {
+export async function localWorkbenchContext(projectId: string, branch: string) {
   const user = await requireUser();
   const store = repository();
   const access = await store.requireProjectAccess(user.id, projectId);
@@ -14,8 +14,13 @@ export async function workbenchContext(projectId: string, branch: string) {
     (file) => file.path === ".pushdocs/config.json" && file.status !== "delete",
   );
   const config = parseProjectConfig(configFile?.content);
-  const provider = await providerForConnection(target);
-  return { user, store, access, target, state, config, provider };
+  return { user, store, access, target, state, config };
+}
+
+export async function workbenchContext(projectId: string, branch: string) {
+  const context = await localWorkbenchContext(projectId, branch);
+  const provider = await providerForConnection(context.target);
+  return { ...context, provider };
 }
 
 export function assertEditable(

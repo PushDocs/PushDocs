@@ -43,6 +43,8 @@ jobs:
       - run: yarn architecture:check
       - run: yarn typecheck
       - run: yarn test
+      - run: yarn exec playwright install --with-deps chromium
+      - run: yarn test:ui
       - run: yarn test:coverage
         if: github.event_name == 'workflow_dispatch' && inputs.coverage
       - run: yarn build

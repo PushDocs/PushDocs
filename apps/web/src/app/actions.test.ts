@@ -47,6 +47,9 @@ const mocks = vi.hoisted(() => {
     rm: vi.fn(),
     repo: {
       takeAuthAttempt: vi.fn(),
+      manageMember: vi.fn(),
+      revokeInvitation: vi.fn(),
+      enqueueReviewsSync: vi.fn(),
       beginTotpSetup: vi.fn(),
       getSecurityUser: vi.fn(),
       consumeTotp: vi.fn(),
@@ -146,11 +149,14 @@ import {
   deleteConnectionAction,
   deleteProjectAction,
   gitOperationStatusAction,
+  inspectProjectRepository,
   inviteMemberAction,
   loginAction,
   logoutAction,
+  manageMemberAction,
   resolveConflictAction,
   retryChangeSetSubmissionAction,
+  revokeInvitationAction,
   saveConnectionSettingsAction,
   saveDraftAction,
   startGitOperationAction,
@@ -223,6 +229,7 @@ beforeEach(() => {
       id: "42",
       webUrl: "https://git.test/acme/docs",
     }),
+    listFiles: vi.fn().mockResolvedValue(["site/docusaurus.config.ts", "README.md"]),
     listBranches: vi.fn().mockResolvedValue([
       { name: "main", sha: "head" },
       { name: "stable", sha: "stable-head" },
@@ -420,6 +427,8 @@ describe("two-factor actions", () => {
     updateConnectionAction,
     deleteConnectionAction,
     createProjectAction,
+    manageMemberAction,
+    revokeInvitationAction,
     updateProjectAction,
     deleteProjectAction,
   ])("blocks a critical action when verification fails", async (action) => {
@@ -1030,4 +1039,42 @@ describe("attachment uploads", () => {
     );
     if (previous !== undefined) process.env.PUSHDOCS_ATTACHMENTS_DIR = previous;
   });
+});
+
+it("inspects repository defaults without creating a project", async () => {
+  mocks.repo.getConnection.mockResolvedValue({ id: connectionId, kind: "gitlab" });
+  expect(await inspectProjectRepository({ connectionId, locator: "group/docs" })).toMatchObject({
+    id: "42",
+    name: "docs",
+    defaultBranch: "main",
+    branches: ["main", "stable"],
+    roots: ["site"],
+  });
+  expect(mocks.app.createProject).not.toHaveBeenCalled();
+});
+it("requires an operator before inspecting remote repository data", async () => {
+  mocks.requireOperator.mockRejectedValueOnce(new Error("denied"));
+  await expect(inspectProjectRepository({ connectionId, locator: "group/docs" })).rejects.toThrow(
+    "denied",
+  );
+  expect(mocks.providerForConnection).not.toHaveBeenCalled();
+});
+it("refreshes only reviews after checking project access", async () => {
+  await startGitOperationAction({ projectId, branch: "main", reviewsOnly: true });
+  expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+  expect(mocks.repo.enqueueReviewsSync).toHaveBeenCalledWith(projectId);
+  expect(mocks.repo.enqueueBranchSync).not.toHaveBeenCalled();
+});
+it("requires 2FA before changing access or revoking invitations", async () => {
+  mocks.repo.consumeTotp.mockResolvedValue(false);
+  const input = form({
+    projectId,
+    userId: connectionId,
+    invitationId: connectionId,
+    role: "remove",
+  });
+  await expect(manageMemberAction(input)).rejects.toThrow();
+  await expect(revokeInvitationAction(input)).rejects.toThrow();
+  expect(mocks.repo.manageMember).not.toHaveBeenCalled();
+  expect(mocks.repo.revokeInvitation).not.toHaveBeenCalled();
 });

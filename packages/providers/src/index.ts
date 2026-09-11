@@ -56,7 +56,10 @@ export interface GitProvider {
   }): Promise<ProviderChangeRequest>;
   getRepository(repositoryId: string): Promise<ProviderRepository>;
   listBranches(repositoryId: string): Promise<ProviderBranch[]>;
-  listChangeRequests(repositoryId: string): Promise<ProviderChangeRequest[]>;
+  listChangeRequests(
+    repositoryId: string,
+    state?: "open" | "all",
+  ): Promise<ProviderChangeRequest[]>;
   listChecks(repositoryId: string, sha: string): Promise<CheckRunSummary[]>;
   listFiles(repositoryId: string, ref: string): Promise<string[]>;
   readFile(repositoryId: string, ref: string, path: string): Promise<string>;
@@ -256,7 +259,7 @@ export class GitLabProvider implements GitProvider {
       iid: number;
       sha: string;
       source_branch: string;
-      state: "opened" | "merged" | "closed";
+      state: "opened" | "locked" | "merged" | "closed";
       target_branch: string;
       title: string;
       web_url: string;
@@ -274,7 +277,7 @@ export class GitLabProvider implements GitProvider {
       headSha: row.sha,
       id: String(row.iid),
       sourceBranch: row.source_branch,
-      state: row.state === "opened" ? "open" : row.state,
+      state: row.state === "opened" || row.state === "locked" ? "open" : row.state,
       targetBranch: row.target_branch,
       title: row.title,
       url: row.web_url,
@@ -321,28 +324,29 @@ export class GitLabProvider implements GitProvider {
     return { name: row.name, sha: row.commit.id };
   }
 
-  async listChangeRequests(repositoryId: string): Promise<ProviderChangeRequest[]> {
-    const rows = await readJson<
-      Array<{
-        iid: number;
-        merge_status: string;
-        sha: string;
-        source_branch: string;
-        state: "opened" | "merged" | "closed";
-        target_branch: string;
-        title: string;
-        web_url: string;
-      }>
-    >(
-      await this.request(
-        `projects/${encodeURIComponent(repositoryId)}/merge_requests?state=opened&per_page=100`,
+  async listChangeRequests(
+    repositoryId: string,
+    state: "open" | "all" = "open",
+  ): Promise<ProviderChangeRequest[]> {
+    const rows = await readPages<{
+      iid: number;
+      merge_status: string;
+      sha: string;
+      source_branch: string;
+      state: "opened" | "locked" | "merged" | "closed";
+      target_branch: string;
+      title: string;
+      web_url: string;
+    }>((page) =>
+      this.request(
+        `projects/${encodeURIComponent(repositoryId)}/merge_requests?state=${state === "open" ? "opened" : "all"}&per_page=100&page=${page}`,
       ),
     );
     return rows.map((row) => ({
       headSha: row.sha,
       id: String(row.iid),
       sourceBranch: row.source_branch,
-      state: row.state === "opened" ? "open" : row.state,
+      state: row.state === "opened" || row.state === "locked" ? "open" : row.state,
       targetBranch: row.target_branch,
       title: row.title,
       url: row.web_url,
@@ -624,18 +628,21 @@ export class GitHubProvider implements GitProvider {
     return { name, sha: row.object.sha };
   }
 
-  async listChangeRequests(repositoryId: string): Promise<ProviderChangeRequest[]> {
-    const rows = await readJson<
-      Array<{
-        head: { ref: string; sha: string };
-        html_url: string;
-        merged_at: string | null;
-        number: number;
-        state: "open" | "closed";
-        base: { ref: string };
-        title: string;
-      }>
-    >(await this.request(`repos/${repositoryId}/pulls?state=open&per_page=100`));
+  async listChangeRequests(
+    repositoryId: string,
+    state: "open" | "all" = "open",
+  ): Promise<ProviderChangeRequest[]> {
+    const rows = await readPages<{
+      head: { ref: string; sha: string };
+      html_url: string;
+      merged_at: string | null;
+      number: number;
+      state: "open" | "closed";
+      base: { ref: string };
+      title: string;
+    }>((page) =>
+      this.request(`repos/${repositoryId}/pulls?state=${state}&per_page=100&page=${page}`),
+    );
     return rows.map((row) => ({
       headSha: row.head.sha,
       id: String(row.number),
@@ -729,5 +736,14 @@ export function normalizeRepositoryLocator(kind: ProviderKind, value: string): s
     return path.split("/").slice(0, 2).join("/");
   } catch {
     return trimmed.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+  }
+}
+
+async function readPages<T>(request: (page: number) => Promise<Response>): Promise<T[]> {
+  const rows: T[] = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await readJson<T[]>(await request(page));
+    rows.push(...batch);
+    if (batch.length < 100) return rows;
   }
 }

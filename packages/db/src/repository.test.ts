@@ -139,7 +139,7 @@ describe("project and connection administration", () => {
     });
     expect(await repository.listConnectionRepositories(fixture.connectionId)).toEqual(["42"]);
     expect(await repository.listConnectionProjects(fixture.connectionId)).toEqual([
-      { default_branch: "main", id: fixture.projectId },
+      { default_branch: "main", id: fixture.projectId, name: "Product Docs" },
     ]);
     expect(await repository.countConnectionProjects(fixture.connectionId)).toBe(1);
   });
@@ -1979,4 +1979,71 @@ describe("working tree projection", () => {
       "недоступен",
     );
   });
+});
+
+it("manages project access without allowing the last administrator to disappear", async () => {
+  const fixture = await projectFixture();
+  const editor = await database
+    .insertInto("users")
+    .values({
+      display_name: "Editor",
+      email: "editor@example.test",
+      password_hash: "hash",
+      is_instance_operator: false,
+    })
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  await database
+    .insertInto("project_memberships")
+    .values({ project_id: fixture.projectId, user_id: editor.id, role: "editor" })
+    .execute();
+  await expect(
+    repository.manageMember({
+      actorId: editor.id,
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      role: "reader",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    repository.manageMember({
+      actorId: fixture.operatorId,
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      role: null,
+    }),
+  ).rejects.toThrow("последнего администратора");
+  await repository.manageMember({
+    actorId: fixture.operatorId,
+    projectId: fixture.projectId,
+    userId: editor.id,
+    role: "admin",
+  });
+  await repository.manageMember({
+    actorId: editor.id,
+    projectId: fixture.projectId,
+    userId: fixture.operatorId,
+    role: null,
+  });
+  expect((await repository.listMembers(fixture.projectId)).map((member) => member.id)).toEqual([
+    editor.id,
+  ]);
+});
+it("revokes only invitations in the permitted project", async () => {
+  const fixture = await projectFixture();
+  const invitation = await repository.createInvitation({
+    projectId: fixture.projectId,
+    invitedByUserId: fixture.operatorId,
+    email: "new@example.test",
+    role: "reader",
+    tokenHash: "invite-test-hash",
+  });
+  expect(await repository.listInvitations(fixture.projectId)).toHaveLength(1);
+  await expect(
+    repository.revokeInvitation(randomUUID(), fixture.projectId, invitation.id),
+  ).rejects.toThrow();
+  expect(await repository.listInvitations(fixture.projectId)).toHaveLength(1);
+  await repository.revokeInvitation(fixture.operatorId, fixture.projectId, invitation.id);
+  expect(await repository.listInvitations(fixture.projectId)).toHaveLength(0);
+  expect(await repository.getInvitation("invite-test-hash")).toBeUndefined();
 });

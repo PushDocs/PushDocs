@@ -151,3 +151,16 @@ it("renders component examples as collapsible content, tabs and video", () => {
   );
   expect(container.querySelector("video")?.hasAttribute("controls")).toBe(true);
 });
+
+it("provides a branch-specific route to the real preview for unsupported components", () => {
+  render(preview("<Custom />"));
+  expect(
+    screen.getByRole("link", { name: "Открыть MR / PR для предпросмотра" }).getAttribute("href"),
+  ).toBe("/projects/p/reviews?branch=docs%2Fnew");
+});
+
+it("also provides preview navigation for an unsupported inline component", () => {
+  render(preview("Text with <Custom>inline content</Custom>."));
+  expect(screen.getByRole("link", { name: "Открыть MR / PR для предпросмотра" })).toBeTruthy();
+  expect(screen.getByText(/inline content/)).toBeTruthy();
+});

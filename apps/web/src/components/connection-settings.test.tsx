@@ -11,6 +11,7 @@ vi.mock("@/lib/server", () => ({
   requireOperator: mocks.operator,
   repository: () => ({
     countConnectionProjects: mocks.projectCount,
+    listConnectionProjects: async () => [],
     requireProjectAccess: mocks.access,
     listConnections: mocks.connections,
   }),
@@ -20,6 +21,8 @@ vi.mock("@/app/actions", () => ({
   deleteConnectionAction: vi.fn(),
   saveConnectionSettingsAction: vi.fn(),
 }));
+
+vi.mock("@/lib/settings-project", () => ({ settingsProjectChoices: async () => [] }));
 
 import { ConnectionSettings } from "./connection-settings";
 

@@ -34,6 +34,7 @@ import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { z } from "zod";
 import { providerForConnection } from "@/lib/provider";
 import {
   actor,
@@ -185,6 +186,8 @@ export async function criticalSettingsAction(
   const actions: Record<string, (form: FormData) => Promise<void>> = {
     createConnection: createConnectionAction,
     deleteConnection: deleteConnectionAction,
+    manageMember: manageMemberAction,
+    revokeInvitation: revokeInvitationAction,
     createProject: createProjectAction,
     updateProject: updateProjectAction,
     deleteProject: deleteProjectAction,
@@ -197,6 +200,11 @@ export async function criticalSettingsAction(
     return {};
   } catch (error) {
     if (error instanceof TwoFactorError) return { error: error.message };
+    if (
+      error instanceof Error &&
+      error.message === "Нельзя удалить или понизить роль последнего администратора"
+    )
+      return { error: error.message };
     throw error;
   }
 }
@@ -584,6 +592,7 @@ export async function createDocumentAction(formData: FormData): Promise<void> {
 }
 
 export async function startGitOperationAction(input: {
+  reviewsOnly?: boolean;
   projectId: string;
   branch: string;
   title?: string;
@@ -595,6 +604,7 @@ export async function startGitOperationAction(input: {
     input.projectId,
     input.title ? "branch:push" : "project:read",
   );
+  if (input.reviewsOnly) return store.enqueueReviewsSync(input.projectId);
   if (input.title)
     return store.enqueueReviewCreation(
       input.projectId,
@@ -616,4 +626,64 @@ export async function gitOperationStatusAction(projectId: string, jobId: string)
 export async function twoFactorStatusAction(): Promise<boolean> {
   const user = await requireUser();
   return Boolean((await repository().getSecurityUser(user.id))?.totp_secret);
+}
+
+export async function manageMemberAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  await requireTwoFactor(user.id, formData);
+  const input = z
+    .object({
+      projectId: z.string().uuid(),
+      userId: z.string().uuid(),
+      role: z.enum(["admin", "editor", "reader", "remove"]),
+    })
+    .parse(Object.fromEntries(formData));
+  await repository().manageMember({
+    actorId: user.id,
+    ...input,
+    role: input.role === "remove" ? null : input.role,
+  });
+  revalidatePath(`/projects/${input.projectId}/settings/members`);
+  revalidatePath("/projects");
+  if (input.userId === user.id && input.role === "remove") redirect("/projects");
+}
+export async function revokeInvitationAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  await requireTwoFactor(user.id, formData);
+  const input = z
+    .object({ projectId: z.string().uuid(), invitationId: z.string().uuid() })
+    .parse(Object.fromEntries(formData));
+  await repository().revokeInvitation(user.id, input.projectId, input.invitationId);
+  revalidatePath(`/projects/${input.projectId}/settings/members`);
+}
+
+export async function inspectProjectRepository(input: { connectionId: string; locator: string }) {
+  await requireOperator();
+  const parsed = z
+    .object({ connectionId: z.string().uuid(), locator: z.string().trim().min(1).max(2000) })
+    .parse(input);
+  const connection = await repository().getConnection(parsed.connectionId);
+  if (!connection) throw new Error("Подключение не найдено");
+  const provider = await providerForConnection({ ...connection, connection_id: connection.id });
+  const remote = await provider.getRepository(
+    normalizeRepositoryLocator(connection.kind, parsed.locator),
+  );
+  const [branches, files] = await Promise.all([
+    provider.listBranches(remote.id),
+    provider.listFiles(remote.id, remote.defaultBranch),
+  ]);
+  const roots = [
+    ...new Set(
+      files
+        .filter((file) => /(^|\/)docusaurus\.config\.(js|ts|mjs|cjs)$/.test(file))
+        .map((file) => (file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : ".")),
+    ),
+  ];
+  return {
+    id: remote.id,
+    name: remote.fullName.split("/").at(-1) ?? "docs",
+    defaultBranch: remote.defaultBranch,
+    branches: branches.map((branch) => branch.name),
+    roots,
+  };
 }

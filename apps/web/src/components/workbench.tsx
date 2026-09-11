@@ -26,6 +26,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
 import { DiffViewer } from "./diff-viewer";
 import { DocumentPreview } from "./document-preview";
 import { DocumentTabs } from "./document-tabs";
@@ -666,6 +667,47 @@ export function Workbench({
     setTabs(remaining);
   }
 
+  const receiveGeneration = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Cancel pending polling when the working context changes.
+  useEffect(
+    () => () => {
+      receiveGeneration.current += 1;
+    },
+    [projectId, branch],
+  );
+  async function receiveChanges() {
+    const generation = receiveGeneration.current;
+    if (busy || !(await save())) return;
+    setBusy(true);
+    setError("");
+    setNotice("Получаем изменения из Git…");
+    try {
+      const jobId = await startGitOperationAction({ projectId, branch });
+      const deadline = Date.now() + 300_000;
+      while (Date.now() < deadline && generation === receiveGeneration.current) {
+        const job = await gitOperationStatusAction(projectId, jobId);
+        if (generation !== receiveGeneration.current) return;
+        if (job.status === "failed")
+          throw new Error("Не удалось получить изменения из Git. Повторите попытку.");
+        if (job.status === "done") {
+          await load(true);
+          setNotice("Изменения получены из Git");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      if (generation === receiveGeneration.current)
+        throw new Error("Получение ещё выполняется. Обновите состояние позже.");
+    } catch (cause) {
+      if (generation === receiveGeneration.current) {
+        setNotice("");
+        setError(cause instanceof Error ? cause.message : "Нет связи с сервером");
+      }
+    } finally {
+      if (generation === receiveGeneration.current) setBusy(false);
+    }
+  }
+
   async function mutate(payload: Record<string, unknown>, nextPath?: string) {
     if (!(await save())) return;
     setBusy(true);
@@ -840,22 +882,9 @@ export function Workbench({
                 <GitBranch size={16} />
                 Новая ветка
               </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={async () => {
-                  if (await save()) {
-                    try {
-                      await command({ action: "sync" });
-                      setNotice("Получаем изменения из Git…");
-                    } catch (cause) {
-                      setError(String(cause));
-                    }
-                  }
-                }}
-              >
+              <button type="button" disabled={busy} onClick={() => void receiveChanges()}>
                 <RefreshCw size={16} />
-                Обновить
+                Получить из Git
               </button>
             </div>
           </details>
@@ -868,7 +897,14 @@ export function Workbench({
                 router.push(`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`);
             }}
           >
-            К изменениям <ArrowRight size={16} />
+            К изменениям (
+            {
+              new Set([
+                ...state.files.filter((file) => file.status !== "clean").map((file) => file.path),
+                ...(state.uploads ?? []).map((file) => file.path),
+              ]).size
+            }
+            ) <ArrowRight size={16} />
           </Link>
         </div>
       </header>
@@ -1044,7 +1080,7 @@ export function Workbench({
               setCreateDirectory(directory);
               setDialog(kind);
             }}
-            onRefresh={() => void mutate({ action: "sync" })}
+            onRefresh={() => void receiveChanges()}
             onMedia={async () => {
               if (await save()) {
                 setReplaceAttachment(undefined);

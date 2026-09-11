@@ -151,19 +151,27 @@ export function createWorkerService(options: WorkerServiceOptions) {
     provider: GitProvider,
     providerRepositoryId: string,
   ): Promise<void> {
-    const requests = await provider.listChangeRequests(providerRepositoryId);
-    const rows = await Promise.all(
-      requests.map(async (request) => ({
-        checks: await provider.listChecks(providerRepositoryId, request.headSha),
-        externalId: request.id,
-        headSha: request.headSha,
-        sourceBranch: request.sourceBranch,
-        state: request.state,
-        targetBranch: request.targetBranch,
-        title: request.title,
-        url: request.url,
-      })),
-    );
+    const requests = await provider.listChangeRequests(providerRepositoryId, "all");
+    const rows: Parameters<WorkerRepository["replaceChangeRequests"]>[1] = [];
+    for (let offset = 0; offset < requests.length; offset += 8) {
+      rows.push(
+        ...(await Promise.all(
+          requests.slice(offset, offset + 8).map(async (request) => ({
+            checks:
+              request.state === "open"
+                ? await provider.listChecks(providerRepositoryId, request.headSha)
+                : [],
+            externalId: request.id,
+            headSha: request.headSha,
+            sourceBranch: request.sourceBranch,
+            state: request.state,
+            targetBranch: request.targetBranch,
+            title: request.title,
+            url: request.url,
+          })),
+        )),
+      );
+    }
     await repository.replaceChangeRequests(projectId, rows);
   }
 
@@ -498,6 +506,15 @@ export function createWorkerService(options: WorkerServiceOptions) {
     try {
       if (job.kind === "project.sync") {
         await synchronizeProject(projectIdFromPayload(job.payload));
+      } else if (job.kind === "reviews.sync") {
+        const projectId = projectIdFromPayload(job.payload);
+        const target = await repository.getProjectSyncTarget(projectId);
+        if (!target) throw new Error("Подключение проекта недоступно");
+        await synchronizeReviews(
+          projectId,
+          await providerFor(target),
+          target.provider_repository_id,
+        );
       } else if (job.kind === "branch.sync") {
         await synchronizeBranch(
           projectIdFromPayload(job.payload),

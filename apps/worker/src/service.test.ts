@@ -990,6 +990,25 @@ describe("job execution and review polling", () => {
     await expect(createWorkerService({ repository: repository() }).runJob()).resolves.toBe(false);
   });
 
+  it("refreshes review status without importing or switching a branch", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 1,
+      id: "job",
+      kind: "reviews.sync",
+      payload: { projectId: "project" },
+    } as never);
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(syncTarget as never);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    }).runJob();
+    expect(client.listChangeRequests).toHaveBeenCalled();
+    expect(client.listFiles).not.toHaveBeenCalled();
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
   it("completes a branch synchronization job", async () => {
     const port = repository();
     const client = provider();

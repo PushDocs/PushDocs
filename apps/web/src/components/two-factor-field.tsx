@@ -1,8 +1,15 @@
+"use client";
+import { useEffect, useRef } from "react";
 export function TwoFactorField() {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
   return (
     <label>
       Код 2FA
       <input
+        ref={input}
         name="otp"
         aria-label="Код 2FA"
         inputMode="numeric"

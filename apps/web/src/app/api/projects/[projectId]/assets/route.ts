@@ -4,7 +4,12 @@ import path from "node:path";
 import { assetLocation, safePath } from "@pushdocs/content";
 import { getDatabase } from "@pushdocs/db";
 import { storeUpload } from "@/lib/upload-stream";
-import { apiError, assertSameOrigin, workbenchContext } from "@/lib/workbench";
+import {
+  apiError,
+  assertSameOrigin,
+  localWorkbenchContext,
+  workbenchContext,
+} from "@/lib/workbench";
 
 type Context = { params: Promise<{ projectId: string }> };
 const mediaTypes: Record<string, string> = {
@@ -31,7 +36,7 @@ export async function POST(request: Request, context: Context) {
     const query = new URL(request.url).searchParams;
     const branch = query.get("branch") ?? "";
     const name = query.get("name") ?? "";
-    const { config, user, store, state } = await workbenchContext(projectId, branch);
+    const { config, user, store, state } = await localWorkbenchContext(projectId, branch);
     await store.requireProjectAccess(user.id, projectId, "document:write");
     if (state.changeSet && state.changeSet.status !== "open")
       throw new Error("Загрузка недоступна во время отправки или конфликта");

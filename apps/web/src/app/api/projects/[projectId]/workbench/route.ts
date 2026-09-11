@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
 import { z } from "zod";
+import { providerForConnection } from "@/lib/provider";
 import { readJsonBody } from "@/lib/request-body";
-import { apiError, assertEditable, assertSameOrigin, workbenchContext } from "@/lib/workbench";
+import { apiError, assertEditable, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
 
 type Context = { params: Promise<{ projectId: string }> };
 const fileSchema = z.object({
@@ -46,7 +47,7 @@ export async function GET(request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
     const branch = new URL(request.url).searchParams.get("branch") ?? "";
-    const { state, config, store, access, provider, target, user } = await workbenchContext(
+    const { state, config, store, access, target, user } = await localWorkbenchContext(
       projectId,
       branch,
     );
@@ -54,6 +55,7 @@ export async function GET(request: Request, context: Context) {
     if (query.has("path")) {
       const path = safePath(query.get("path") ?? "");
       if (!state.branch.repository_paths.includes(path)) throw new Error("Файл не найден");
+      const provider = await providerForConnection(target);
       const bytes = await provider.readBinary(
         target.provider_repository_id,
         state.branch.head_commit_sha,
@@ -111,7 +113,7 @@ export async function POST(request: Request, context: Context) {
     if (Number(request.headers.get("content-length")) > 8_000_000)
       throw new Error("Запрос слишком большой");
     const command = commandSchema.parse(await readJsonBody(request));
-    const { store, state, access, target, provider, config, user } = await workbenchContext(
+    const { store, state, access, target, config, user } = await localWorkbenchContext(
       projectId,
       command.branch,
     );
@@ -127,6 +129,7 @@ export async function POST(request: Request, context: Context) {
     if (command.action === "branch") {
       if (command.sha !== state.branch.head_commit_sha)
         throw new Error("Исходная ветка обновилась. Перечитайте её перед созданием.");
+      const provider = await providerForConnection(target);
       const created = await provider.createBranch(
         target.provider_repository_id,
         command.name,

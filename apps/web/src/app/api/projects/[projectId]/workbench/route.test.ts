@@ -5,6 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
+  provider: vi.fn(),
   access: vi.fn(),
   stage: vi.fn(),
   create: vi.fn(),
@@ -14,7 +15,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/workbench", async (original) => ({
   ...(await original<typeof import("@/lib/workbench")>()),
-  workbenchContext: mocks.context,
+  localWorkbenchContext: mocks.context,
+}));
+
+vi.mock("@/lib/provider", () => ({
+  providerForConnection: mocks.provider,
 }));
 
 import { GET, POST } from "./route";
@@ -23,6 +28,7 @@ const context = { params: Promise.resolve({ projectId: "project" }) };
 let role = "editor";
 beforeEach(() => {
   role = "editor";
+  mocks.provider.mockImplementation(async () => (await mocks.context()).provider);
   mocks.access.mockImplementation(async (_user, _project, action) => {
     if (role === "reader") throw new AccessDeniedError(action);
   });
@@ -183,6 +189,7 @@ it("rejects unsafe paths, unauthorised writes and stale revisions", async () => 
   role = "reader";
   expect((await request(command)).status).toBe(403);
   role = "editor";
+  mocks.provider.mockImplementation(async () => (await mocks.context()).provider);
   expect(
     (await request({ ...command, files: [{ path: ".pushdocs/config.json", revert: true }] }))
       .status,
@@ -286,4 +293,21 @@ it("reads only known repository paths at the imported revision without allowing 
   expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
   expect(response.headers.get("Content-Disposition")).toContain("attachment");
   expect(response.headers.get("Content-Security-Policy")).toBe("sandbox");
+});
+
+it("reads and saves imported text while VPN initialization is unavailable", async () => {
+  mocks.provider.mockRejectedValue(new Error("VPN unavailable"));
+  expect((await GET(new Request("https://cms.test/api?branch=main"), context)).status).toBe(200);
+  expect(
+    (
+      await request({
+        action: "files",
+        branch: "main",
+        expectedRevision: 7,
+        files: [{ path: "docs/new.md", content: "# Local", createOnly: true }],
+      })
+    ).status,
+  ).toBe(200);
+  expect(mocks.stage).toHaveBeenCalled();
+  expect(mocks.provider).not.toHaveBeenCalled();
 });

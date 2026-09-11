@@ -1,7 +1,10 @@
+import { redirect } from "next/navigation";
 import { beginTwoFactorAction } from "@/app/actions";
 import { CriticalForm } from "@/components/critical-form";
 import { SettingsNavigation } from "@/components/settings-navigation";
+import { SettingsProjectPicker } from "@/components/settings-project-picker";
 import { repository, requireUser } from "@/lib/server";
+import { settingsProjectChoices, settingsProjectId } from "@/lib/settings-project";
 
 export default async function ProfilePage({
   searchParams,
@@ -12,6 +15,15 @@ export default async function ProfilePage({
 }) {
   const current = await requireUser();
   const projectId = (await params)?.projectId;
+  if (!projectId) {
+    const selected = await settingsProjectId(current);
+    if (selected) {
+      const query = await searchParams;
+      redirect(
+        `/projects/${selected}/settings/profile${query.error ? `?error=${encodeURIComponent(query.error)}` : ""}`,
+      );
+    }
+  }
   if (projectId) await repository().requireProjectAccess(current.id, projectId);
   const user = await repository().getSecurityUser(current.id);
   const { error } = await searchParams;
@@ -25,6 +37,9 @@ export default async function ProfilePage({
         active="profile"
         canManageConnections={current.isInstanceOperator}
       />
+      {!projectId ? (
+        <SettingsProjectPicker projects={await settingsProjectChoices(current)} />
+      ) : null}
       <h2>Двухфакторная аутентификация</h2>
       {user?.totp_secret ? (
         <p>
@@ -33,16 +48,13 @@ export default async function ProfilePage({
         </p>
       ) : (
         <>
-          <p>
-            Для существующего владельца сохранён вход по паролю. Для критичных действий подключите
-            аутентификатор.
-          </p>
+          <p>Подключите приложение-аутентификатор для подтверждения входа и изменения настроек.</p>
           {error ? (
             <p className="form-error" role="alert">
               Пароль неверен или превышено число попыток. После 10 попыток подождите 15 минут.
             </p>
           ) : null}
-          <form action={beginTwoFactorAction} className="settings-form">
+          <form action={beginTwoFactorAction} className="settings-form profile-form">
             <label>
               Текущий пароль
               <input name="password" type="password" required autoComplete="current-password" />
@@ -56,7 +68,7 @@ export default async function ProfilePage({
       {user?.totp_secret ? (
         <>
           <h2>Сменить пароль</h2>
-          <CriticalForm kind="changePassword" className="settings-form">
+          <CriticalForm kind="changePassword" className="settings-form profile-form">
             <label>
               Текущий пароль
               <input name="password" type="password" required autoComplete="current-password" />
