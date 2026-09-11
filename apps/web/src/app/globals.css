@@ -509,13 +509,13 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 
 .page {
-  margin: 0 auto;
+  margin: 0;
   max-width: 1360px;
   padding: 42px clamp(28px, 4vw, 64px) 80px;
 }
 
 .narrow-page {
-  max-width: 1120px;
+  max-width: 1360px;
 }
 
 .page-header {
@@ -3231,4 +3231,26 @@ textarea:where(:not(.monaco-editor *)):focus {
   min-width: 0;
   display: grid;
   gap: 20px;
+}
+
+.connections-layout {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 20px;
+}
+.connections-layout > .settings-list {
+  min-height: 0;
+}
+.connections-layout > button {
+  align-self: flex-start;
+}
+.critical-fields[hidden] {
+  display: none;
+}
+.create-connection-dialog {
+  margin: auto;
+  border: 1px solid var(--line);
+}
+.create-connection-dialog::backdrop {
+  background: rgb(23 19 35 / 40%);
 }

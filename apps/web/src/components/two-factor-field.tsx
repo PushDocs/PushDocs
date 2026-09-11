@@ -15,7 +15,7 @@ export function TwoFactorField() {
       />
       <small>
         Свежий код из аутентификатора. Один код можно использовать только один раз.{" "}
-        <a href="/settings/security">Настроить 2FA</a>
+        <a href="/settings/profile">Настроить 2FA</a>
       </small>
     </label>
   );

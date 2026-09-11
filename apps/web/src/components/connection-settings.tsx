@@ -1,8 +1,9 @@
 import { Select } from "@pushdocs/ui";
-import { Cable, Plus } from "lucide-react";
+import { Cable } from "lucide-react";
 import { deleteConnectionAction, saveConnectionSettingsAction } from "@/app/actions";
 import { repository, requireOperator } from "@/lib/server";
 import { ConnectionCard } from "./connection-card";
+import { CreateConnectionDialog } from "./create-connection-dialog";
 import { CriticalForm } from "./critical-form";
 import { SettingsNavigation } from "./settings-navigation";
 
@@ -26,8 +27,10 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
 
       {projectId ? (
         <SettingsNavigation projectId={projectId} active="connections" canManageConnections />
-      ) : null}
-      <section className="settings-grid">
+      ) : (
+        <SettingsNavigation active="connections" canManageConnections />
+      )}
+      <section className="connections-layout">
         <div className="settings-list">
           <h2>Подключено</h2>
           {connectionRows.length === 0 ? (
@@ -55,54 +58,48 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
           )}
         </div>
 
-        <CriticalForm kind="createConnection" className="settings-form">
-          {projectId ? <input type="hidden" name="projectId" value={projectId} /> : null}
-          <div className="section-title">
-            <span className="section-icon">
-              <Plus aria-hidden size={18} />
-            </span>
-            <div>
-              <h2>Новое подключение</h2>
+        <CreateConnectionDialog>
+          <CriticalForm kind="createConnection" className="connection-edit-form">
+            {projectId ? <input type="hidden" name="projectId" value={projectId} /> : null}
+            <label>
+              Название
+              <input name="name" placeholder="GitLab компании" required />
+            </label>
+            <div className="form-field">
+              <label htmlFor="new-connection-kind">Провайдер</label>
+              <Select
+                defaultValue="gitlab"
+                id="new-connection-kind"
+                label="Провайдер"
+                name="kind"
+                options={[
+                  { label: "GitLab", value: "gitlab" },
+                  { label: "GitHub", value: "github" },
+                ]}
+              />
             </div>
-          </div>
-          <label>
-            Название
-            <input name="name" placeholder="GitLab компании" required />
-          </label>
-          <div className="form-field">
-            <label htmlFor="new-connection-kind">Провайдер</label>
-            <Select
-              defaultValue="gitlab"
-              id="new-connection-kind"
-              label="Провайдер"
-              name="kind"
-              options={[
-                { label: "GitLab", value: "gitlab" },
-                { label: "GitHub", value: "github" },
-              ]}
-            />
-          </div>
-          <label>
-            Адрес
-            <input name="baseUrl" type="url" defaultValue="https://gitlab.com" required />
-          </label>
-          <label>
-            Access token
-            <input name="token" type="password" autoComplete="off" required />
-          </label>
-          <label>
-            Профиль OpenVPN
-            <input
-              name="vpnProfile"
-              type="file"
-              accept=".ovpn,application/x-openvpn-profile,text/plain"
-            />
-            <small>Необязательно. Поддерживается для GitLab по HTTPS.</small>
-          </label>
-          <button className="pd-button pd-button--primary" type="submit">
-            Сохранить подключение
-          </button>
-        </CriticalForm>
+            <label>
+              Адрес
+              <input name="baseUrl" type="url" defaultValue="https://gitlab.com" required />
+            </label>
+            <label>
+              Access token
+              <input name="token" type="password" autoComplete="off" required />
+            </label>
+            <label>
+              Профиль OpenVPN
+              <input
+                name="vpnProfile"
+                type="file"
+                accept=".ovpn,application/x-openvpn-profile,text/plain"
+              />
+              <small>Необязательно.</small>
+            </label>
+            <button className="pd-button pd-button--primary" type="submit">
+              Сохранить подключение
+            </button>
+          </CriticalForm>
+        </CreateConnectionDialog>
       </section>
     </div>
   );

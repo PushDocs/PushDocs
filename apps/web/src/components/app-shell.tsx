@@ -193,26 +193,18 @@ export function AppShell({
         ) : null}
 
         <div className="sidebar-spacer" />
-        {!activeProject && user.isInstanceOperator ? (
+        {!activeProject ? (
           <Link
             className={
               pathname.startsWith("/settings") ? "sidebar-system active" : "sidebar-system"
             }
-            href="/settings/connections"
+            href={user.isInstanceOperator ? "/settings/connections" : "/settings/profile"}
             title="Настройки"
           >
             <Settings aria-hidden size={18} />
             Настройки
           </Link>
         ) : null}
-        <Link
-          className={pathname === "/settings/security" ? "sidebar-system active" : "sidebar-system"}
-          href="/settings/security"
-          title="Безопасность"
-        >
-          <Settings aria-hidden size={18} />
-          Безопасность
-        </Link>
         <div className="sidebar-profile">
           <span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>
           <span className="profile-copy">

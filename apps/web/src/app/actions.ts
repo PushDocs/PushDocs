@@ -118,7 +118,7 @@ export async function logoutAction(): Promise<void> {
 
 export async function verifyTwoFactorAction(formData: FormData): Promise<void> {
   const session = await authenticationSession();
-  if (session.purpose === "full") redirect("/settings/security");
+  if (session.purpose === "full") redirect("/settings/profile");
   if (
     !(await repository().consumeTotp(
       session.id,
@@ -142,11 +142,11 @@ export async function beginTwoFactorAction(formData: FormData): Promise<void> {
   ) {
     redirect(
       session.purpose === "full"
-        ? "/settings/security?error=password"
+        ? "/settings/profile?error=password"
         : "/two-factor?error=password",
     );
   }
-  if (user.totp_secret) redirect("/settings/security");
+  if (user.totp_secret) redirect("/settings/profile");
   await repository().beginTotpSetup(user.id);
   await startBrowserSession(user.id, "setup");
   redirect("/two-factor");
@@ -611,4 +611,9 @@ export async function gitOperationStatusAction(projectId: string, jobId: string)
   const job = await repository().getProjectJob(projectId, jobId);
   if (!job) throw new Error("Операция не найдена");
   return job;
+}
+
+export async function twoFactorStatusAction(): Promise<boolean> {
+  const user = await requireUser();
+  return Boolean((await repository().getSecurityUser(user.id))?.totp_secret);
 }

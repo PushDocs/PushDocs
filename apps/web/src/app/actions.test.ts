@@ -410,7 +410,7 @@ describe("two-factor actions", () => {
     mocks.repo.getAuthenticationSession.mockResolvedValue({ id: "user", purpose: "full" });
     mocks.argonVerify.mockResolvedValue(false);
     await expect(beginTwoFactorAction(form({ password: "wrong" }))).rejects.toThrow(
-      "REDIRECT:/settings/security?error=password",
+      "REDIRECT:/settings/profile?error=password",
     );
     expect(mocks.repo.beginTotpSetup).not.toHaveBeenCalled();
   });
@@ -445,7 +445,7 @@ describe("two-factor actions", () => {
       legacy_password_login: true,
     });
     expect(await criticalSettingsAction("createProject", form({}))).toEqual({
-      error: "Сначала подключите 2FA в настройках безопасности.",
+      error: "Сначала подключите 2FA в настройках профиля.",
     });
     expect(mocks.app.createProject).not.toHaveBeenCalled();
   });

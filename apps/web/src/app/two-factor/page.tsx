@@ -11,7 +11,7 @@ export default async function TwoFactorPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const session = await authenticationSession();
-  if (session.purpose === "full") redirect("/settings/security");
+  if (session.purpose === "full") redirect("/settings/profile");
   const { error } = await searchParams;
   const setup = session.purpose === "setup";
   const secret =

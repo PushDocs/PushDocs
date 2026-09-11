@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { TwoFactorField } from "./two-factor-field";
+import { CriticalForm } from "./critical-form";
 
 type SaveResult = { ok: boolean; message: string };
 
@@ -34,7 +34,6 @@ export function ConnectionCard({
   connection,
   projectId,
   updateAction,
-  deleteAction,
 }: {
   connection: ConnectionItem;
   projectId?: string;
@@ -136,29 +135,23 @@ export function ConnectionCard({
                 <X aria-hidden size={18} />
               </button>
             </header>
-            <form
+            <CriticalForm
               className="connection-edit-form"
-              aria-busy={pending}
-              onSubmit={async (event) => {
-                event.preventDefault();
+              action={async (data) => {
                 setPending(true);
-                setNotification(undefined);
                 try {
-                  const result = await updateAction(new FormData(event.currentTarget));
-                  setNotification(result);
-                  if (result.ok) setOpen(false);
-                } catch {
-                  setNotification({
-                    ok: false,
-                    message: "Не удалось сохранить настройки. Повторите попытку.",
-                  });
+                  const result = await updateAction(data);
+                  if (result.ok) {
+                    setNotification(result);
+                    setOpen(false);
+                  }
+                  return result;
                 } finally {
                   setPending(false);
                 }
               }}
             >
               <input name="connectionId" type="hidden" value={connection.id} />
-              <TwoFactorField />
               {projectId ? <input name="projectId" type="hidden" value={projectId} /> : null}
               <label>
                 Название
@@ -216,30 +209,13 @@ export function ConnectionCard({
                   {pending ? "Сохраняем…" : "Сохранить изменения"}
                 </button>
               </footer>
-            </form>
+            </CriticalForm>
             <div className="connection-danger">
               <h3>Удалить подключение</h3>
               {connection.projectCount > 0 ? (
                 <p>Сначала удалите все проекты, которые используют это подключение.</p>
               ) : (
-                <form
-                  onSubmit={async (event) => {
-                    event.preventDefault();
-                    setPending(true);
-                    try {
-                      await deleteAction(new FormData(event.currentTarget));
-                    } catch {
-                      setNotification({
-                        ok: false,
-                        message:
-                          "Не удалось удалить подключение. Проверьте название и свежий код 2FA. Если 2FA ещё не включена, подключите её в настройках безопасности.",
-                      });
-                    } finally {
-                      setPending(false);
-                    }
-                  }}
-                >
-                  <TwoFactorField />
+                <CriticalForm kind="deleteConnection">
                   <input name="connectionId" type="hidden" value={connection.id} />
                   <label>
                     Введите <strong>{connection.name}</strong> для подтверждения
@@ -249,7 +225,7 @@ export function ConnectionCard({
                     <Trash2 aria-hidden size={15} />
                     Удалить подключение
                   </button>
-                </form>
+                </CriticalForm>
               )}
             </div>
           </section>

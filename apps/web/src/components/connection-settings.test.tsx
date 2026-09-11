@@ -27,7 +27,7 @@ it("retains the project settings navigation and form context", async () => {
   const html = renderToStaticMarkup(await ConnectionSettings({ projectId: "project" }));
   expect(mocks.access).toHaveBeenCalledWith("operator", "project");
   expect(html).toContain('href="/projects/project/settings/members"');
-  expect(html).toContain('name="projectId" value="project"');
+  expect(html).not.toContain('name="otp"');
 });
 it("requires operator access before loading connections", async () => {
   mocks.operator.mockRejectedValueOnce(new Error("Forbidden"));
@@ -37,7 +37,7 @@ it("requires operator access before loading connections", async () => {
 it("supports installation setup without a project", async () => {
   const html = renderToStaticMarkup(await ConnectionSettings({}));
   expect(mocks.access).not.toHaveBeenCalled();
-  expect(html).toContain("Новое подключение");
+  expect(html).toContain("Создать подключение");
   expect(html).not.toContain('name="projectId"');
 });
 

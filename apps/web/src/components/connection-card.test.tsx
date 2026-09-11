@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+
+vi.mock("@/app/actions", () => ({
+  twoFactorStatusAction: vi.fn().mockResolvedValue(true),
+  criticalSettingsAction: vi.fn().mockResolvedValue({}),
+}));
+
 import { ConnectionCard } from "./connection-card";
 
 const connection = {
@@ -38,6 +44,8 @@ it("closes after saving and announces the result", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: "Редактировать" }));
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
+  await screen.findByRole("heading", { name: "Подтвердите действие" });
+  fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
   expect((await screen.findByRole("status")).textContent).toBe("Настройки подключения сохранены");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(update).toHaveBeenCalledOnce();
@@ -56,6 +64,8 @@ it("keeps the dialog open and announces an error when saving fails", async () =>
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "Редактировать" }));
+  fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
+  await screen.findByRole("heading", { name: "Подтвердите действие" });
   fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
   expect((await screen.findByRole("alert")).textContent).toContain(
     "Адрес нельзя изменить, пока подключение используется проектами",
