@@ -3,12 +3,16 @@ import { CriticalForm } from "@/components/critical-form";
 import { SettingsNavigation } from "@/components/settings-navigation";
 import { repository, requireUser } from "@/lib/server";
 
-export default async function SecurityPage({
+export default async function ProfilePage({
   searchParams,
+  params,
 }: {
   searchParams: Promise<{ error?: string }>;
+  params?: Promise<{ projectId?: string }>;
 }) {
   const current = await requireUser();
+  const projectId = (await params)?.projectId;
+  if (projectId) await repository().requireProjectAccess(current.id, projectId);
   const user = await repository().getSecurityUser(current.id);
   const { error } = await searchParams;
   return (
@@ -16,7 +20,11 @@ export default async function SecurityPage({
       <header className="page-header">
         <h1>Профиль</h1>
       </header>
-      <SettingsNavigation active="profile" canManageConnections={current.isInstanceOperator} />
+      <SettingsNavigation
+        projectId={projectId}
+        active="profile"
+        canManageConnections={current.isInstanceOperator}
+      />
       <h2>Двухфакторная аутентификация</h2>
       {user?.totp_secret ? (
         <p>

@@ -18,11 +18,11 @@ export function SettingsNavigation({
             Проект
           </Link>
           <Link href={`${base}/members`} aria-current={active === "members" ? "page" : undefined}>
-            Пользователи
+            Участники
           </Link>
         </>
       ) : null}
-      <Link href="/settings/profile" aria-current={active === "profile" ? "page" : undefined}>
+      <Link href={`${base}/profile`} aria-current={active === "profile" ? "page" : undefined}>
         Профиль
       </Link>
       {canManageConnections ? (
