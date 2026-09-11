@@ -18,6 +18,8 @@ export PUSHDOCS_ENCRYPTION_KEY
 PUSHDOCS_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export PUSHDOCS_SESSION_PEPPER
 PUSHDOCS_SESSION_PEPPER=$(openssl rand -hex 32)
+export PUSHDOCS_VPN_GATEWAY_TOKEN
+PUSHDOCS_VPN_GATEWAY_TOKEN=$(openssl rand -hex 32)
 unset PUSHDOCS_E2E_RESTORED
 
 compose() { docker compose --env-file /dev/null -p "$project" -f compose.yml "$@"; }

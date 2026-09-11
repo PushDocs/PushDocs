@@ -57,7 +57,7 @@ An operator can attach an optional `.ovpn` file to a GitLab HTTPS connection. Th
 
 VPN profiles use four gateway containers named `vpn-gateway-1` through `vpn-gateway-4`. Each container has its own network routes and receives `NET_ADMIN` and `/dev/net/tun`. The web and worker containers do not receive these permissions. The host must provide `/dev/net/tun` to Docker.
 
-Run the same command again to update or restart the installation. Existing secrets remain unchanged. Use `--prepare-only` to create `.env` without starting containers. For local evaluation, run `./scripts/install.sh http://localhost:8080`.
+Every successful production deployment updates the environment file when a release introduces a new generated secret, runs database migrations, and starts any newly added services before the application. Existing secrets remain unchanged, so upgrading from a version without VPN support requires no manual server step. For a manual self-hosted update, run the same installer command again. Use `--prepare-only` to create or upgrade `.env` without starting containers. For local evaluation, run `./scripts/install.sh http://localhost:8080`.
 
 ## Local development
 

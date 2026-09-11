@@ -59,9 +59,7 @@ if [[ -f .deployed-run-number ]]; then
   fi
 fi
 
-if [[ ! -f .env ]]; then
-  ./scripts/install.sh "$public_origin" --prepare-only
-fi
+./scripts/install.sh "$public_origin" --prepare-only
 chmod 600 .env
 
 set_setting() {
@@ -123,6 +121,8 @@ set_setting PUSHDOCS_PREVIEW_URL "$preview_url"
 "${compose[@]}" pull
 "${compose[@]}" up --detach --no-build --wait --wait-timeout 180 postgres
 "${compose[@]}" up --no-build --no-deps migrate
+"${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 \
+  vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 caddy
 

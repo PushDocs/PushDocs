@@ -59,3 +59,4 @@ fi
 [[ ! -e "$invalid_file" ]]
 
 echo "PASS: installation secrets are valid, private and stable across reruns"
+bash scripts/ci/deploy.test.sh
