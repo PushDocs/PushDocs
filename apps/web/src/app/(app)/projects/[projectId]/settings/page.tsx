@@ -1,8 +1,8 @@
 import { GitBranch, LockKeyhole, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
-import { deleteProjectAction, updateProjectAction } from "@/app/actions";
 import { ComponentCatalog } from "@/components/component-catalog";
 import { componentExamples } from "@/components/component-examples";
+import { CriticalForm } from "@/components/critical-form";
 import { SettingsNavigation } from "@/components/settings-navigation";
 import { actor, application, repository, requireUser } from "@/lib/server";
 
@@ -63,7 +63,7 @@ export default async function ProjectSettingsPage({
       </section>
       {access.role === "admin" ? (
         <section className="project-settings-management">
-          <form action={updateProjectAction} className="project-form">
+          <CriticalForm kind="updateProject" className="project-form">
             <input name="projectId" type="hidden" value={projectId} />
             <div className="form-section">
               <div className="form-section-body">
@@ -98,13 +98,13 @@ export default async function ProjectSettingsPage({
                 Сохранить изменения
               </button>
             </div>
-          </form>
+          </CriticalForm>
           <details className="danger-zone">
             <summary>Удалить проект</summary>
             <div>
               <h2>Удаление нельзя отменить</h2>
               <p>Черновики, обсуждения, история изменений и загруженные файлы будут удалены.</p>
-              <form action={deleteProjectAction}>
+              <CriticalForm kind="deleteProject">
                 <input name="projectId" type="hidden" value={projectId} />
                 <label>
                   Введите <strong>{settings.slug}</strong> для подтверждения
@@ -114,7 +114,7 @@ export default async function ProjectSettingsPage({
                   <Trash2 aria-hidden size={16} />
                   Удалить проект
                 </button>
-              </form>
+              </CriticalForm>
             </div>
           </details>
         </section>

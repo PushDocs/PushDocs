@@ -28,6 +28,7 @@
     "test:coverage": "vitest run --coverage",
     "test:install": "bash scripts/ci/install.test.sh",
     "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
+    "test:security": "yarn workspace @pushdocs/db exec tsx src/security.integration.ts",
     "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json"
   },
   "dependenciesMeta": {

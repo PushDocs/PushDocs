@@ -6,9 +6,10 @@ import type {
   ProviderKind,
 } from "@pushdocs/contracts";
 import { assertCan, normalizeBranchRef, type ProjectAction } from "@pushdocs/domain";
-import { type Kysely, sql } from "kysely";
+import { sql } from "kysely";
 import { appendEvent } from "./events";
-import type { Database, PreparedGitCommit } from "./schema";
+import type { PreparedGitCommit } from "./schema";
+import { SecurityRepository } from "./security";
 
 export class RevisionConflictError extends Error {
   readonly code = "REVISION_CONFLICT";
@@ -35,9 +36,7 @@ function titleFromDraft(content: string | null, documentPath: string): string {
   );
 }
 
-export class PushDocsRepository {
-  constructor(private readonly database: Kysely<Database>) {}
-
+export class PushDocsRepository extends SecurityRepository {
   async isBootstrapped(): Promise<boolean> {
     const row = await this.database
       .selectFrom("users")
@@ -53,6 +52,7 @@ export class PushDocsRepository {
     passwordHash: string;
   }): Promise<{ id: string }> {
     return this.database.transaction().execute(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734921)`.execute(transaction);
       const existing = await transaction
         .selectFrom("users")
         .select(({ fn }) => fn.countAll<number>().as("count"))
@@ -111,14 +111,36 @@ export class PushDocsRepository {
       ])
       .where("sessions.token_hash", "=", tokenHash)
       .where("sessions.expires_at", ">", new Date())
+      .where("sessions.purpose", "=", "full")
+      .where((eb) =>
+        eb.or([
+          eb.and([eb("users.totp_secret", "is not", null), eb("sessions.mfa_verified", "=", true)]),
+          eb.and([
+            eb("users.totp_secret", "is", null),
+            eb("users.legacy_password_login", "=", true),
+          ]),
+        ]),
+      )
       .where("users.status", "=", "active")
       .executeTakeFirst();
   }
 
-  async createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+  async createSession(
+    userId: string,
+    tokenHash: string,
+    expiresAt: Date,
+    purpose: "full" | "mfa" | "setup" = "full",
+    mfaVerified = false,
+  ): Promise<void> {
     await this.database
       .insertInto("sessions")
-      .values({ expires_at: expiresAt, token_hash: tokenHash, user_id: userId })
+      .values({
+        expires_at: expiresAt,
+        token_hash: tokenHash,
+        user_id: userId,
+        purpose,
+        mfa_verified: mfaVerified,
+      })
       .execute();
   }
 
@@ -2309,7 +2331,7 @@ export class PushDocsRepository {
       .insertInto("project_invitations")
       .values({
         email: input.email,
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
         invited_by_user_id: input.invitedByUserId,
         project_id: input.projectId,
         role: input.role,

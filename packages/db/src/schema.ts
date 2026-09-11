@@ -4,6 +4,13 @@ export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 export type GeneratedTimestamp = ColumnType<Date, Date | string | undefined, Date | string>;
 
 export interface UsersTable {
+  totp_secret: string | null;
+  totp_pending_secret: string | null;
+  totp_pending_expires_at: Timestamp | null;
+  totp_last_counter: Generated<number>;
+  auth_attempts: Generated<number>;
+  auth_window_at: Timestamp | null;
+  legacy_password_login: Generated<boolean>;
   created_at: GeneratedTimestamp;
   display_name: string;
   email: string;
@@ -14,6 +21,8 @@ export interface UsersTable {
 }
 
 export interface SessionsTable {
+  purpose: Generated<"full" | "mfa" | "setup">;
+  mfa_verified: Generated<boolean>;
   created_at: GeneratedTimestamp;
   expires_at: Timestamp;
   id: Generated<string>;

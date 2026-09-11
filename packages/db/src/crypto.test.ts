@@ -57,4 +57,13 @@ describe("connection secret encryption", () => {
     useRandomKey();
     expect(() => decryptSecret(encrypted)).toThrow();
   });
+
+  it("binds TOTP ciphertext to its user and setup stage", () => {
+    useRandomKey();
+    const encrypted = encryptSecret("secret", "user-a:totp:pending");
+    expect(decryptSecret(encrypted, "user-a:totp:pending")).toBe("secret");
+    expect(() => decryptSecret(encrypted, "user-b:totp:pending")).toThrow();
+    expect(() => decryptSecret(encrypted, "user-a:totp:active")).toThrow();
+    expect(() => decryptSecret(encrypted)).toThrow();
+  });
 });

@@ -44,6 +44,7 @@ import {
   requireUser,
   sessionCookieName,
 } from "@/lib/server";
+import { authenticationSession, requireTwoFactor, TwoFactorError } from "@/lib/two-factor";
 
 async function uploadedVpnProfile(formData: FormData): Promise<string | undefined> {
   const value = formData.get("vpnProfile");
@@ -53,10 +54,18 @@ async function uploadedVpnProfile(formData: FormData): Promise<string | undefine
   return validateVpnProfile(await value.text());
 }
 
-async function createBrowserSession(userId: string): Promise<void> {
+async function startBrowserSession(
+  userId: string,
+  purpose: "full" | "mfa" | "setup" = "full",
+  mfaVerified = false,
+): Promise<void> {
   const token = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-  await repository().createSession(userId, hashOpaqueToken(token), expiresAt);
+  const expiresAt = new Date(
+    Date.now() + (purpose === "full" ? 30 * 24 * 60 * 60 * 1000 : 15 * 60_000),
+  );
+  const oldToken = (await cookies()).get(sessionCookieName)?.value;
+  if (oldToken) await repository().deleteSession(hashOpaqueToken(oldToken));
+  await repository().createSession(userId, hashOpaqueToken(token), expiresAt, purpose, mfaVerified);
   (await cookies()).set(sessionCookieName, token, {
     expires: expiresAt,
     httpOnly: true,
@@ -71,17 +80,31 @@ export async function bootstrapAction(formData: FormData): Promise<void> {
   const input = bootstrapSchema.parse(Object.fromEntries(formData));
   const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
   const user = await repository().createOperator({ ...input, passwordHash });
-  await createBrowserSession(user.id);
-  redirect("/projects");
+  await repository().beginTotpSetup(user.id);
+  await startBrowserSession(user.id, "setup");
+  redirect("/two-factor");
 }
 
 export async function loginAction(formData: FormData): Promise<void> {
   const input = loginSchema.parse(Object.fromEntries(formData));
   const user = await repository().findUserByEmail(input.email);
-  if (!user || !(await argon2.verify(user.password_hash, input.password))) {
+  if (
+    !user ||
+    !(await repository().takeAuthAttempt(user.id)) ||
+    !(await argon2.verify(user.password_hash, input.password))
+  ) {
     redirect("/login?error=credentials");
   }
-  await createBrowserSession(user.id);
+  if (user.totp_secret) {
+    await startBrowserSession(user.id, "mfa");
+    redirect("/two-factor");
+  }
+  if (!user.legacy_password_login) {
+    await repository().beginTotpSetup(user.id);
+    await startBrowserSession(user.id, "setup");
+    redirect("/two-factor");
+  }
+  await startBrowserSession(user.id);
   redirect("/projects");
 }
 
@@ -93,8 +116,94 @@ export async function logoutAction(): Promise<void> {
   redirect("/login");
 }
 
+export async function verifyTwoFactorAction(formData: FormData): Promise<void> {
+  const session = await authenticationSession();
+  if (session.purpose === "full") redirect("/settings/security");
+  if (
+    !(await repository().consumeTotp(
+      session.id,
+      String(formData.get("otp") ?? "").trim(),
+      session.purpose === "setup",
+    ))
+  ) {
+    redirect("/two-factor?error=code");
+  }
+  await startBrowserSession(session.id, "full", true);
+  redirect("/projects");
+}
+
+export async function beginTwoFactorAction(formData: FormData): Promise<void> {
+  const session = await authenticationSession();
+  const user = await repository().getSecurityUser(session.id);
+  if (
+    !user ||
+    !(await repository().takeAuthAttempt(user.id)) ||
+    !(await argon2.verify(user.password_hash, String(formData.get("password") ?? "")))
+  ) {
+    redirect(
+      session.purpose === "full"
+        ? "/settings/security?error=password"
+        : "/two-factor?error=password",
+    );
+  }
+  if (user.totp_secret) redirect("/settings/security");
+  await repository().beginTotpSetup(user.id);
+  await startBrowserSession(user.id, "setup");
+  redirect("/two-factor");
+}
+
+export async function changePasswordAction(formData: FormData): Promise<void> {
+  const current = await requireUser();
+  const user = await repository().getSecurityUser(current.id);
+  const password = String(formData.get("newPassword") ?? "");
+  if (password.length < 12 || password.length > 200)
+    throw new TwoFactorError("Новый пароль должен содержать от 12 до 200 символов.");
+  if (
+    !user ||
+    !(await repository().takeAuthAttempt(user.id)) ||
+    !(await argon2.verify(user.password_hash, String(formData.get("password") ?? "")))
+  ) {
+    throw new TwoFactorError(
+      "Текущий пароль неверен или превышено число попыток. После 10 попыток подождите 15 минут.",
+    );
+  }
+  await requireTwoFactor(user.id, formData);
+  const changed = await repository().changePassword(
+    user.id,
+    user.password_hash,
+    await argon2.hash(password, { type: argon2.argon2id }),
+  );
+  if (!changed) throw new TwoFactorError("Пароль уже изменён. Войдите снова.");
+  (await cookies()).delete(sessionCookieName);
+  redirect("/login?changed=1");
+}
+
+export async function criticalSettingsAction(
+  kind: string,
+  formData: FormData,
+): Promise<{ error?: string }> {
+  const actions: Record<string, (form: FormData) => Promise<void>> = {
+    createConnection: createConnectionAction,
+    deleteConnection: deleteConnectionAction,
+    createProject: createProjectAction,
+    updateProject: updateProjectAction,
+    deleteProject: deleteProjectAction,
+    changePassword: changePasswordAction,
+  };
+  const action = Object.hasOwn(actions, kind) ? actions[kind] : undefined;
+  if (!action) throw new Error("Unknown settings action");
+  try {
+    await action(formData);
+    return {};
+  } catch (error) {
+    if (error instanceof TwoFactorError) return { error: error.message };
+    throw error;
+  }
+}
+
 export async function createConnectionAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
+  await requireTwoFactor(user.id, formData);
   const input = createConnectionSchema.parse(Object.fromEntries(formData));
   const vpnProfile = await uploadedVpnProfile(formData);
   if (vpnProfile && (input.kind !== "gitlab" || new URL(input.baseUrl).protocol !== "https:"))
@@ -114,6 +223,7 @@ export async function createConnectionAction(formData: FormData): Promise<void> 
 
 export async function updateConnectionAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
+  await requireTwoFactor(user.id, formData);
   const input = updateConnectionSchema.parse(Object.fromEntries(formData));
   const current = await repository().getConnection(input.connectionId);
   if (!current) throw new Error("CONNECTION_NOT_FOUND");
@@ -160,6 +270,7 @@ export async function updateConnectionAction(formData: FormData): Promise<void> 
 }
 
 function connectionSettingsError(error: unknown): string {
+  if (error instanceof TwoFactorError) return error.message;
   if (!(error instanceof Error)) return "Не удалось сохранить настройки. Повторите попытку.";
   switch (error.message) {
     case "CONNECTION_BASE_URL_IN_USE":
@@ -188,6 +299,7 @@ export async function saveConnectionSettingsAction(
 
 export async function deleteConnectionAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
+  await requireTwoFactor(user.id, formData);
   const input = deleteConnectionSchema.parse(Object.fromEntries(formData));
   const current = await repository().getConnection(input.connectionId);
   if (!current) throw new Error("CONNECTION_NOT_FOUND");
@@ -201,6 +313,7 @@ export async function deleteConnectionAction(formData: FormData): Promise<void> 
 
 export async function createProjectAction(formData: FormData): Promise<void> {
   const user = await requireOperator();
+  await requireTwoFactor(user.id, formData);
   const input = createProjectSchema.parse(Object.fromEntries(formData));
   const connection = await repository().getConnection(input.connectionId);
   if (!connection) throw new Error("CONNECTION_NOT_FOUND");
@@ -224,6 +337,7 @@ export async function createProjectAction(formData: FormData): Promise<void> {
 
 export async function updateProjectAction(formData: FormData): Promise<void> {
   const user = await requireUser();
+  await requireTwoFactor(user.id, formData);
   const input = updateProjectSchema.parse(Object.fromEntries(formData));
   await repository().requireProjectAccess(user.id, input.projectId, "project:configure");
   const current = await repository().getProjectSettings(input.projectId);
@@ -247,6 +361,7 @@ export async function updateProjectAction(formData: FormData): Promise<void> {
 
 export async function deleteProjectAction(formData: FormData): Promise<void> {
   const user = await requireUser();
+  await requireTwoFactor(user.id, formData);
   const input = deleteProjectSchema.parse(Object.fromEntries(formData));
   await repository().requireProjectAccess(user.id, input.projectId, "project:configure");
   const current = await repository().getProjectSettings(input.projectId);
@@ -319,7 +434,10 @@ export async function acceptInvitationAction(formData: FormData): Promise<void> 
   } else {
     const existing = await repository().findUserByEmail(invitation.email);
     if (existing) {
-      if (!(await argon2.verify(existing.password_hash, input.password))) {
+      if (
+        !(await repository().takeAuthAttempt(existing.id)) ||
+        !(await argon2.verify(existing.password_hash, input.password))
+      ) {
         redirect(`/invite/${encodeURIComponent(input.token)}?error=credentials`);
       }
       userId = existing.id;
@@ -334,7 +452,16 @@ export async function acceptInvitationAction(formData: FormData): Promise<void> 
     }
   }
   const accepted = await repository().acceptInvitation(tokenHash, userId);
-  if (!current) await createBrowserSession(userId);
+  const security = await repository().getSecurityUser(userId);
+  if (!security?.totp_secret) {
+    await repository().beginTotpSetup(userId);
+    await startBrowserSession(userId, "setup");
+    redirect("/two-factor");
+  }
+  if (!current) {
+    await startBrowserSession(userId, "mfa");
+    redirect("/two-factor");
+  }
   redirect(`/projects/${accepted.projectId}/documents`);
 }
 

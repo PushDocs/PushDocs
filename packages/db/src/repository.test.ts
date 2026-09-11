@@ -3,11 +3,13 @@ import { Kysely, PostgresDialect, sql } from "kysely";
 import type { Pool } from "pg";
 import { DataType, newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { decryptSecret } from "./crypto";
 import { checkDatabase, closeDatabase, createDatabase, getDatabase } from "./database";
 import { appendEvent } from "./events";
 import { migrateToLatest } from "./migrations";
 import { NotFoundError, PushDocsRepository, RevisionConflictError } from "./repository";
 import type { Database } from "./schema";
+import { totpCode } from "./totp";
 
 let database: Kysely<Database>;
 let repository: PushDocsRepository;
@@ -588,7 +590,12 @@ describe("users and sessions", () => {
       email: "editor@example.test",
       passwordHash: "hash",
     });
-    await repository.createSession(user.id, "valid", new Date(Date.now() + 60_000));
+    await database
+      .updateTable("users")
+      .set({ totp_secret: "encrypted" })
+      .where("id", "=", user.id)
+      .execute();
+    await repository.createSession(user.id, "valid", new Date(Date.now() + 60_000), "full", true);
     await repository.createSession(user.id, "expired", new Date(Date.now() - 60_000));
     await expect(repository.findUserBySessionHash("valid")).resolves.toMatchObject({
       display_name: "Editor",
@@ -611,6 +618,99 @@ describe("users and sessions", () => {
       .where("id", "=", user.id)
       .execute();
     await expect(repository.findUserByEmail("blocked@example.test")).resolves.toBeUndefined();
+  });
+});
+
+describe("two-factor security", () => {
+  beforeEach(() => vi.stubEnv("PUSHDOCS_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64")));
+
+  async function pendingUser() {
+    const user = await repository.createUser({
+      displayName: "New",
+      email: "new@example.test",
+      passwordHash: "hash",
+    });
+    await repository.beginTotpSetup(user.id);
+    const record = await repository.getSecurityUser(user.id);
+    const secret = decryptSecret(record?.totp_pending_secret ?? "", `${user.id}:totp:pending`);
+    return { ...user, secret };
+  }
+
+  it("blocks incomplete and password-only sessions from application access", async () => {
+    const user = await pendingUser();
+    for (const purpose of ["setup", "mfa", "full"] as const) {
+      await repository.createSession(user.id, purpose, new Date(Date.now() + 60_000), purpose);
+      expect(await repository.findUserBySessionHash(purpose)).toBeUndefined();
+    }
+    expect(await repository.getAuthenticationSession("setup")).toMatchObject({ purpose: "setup" });
+    expect(await repository.consumeTotp(user.id, totpCode(user.secret, Date.now()), true)).toBe(
+      true,
+    );
+    expect(await repository.getAuthenticationSession("setup")).toBeUndefined();
+    await repository.createSession(
+      user.id,
+      "verified",
+      new Date(Date.now() + 60_000),
+      "full",
+      true,
+    );
+    expect(await repository.findUserBySessionHash("verified")).toMatchObject({ id: user.id });
+  });
+
+  it("enables only after a valid code and rejects replay across sessions and actions", async () => {
+    const user = await pendingUser();
+    expect(await repository.consumeTotp(user.id, "invalid", true)).toBe(false);
+    expect((await repository.getSecurityUser(user.id))?.totp_secret).toBeNull();
+    const code = totpCode(user.secret, Date.now());
+    expect(await repository.consumeTotp(user.id, code, true)).toBe(true);
+    expect(await repository.consumeTotp(user.id, code)).toBe(false);
+    expect((await repository.getSecurityUser(user.id))?.totp_pending_secret).toBeNull();
+  });
+
+  it("persists an account-wide attempt budget and expires setup secrets", async () => {
+    const user = await pendingUser();
+    for (let i = 0; i < 10; i++)
+      expect(await repository.consumeTotp(user.id, "invalid", true)).toBe(false);
+    expect(await repository.consumeTotp(user.id, totpCode(user.secret, Date.now()), true)).toBe(
+      false,
+    );
+    await database
+      .updateTable("users")
+      .set({
+        auth_window_at: new Date(Date.now() - 16 * 60_000),
+        totp_pending_expires_at: new Date(0),
+      })
+      .where("id", "=", user.id)
+      .execute();
+    expect(await repository.consumeTotp(user.id, totpCode(user.secret, Date.now()), true)).toBe(
+      false,
+    );
+    await repository.beginTotpSetup(user.id);
+    expect(
+      decryptSecret(
+        (await repository.getSecurityUser(user.id))?.totp_pending_secret ?? "",
+        `${user.id}:totp:pending`,
+      ),
+    ).not.toBe(user.secret);
+  });
+
+  it("retains legacy owner login until enrollment and revokes every session on password change", async () => {
+    const user = await pendingUser();
+    await database
+      .updateTable("users")
+      .set({ is_instance_operator: true, legacy_password_login: true })
+      .where("id", "=", user.id)
+      .execute();
+    await repository.createSession(user.id, "legacy", new Date(Date.now() + 60_000));
+    expect(await repository.findUserBySessionHash("legacy")).toBeTruthy();
+    expect(await repository.consumeTotp(user.id, totpCode(user.secret, Date.now()), true)).toBe(
+      true,
+    );
+    expect((await repository.getSecurityUser(user.id))?.legacy_password_login).toBe(false);
+    await repository.createSession(user.id, "new", new Date(Date.now() + 60_000), "full", true);
+    expect(await repository.changePassword(user.id, "wrong", "new-hash")).toBe(false);
+    expect(await repository.changePassword(user.id, "hash", "new-hash")).toBe(true);
+    expect(await repository.findUserBySessionHash("new")).toBeUndefined();
   });
 });
 

@@ -12,3 +12,4 @@ export {
   RevisionConflictError,
 } from "./repository";
 export type { Database } from "./schema";
+export { createTotpUri, generateTotpSecret, totpCode, verifyTotp } from "./totp";

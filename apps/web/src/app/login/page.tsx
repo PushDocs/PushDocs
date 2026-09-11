@@ -9,13 +9,16 @@ export const metadata: Metadata = { title: "Вход" };
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; changed?: string }>;
 }) {
   if (!(await repository().isBootstrapped())) redirect("/setup");
   if (await optionalUser()) redirect("/projects");
   const query = await searchParams;
   return (
     <AuthPanel title="Вход">
+      {query.changed === "1" ? (
+        <p role="status">Пароль изменён. Войдите с новым паролем и кодом 2FA.</p>
+      ) : null}
       {query.error === "credentials" ? (
         <p className="form-error" role="alert">
           Email или пароль не подошли.
@@ -36,7 +39,10 @@ export default async function LoginPage({
       </form>
       <details className="auth-help">
         <summary>Не получается войти?</summary>
-        <p>Для восстановления доступа обратитесь к владельцу.</p>
+        <p>
+          Если потеряли телефон, восстановите аутентификатор с помощью сохранённого ключа настройки.
+          Письма для восстановления не отправляются.
+        </p>
       </details>
     </AuthPanel>
   );

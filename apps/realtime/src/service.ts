@@ -55,7 +55,7 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
   async function events(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const token = cookieValue(request.headers.cookie, "pushdocs_session");
     const user = token ? await options.findUserByToken(token) : undefined;
-    if (!user) {
+    if (!token || !user) {
       response.writeHead(401).end();
       return;
     }
@@ -67,12 +67,18 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
     });
     let cursor = lastEventCursor(request.headers["last-event-id"]);
     let running = false;
+    let closed = false;
     response.write(formatSseEvent({ data: { cursor }, type: "connected" }));
 
     const poll = async () => {
-      if (running || response.destroyed) return;
+      if (running || closed || response.destroyed) return;
       running = true;
       try {
+        if (!(await options.findUserByToken(token))) {
+          closed = true;
+          response.end();
+          return;
+        }
         const rows = await options.listEvents(user.id, cursor);
         for (const row of rows) {
           cursor = Number(row.sequence);
@@ -97,8 +103,10 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
     };
 
     await poll();
+    if (closed) return;
     const pollTimer = schedule(poll, 2000);
     const heartbeat = schedule(() => {
+      if (closed || response.destroyed) return;
       response.write(": heartbeat\n\n");
     }, 20_000);
     request.on("close", () => {

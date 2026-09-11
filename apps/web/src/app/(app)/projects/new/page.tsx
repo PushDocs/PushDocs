@@ -2,7 +2,7 @@ import { Select } from "@pushdocs/ui";
 import { ArrowLeft, GitBranch, LockKeyhole } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { createProjectAction } from "@/app/actions";
+import { CriticalForm } from "@/components/critical-form";
 import { repository, requireOperator } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Новый проект" };
@@ -34,7 +34,7 @@ export default async function NewProjectPage() {
           </div>
         </section>
       ) : (
-        <form action={createProjectAction} className="project-form">
+        <CriticalForm kind="createProject" className="project-form">
           <div className="form-section">
             <div className="form-section-body">
               <h2>Репозиторий</h2>
@@ -105,7 +105,7 @@ export default async function NewProjectPage() {
               Импортировать проект
             </button>
           </div>
-        </form>
+        </CriticalForm>
       )}
     </div>
   );

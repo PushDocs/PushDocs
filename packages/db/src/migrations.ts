@@ -353,6 +353,26 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               `.execute(database);
             },
           },
+          "011-two-factor": {
+            async up(database) {
+              await sql`alter table users
+                add column totp_secret text,
+                add column totp_pending_secret text,
+                add column totp_pending_expires_at timestamptz,
+                add column totp_last_counter integer not null default -1,
+                add column auth_attempts integer not null default 0,
+                add column auth_window_at timestamptz,
+                add column legacy_password_login boolean not null default false`.execute(database);
+              await sql`update users set legacy_password_login = true where is_instance_operator = true`.execute(
+                database,
+              );
+              await sql`alter table sessions
+                add column purpose text not null default 'full' check (purpose in ('full','mfa','setup')),
+                add column mfa_verified boolean not null default false`.execute(database);
+              await sql`update project_invitations set expires_at = created_at + interval '24 hours'
+                where expires_at > created_at + interval '24 hours'`.execute(database);
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

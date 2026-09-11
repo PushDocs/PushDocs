@@ -125,13 +125,6 @@ export function AppShell({
                 </span>
                 <span>
                   <strong>{activeProject.name}</strong>
-                  <small>
-                    {activeProject.role === "admin"
-                      ? "Администратор"
-                      : activeProject.role === "editor"
-                        ? "Редактор"
-                        : "Читатель"}
-                  </small>
                 </span>
                 <ChevronDown aria-hidden size={15} />
               </summary>
@@ -149,7 +142,6 @@ export function AppShell({
                     </span>
                     <span>
                       <strong>{project.name}</strong>
-                      <small>{project.defaultBranch}</small>
                     </span>
                   </Link>
                 ))}
@@ -213,6 +205,14 @@ export function AppShell({
             Настройки
           </Link>
         ) : null}
+        <Link
+          className={pathname === "/settings/security" ? "sidebar-system active" : "sidebar-system"}
+          href="/settings/security"
+          title="Безопасность"
+        >
+          <Settings aria-hidden size={18} />
+          Безопасность
+        </Link>
         <div className="sidebar-profile">
           <span className="avatar">{user.displayName.slice(0, 1).toUpperCase()}</span>
           <span className="profile-copy">

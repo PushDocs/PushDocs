@@ -13,6 +13,9 @@ Installation -> Projects -> Branches -> Documents
 The repository contains a working MVP:
 
 - The first operator creates the installation and can add encrypted GitHub or GitLab connections.
+- New operators and invited users must connect a TOTP authenticator before accessing the application. Existing operators can still sign in after an upgrade and enable 2FA in Security settings.
+- Login and password, connection and project changes require a fresh authenticator code once 2FA is enabled. Critical changes require enrollment even for existing operators. Changing a password ends all sessions.
+- PushDocs does not send email. Administrators share invitation links through a messenger. Each link is bound to one email address, can be accepted once and expires within 24 hours.
 - A GitLab connection can store an encrypted inline OpenVPN profile. Provider requests and Git HTTPS traffic then pass through an isolated VPN gateway. The installation supports four active VPN profiles.
 - One installation can import and manage several projects. Each project has its own members and roles.
 - The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context.
@@ -40,6 +43,12 @@ The web application and worker do not execute repository JavaScript. Quick previ
 - A CI preview link becomes available only after the `preview:deploy` check succeeds for the current PR or MR commit.
 
 ## Run with Docker Compose
+
+During 2FA setup, scan the QR code with Google Authenticator or a compatible app. Store the manual setup key in a password manager so you can restore the authenticator if the phone is lost. PushDocs has no email recovery flow. Codes expire every 30 seconds and cannot be reused, including between login and a critical action. After ten authentication attempts in a 15-minute window, wait for the window to expire. Successful TOTP verification resets the attempt count.
+
+TOTP secrets use the existing installation encryption key and are bound to the user and setup stage. Back up that key with the database. The upgrade preserves password-only login only for operators that already existed when migration 011 ran. Other accounts must enroll. Existing invitations are also capped at 24 hours from creation.
+
+`yarn test:security` uses `PUSHDOCS_TEST_DATABASE_URL` to test upgrade compatibility, concurrent invitation acceptance, TOTP replay protection and session revocation. It creates and removes a separate random database and accepts only a local PostgreSQL server.
 
 Run the installer with the public origin of the CMS:
 

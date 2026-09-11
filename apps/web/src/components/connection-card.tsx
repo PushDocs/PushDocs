@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { TwoFactorField } from "./two-factor-field";
 
 type SaveResult = { ok: boolean; message: string };
 
@@ -157,6 +158,7 @@ export function ConnectionCard({
               }}
             >
               <input name="connectionId" type="hidden" value={connection.id} />
+              <TwoFactorField />
               {projectId ? <input name="projectId" type="hidden" value={projectId} /> : null}
               <label>
                 Название
@@ -220,13 +222,30 @@ export function ConnectionCard({
               {connection.projectCount > 0 ? (
                 <p>Сначала удалите все проекты, которые используют это подключение.</p>
               ) : (
-                <form action={deleteAction}>
+                <form
+                  onSubmit={async (event) => {
+                    event.preventDefault();
+                    setPending(true);
+                    try {
+                      await deleteAction(new FormData(event.currentTarget));
+                    } catch {
+                      setNotification({
+                        ok: false,
+                        message:
+                          "Не удалось удалить подключение. Проверьте название и свежий код 2FA. Если 2FA ещё не включена, подключите её в настройках безопасности.",
+                      });
+                    } finally {
+                      setPending(false);
+                    }
+                  }}
+                >
+                  <TwoFactorField />
                   <input name="connectionId" type="hidden" value={connection.id} />
                   <label>
                     Введите <strong>{connection.name}</strong> для подтверждения
                     <input name="confirmation" required autoComplete="off" />
                   </label>
-                  <button className="pd-button pd-button--danger" type="submit">
+                  <button className="pd-button pd-button--danger" type="submit" disabled={pending}>
                     <Trash2 aria-hidden size={15} />
                     Удалить подключение
                   </button>

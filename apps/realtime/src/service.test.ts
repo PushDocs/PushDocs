@@ -156,6 +156,24 @@ describe("realtime request handler", () => {
     expect(timers.clearInterval).toHaveBeenNthCalledWith(2, 2);
   });
 
+  it("stops an open stream when its session is revoked", async () => {
+    const timers = scheduler();
+    const auth = vi.fn().mockResolvedValue({ id: "user" });
+    const listEvents = vi.fn().mockResolvedValue([]);
+    const stream = response();
+    createRealtimeHandler({ findUserByToken: auth, listEvents, setInterval: timers.setInterval })(
+      request("/events", { cookie: "pushdocs_session=token" }),
+      stream,
+    );
+    await vi.waitFor(() => expect(timers.callbacks).toHaveLength(2));
+    auth.mockResolvedValue(undefined);
+    await timers.callbacks[0]?.();
+    expect(stream.end).toHaveBeenCalled();
+    expect(listEvents).toHaveBeenCalledTimes(1);
+    await timers.callbacks[0]?.();
+    expect(listEvents).toHaveBeenCalledTimes(1);
+  });
+
   it("logs polling errors and continues on the next interval", async () => {
     const timers = scheduler();
     const logger = { error: vi.fn() };

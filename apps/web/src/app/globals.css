@@ -3224,3 +3224,11 @@ textarea:where(:not(.monaco-editor *)):focus {
 .change-revert-confirm [role="alert"] {
   color: var(--danger);
 }
+.critical-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  display: grid;
+  gap: 20px;
+}

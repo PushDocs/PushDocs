@@ -1,12 +1,9 @@
 import { Select } from "@pushdocs/ui";
 import { Cable, Plus } from "lucide-react";
-import {
-  createConnectionAction,
-  deleteConnectionAction,
-  saveConnectionSettingsAction,
-} from "@/app/actions";
+import { deleteConnectionAction, saveConnectionSettingsAction } from "@/app/actions";
 import { repository, requireOperator } from "@/lib/server";
 import { ConnectionCard } from "./connection-card";
+import { CriticalForm } from "./critical-form";
 import { SettingsNavigation } from "./settings-navigation";
 
 export async function ConnectionSettings({ projectId }: { projectId?: string }) {
@@ -58,7 +55,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
           )}
         </div>
 
-        <form action={createConnectionAction} className="settings-form">
+        <CriticalForm kind="createConnection" className="settings-form">
           {projectId ? <input type="hidden" name="projectId" value={projectId} /> : null}
           <div className="section-title">
             <span className="section-icon">
@@ -105,7 +102,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
           <button className="pd-button pd-button--primary" type="submit">
             Сохранить подключение
           </button>
-        </form>
+        </CriticalForm>
       </section>
     </div>
   );

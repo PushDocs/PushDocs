@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 const mocks = vi.hoisted(() => {
   const user = {
     displayName: "Admin",
@@ -44,6 +46,12 @@ const mocks = vi.hoisted(() => {
     rename: vi.fn(),
     rm: vi.fn(),
     repo: {
+      takeAuthAttempt: vi.fn(),
+      beginTotpSetup: vi.fn(),
+      getSecurityUser: vi.fn(),
+      consumeTotp: vi.fn(),
+      getAuthenticationSession: vi.fn(),
+      changePassword: vi.fn(),
       acceptInvitation: vi.fn(),
       createOperator: vi.fn(),
       createProjectComponent: vi.fn(),
@@ -126,12 +134,15 @@ vi.mock("@/lib/server", () => ({
 import { RevisionConflictError } from "@pushdocs/db";
 import {
   acceptInvitationAction,
+  beginTwoFactorAction,
   bootstrapAction,
+  changePasswordAction,
   createCommentAction,
   createConnectionAction,
   createDocumentAction,
   createProjectAction,
   createProjectComponentAction,
+  criticalSettingsAction,
   deleteConnectionAction,
   deleteProjectAction,
   gitOperationStatusAction,
@@ -148,6 +159,7 @@ import {
   updateConnectionAction,
   updateProjectAction,
   uploadAttachmentAction,
+  verifyTwoFactorAction,
 } from "./actions";
 
 function form(values: Record<string, string | File>): FormData {
@@ -189,6 +201,15 @@ beforeEach(() => {
   mocks.requireUser.mockResolvedValue(mocks.user);
   mocks.argonHash.mockResolvedValue("password-hash");
   mocks.argonVerify.mockResolvedValue(true);
+  mocks.repo.takeAuthAttempt.mockResolvedValue(true);
+  mocks.repo.consumeTotp.mockResolvedValue(true);
+  mocks.repo.getSecurityUser.mockResolvedValue({
+    id: "user",
+    totp_secret: "encrypted",
+    password_hash: "hash",
+  });
+  mocks.repo.changePassword.mockResolvedValue(true);
+  mocks.repo.getAuthenticationSession.mockResolvedValue({ id: "user", purpose: "mfa" });
   mocks.repo.createOperator.mockResolvedValue({ id: "operator" });
   mocks.repo.createUser.mockResolvedValue({ id: "created-user" });
   mocks.repo.acceptInvitation.mockResolvedValue({ projectId });
@@ -225,7 +246,7 @@ describe("authentication actions", () => {
     expect(mocks.repo.createOperator).not.toHaveBeenCalled();
   });
 
-  it("creates the first operator and browser session", async () => {
+  it("creates the first operator with only a setup session", async () => {
     await expect(
       bootstrapAction(
         form({
@@ -234,7 +255,7 @@ describe("authentication actions", () => {
           password: "correct horse battery staple",
         }),
       ),
-    ).rejects.toThrow("REDIRECT:/projects");
+    ).rejects.toThrow("REDIRECT:/two-factor");
     expect(mocks.argonHash).toHaveBeenCalledWith("correct horse battery staple", { type: 2 });
     expect(mocks.repo.createOperator).toHaveBeenCalledWith({
       displayName: "Admin",
@@ -246,6 +267,8 @@ describe("authentication actions", () => {
       "operator",
       expect.stringMatching(/^session:/),
       expect.any(Date),
+      "setup",
+      false,
     );
     expect(mocks.cookieSet).toHaveBeenCalledWith(
       "pushdocs_session",
@@ -268,8 +291,12 @@ describe("authentication actions", () => {
     ).rejects.toThrow("REDIRECT:/login?error=credentials");
   });
 
-  it("logs a valid user in", async () => {
-    mocks.repo.findUserByEmail.mockResolvedValue({ id: "user", password_hash: "hash" });
+  it("allows password-only login only for the migrated owner", async () => {
+    mocks.repo.findUserByEmail.mockResolvedValue({
+      id: "user",
+      password_hash: "hash",
+      legacy_password_login: true,
+    });
     await expect(
       loginAction(form({ email: "USER@EXAMPLE.TEST", password: "password" })),
     ).rejects.toThrow("REDIRECT:/projects");
@@ -278,6 +305,8 @@ describe("authentication actions", () => {
       "user",
       expect.stringMatching(/^session:/),
       expect.any(Date),
+      "full",
+      false,
     );
   });
 
@@ -292,6 +321,151 @@ describe("authentication actions", () => {
     mocks.cookieGet.mockReturnValue(undefined);
     await expect(logoutAction()).rejects.toThrow("REDIRECT:/login");
     expect(mocks.repo.deleteSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("two-factor actions", () => {
+  it("does not grant a full session after password authentication", async () => {
+    mocks.repo.findUserByEmail.mockResolvedValue({
+      id: "user",
+      password_hash: "hash",
+      totp_secret: "encrypted",
+    });
+    await expect(
+      loginAction(form({ email: "user@example.test", password: "password" })),
+    ).rejects.toThrow("REDIRECT:/two-factor");
+    expect(mocks.repo.createSession).toHaveBeenCalledWith(
+      "user",
+      expect.any(String),
+      expect.any(Date),
+      "mfa",
+      false,
+    );
+  });
+
+  it("requires setup for every new account", async () => {
+    mocks.repo.findUserByEmail.mockResolvedValue({
+      id: "user",
+      password_hash: "hash",
+      legacy_password_login: false,
+    });
+    await expect(
+      loginAction(form({ email: "user@example.test", password: "password" })),
+    ).rejects.toThrow("REDIRECT:/two-factor");
+    expect(mocks.repo.beginTotpSetup).toHaveBeenCalledWith("user");
+    expect(mocks.repo.createSession).toHaveBeenCalledWith(
+      "user",
+      expect.any(String),
+      expect.any(Date),
+      "setup",
+      false,
+    );
+  });
+
+  it("requires enrollment after accepting a new invitation", async () => {
+    mocks.repo.getInvitation.mockResolvedValue({ email: "new@example.test", projectId });
+    mocks.repo.findUserByEmail.mockResolvedValue(undefined);
+    mocks.repo.getSecurityUser.mockResolvedValue({ id: "created-user", totp_secret: null });
+    await expect(
+      acceptInvitationAction(
+        form({ token: "a".repeat(32), displayName: "New user", password: "a secure password" }),
+      ),
+    ).rejects.toThrow("REDIRECT:/two-factor");
+    expect(mocks.repo.createSession).toHaveBeenCalledWith(
+      "created-user",
+      expect.any(String),
+      expect.any(Date),
+      "setup",
+      false,
+    );
+  });
+
+  it("rejects a bad code without creating an authenticated session", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "pending" });
+    mocks.repo.consumeTotp.mockResolvedValue(false);
+    await expect(verifyTwoFactorAction(form({ otp: "123456" }))).rejects.toThrow(
+      "REDIRECT:/two-factor?error=code",
+    );
+    expect(mocks.repo.createSession).not.toHaveBeenCalled();
+  });
+
+  it("rotates the pending session only after a verified code", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "pending" });
+    await expect(verifyTwoFactorAction(form({ otp: "123456" }))).rejects.toThrow(
+      "REDIRECT:/projects",
+    );
+    expect(mocks.repo.consumeTotp).toHaveBeenCalledWith("user", "123456", false);
+    expect(mocks.repo.deleteSession).toHaveBeenCalledWith("session:pending");
+    expect(mocks.repo.createSession).toHaveBeenCalledWith(
+      "user",
+      expect.any(String),
+      expect.any(Date),
+      "full",
+      true,
+    );
+  });
+
+  it("requires the current password before the legacy owner sees a setup secret", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "legacy" });
+    mocks.repo.getAuthenticationSession.mockResolvedValue({ id: "user", purpose: "full" });
+    mocks.argonVerify.mockResolvedValue(false);
+    await expect(beginTwoFactorAction(form({ password: "wrong" }))).rejects.toThrow(
+      "REDIRECT:/settings/security?error=password",
+    );
+    expect(mocks.repo.beginTotpSetup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    createConnectionAction,
+    updateConnectionAction,
+    deleteConnectionAction,
+    createProjectAction,
+    updateProjectAction,
+    deleteProjectAction,
+  ])("blocks a critical action when verification fails", async (action) => {
+    mocks.repo.consumeTotp.mockResolvedValue(false);
+    await expect(action(form({ otp: "123456" }))).rejects.toThrow("Код 2FA");
+    expect(mocks.repo.getConnection).not.toHaveBeenCalled();
+    expect(mocks.repo.getProjectSettings).not.toHaveBeenCalled();
+    for (const method of [
+      mocks.app.createConnection,
+      mocks.app.updateConnection,
+      mocks.app.deleteConnection,
+      mocks.app.createProject,
+      mocks.app.updateProject,
+      mocks.app.deleteProject,
+    ])
+      expect(method).not.toHaveBeenCalled();
+  });
+
+  it("does not exempt the legacy owner from critical actions", async () => {
+    mocks.repo.getSecurityUser.mockResolvedValue({
+      id: "user",
+      totp_secret: null,
+      legacy_password_login: true,
+    });
+    expect(await criticalSettingsAction("createProject", form({}))).toEqual({
+      error: "Сначала подключите 2FA в настройках безопасности.",
+    });
+    expect(mocks.app.createProject).not.toHaveBeenCalled();
+  });
+
+  it("requires both password and 2FA to change the password", async () => {
+    mocks.repo.consumeTotp.mockResolvedValue(false);
+    await expect(
+      changePasswordAction(
+        form({ password: "old", newPassword: "new secure password", otp: "123456" }),
+      ),
+    ).rejects.toThrow("Код 2FA");
+    expect(mocks.repo.changePassword).not.toHaveBeenCalled();
+    mocks.repo.consumeTotp.mockResolvedValue(true);
+    await expect(
+      changePasswordAction(
+        form({ password: "old", newPassword: "new secure password", otp: "654321" }),
+      ),
+    ).rejects.toThrow("REDIRECT:/login?changed=1");
+    expect(mocks.repo.changePassword).toHaveBeenCalledWith("user", "hash", "password-hash");
+    expect(mocks.cookieDelete).toHaveBeenCalledWith("pushdocs_session");
   });
 });
 
@@ -754,6 +928,8 @@ describe("invitation acceptance", () => {
       "reader",
       expect.stringMatching(/^session:/),
       expect.any(Date),
+      "mfa",
+      false,
     );
   });
 

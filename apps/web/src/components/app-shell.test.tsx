@@ -127,7 +127,7 @@ describe("AppShell", () => {
       </AppShell>,
     );
     expect(screen.getByText("Page content")).toBeTruthy();
-    expect(screen.getByText("Администратор")).toBeTruthy();
+    expect(screen.queryByText("Администратор")).toBeNull();
     expect(screen.getByRole("link", { name: /Все проекты/ }).getAttribute("href")).toBe(
       "/projects",
     );
@@ -157,6 +157,7 @@ describe("AppShell", () => {
     expect(switcher.querySelector('a[href="/projects/two/documents"]')?.textContent).toContain(
       "API Docs",
     );
+    expect(switcher.textContent).not.toContain("stable");
   });
 
   it("shows a project hint and hides installation controls for regular users", () => {
@@ -171,14 +172,14 @@ describe("AppShell", () => {
     expect(screen.getByText("anna@example.test")).toBeTruthy();
   });
 
-  it("labels an active reader role", () => {
+  it("does not present the active role as a switchable project value", () => {
     mocks.pathname = "/projects/two/documents";
     render(
       <AppShell projects={projects} user={{ ...operator, isInstanceOperator: false }}>
         Content
       </AppShell>,
     );
-    expect(screen.getByText("Читатель")).toBeTruthy();
+    expect(screen.queryByText("Читатель")).toBeNull();
   });
 });
 

@@ -95,10 +95,14 @@ export default async function MembersPage({
           {invitationToken ? (
             <div className="invitation-result" role="status">
               <strong>Приглашение создано</strong>
-              <p>Передайте пользователю одноразовую ссылку. Она действует семь дней.</p>
+              <p>
+                Отправьте ссылку пользователю в мессенджере. Она предназначена для одного
+                пользователя, действует 24 часа и после принятия больше не работает. Письмо не
+                отправляется.
+              </p>
               <input
                 readOnly
-                value={`/invite/${invitationToken}`}
+                value={`${process.env.PUSHDOCS_PUBLIC_ORIGIN ?? "http://localhost:3000"}/invite/${invitationToken}`}
                 aria-label="Ссылка приглашения"
               />
             </div>
