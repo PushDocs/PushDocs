@@ -66,7 +66,7 @@ export default async function ReviewsPage({
   const previewCheck = checks.find((check) => check.name === "preview:deploy");
 
   return (
-    <div className="page">
+    <div className="page reviews-page">
       <header className="page-header">
         <div>
           <h1>{reviewLabel}</h1>
@@ -74,7 +74,7 @@ export default async function ReviewsPage({
       </header>
       <form className="review-filters" method="get">
         <label>
-          Найти запрос
+          Найти {reviewLabel}
           <input name="q" defaultValue={query.q} placeholder="Название, номер или ветка" />
         </label>
         <Select
@@ -88,33 +88,42 @@ export default async function ReviewsPage({
             { value: "closed", label: "Закрытые" },
           ]}
         />
-        <button type="submit">Найти</button>
+        <button className="pd-button pd-button--secondary" type="submit">
+          Найти
+        </button>
         {needle || filterState !== "all" ? (
           <Link href={`/projects/${projectId}/reviews`}>Сбросить</Link>
         ) : null}
       </form>
-      <GitOperation projectId={projectId} branch={project.defaultBranch} reviewsOnly />
-      {selected?.updated_at ? (
-        <p className="muted">
-          Обновлено из Git:{" "}
-          <time dateTime={new Date(selected.updated_at).toISOString()}>
-            {new Date(selected.updated_at).toLocaleString("ru-RU")}
-          </time>
-        </p>
-      ) : null}
+      <div className="review-sync">
+        <GitOperation
+          projectId={projectId}
+          branch={project.defaultBranch}
+          reviewsOnly
+          reviewLabel={reviewLabel}
+        />
+        {selected?.updated_at ? (
+          <p className="muted">
+            Обновлено из Git:{" "}
+            <time dateTime={new Date(selected.updated_at).toISOString()}>
+              {new Date(selected.updated_at).toLocaleString("ru-RU")}
+            </time>
+          </p>
+        ) : null}
+      </div>
       {reviews.length === 0 ? (
         <section className="empty-state">
           <GitPullRequest aria-hidden />
-          <h2>{allReviews.length ? "Запросы не найдены" : "Нет запросов на слияние"}</h2>
+          <h2>{allReviews.length ? `${reviewLabel} не найдены` : `Нет ${reviewLabel}`}</h2>
           <p>
             {allReviews.length
-              ? "Измените запрос или сбросьте фильтры."
+              ? "Измените текст поиска или сбросьте фильтры."
               : `После создания ${reviewLabel} здесь появятся результаты проверок.`}
           </p>
         </section>
       ) : (
         <div className="reviews-layout">
-          <nav className="review-list" aria-label="Запросы на слияние">
+          <nav className="review-list" aria-label={`Список ${reviewLabel}`}>
             {reviews.map((review) => (
               <Link
                 className={review.id === selected?.id ? "active" : ""}
@@ -149,7 +158,7 @@ export default async function ReviewsPage({
                   </p>
                 </div>
               </header>
-              <nav className="review-actions" aria-label="Действия с запросом">
+              <nav className="review-actions" aria-label={`Действия с ${reviewLabel}`}>
                 <Link
                   className="pd-button pd-button--primary"
                   href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: selected.source_branch })}`}
@@ -177,11 +186,13 @@ export default async function ReviewsPage({
                     Открыть предпросмотр
                     <ExternalLink aria-hidden size={15} />
                   </a>
-                ) : previewUrl ? (
+                ) : previewUrl && previewCheck ? (
                   <button className="pd-button pd-button--secondary" disabled type="button">
                     {previewCheck?.conclusion === "failure"
                       ? "Предпросмотр не собран"
-                      : "Предпросмотр обновляется"}
+                      : previewCheck.conclusion === "running"
+                        ? "Предпросмотр обновляется"
+                        : "Предпросмотр недоступен"}
                   </button>
                 ) : null}
               </nav>
@@ -191,8 +202,10 @@ export default async function ReviewsPage({
                     <h3>Проверки</h3>
                     <code title="Коммит">{selected.head_sha.slice(0, 8)}</code>
                   </div>
-                  <Status tone={readiness.ready ? "success" : "warning"}>
-                    {readiness.ready ? "Готово" : "Ожидание"}
+                  <Status
+                    tone={!checks.length ? "neutral" : readiness.ready ? "success" : "warning"}
+                  >
+                    {!checks.length ? "Нет данных" : readiness.ready ? "Готово" : "Ожидание"}
                   </Status>
                 </div>
                 {checks.length === 0 ? (

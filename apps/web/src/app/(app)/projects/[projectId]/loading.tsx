@@ -1,8 +1,9 @@
+import { SectionSkeleton } from "@/components/section-skeleton";
+
 export default function LoadingProject() {
   return (
-    <section className="page" role="status" aria-live="polite">
-      <h1>Открываем проект…</h1>
-      <progress aria-label="Загрузка проекта" />
+    <section className="page">
+      <SectionSkeleton />
     </section>
   );
 }

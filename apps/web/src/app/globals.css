@@ -3337,3 +3337,107 @@ textarea:where(:not(.monaco-editor *)):focus {
 .project-import-form details > .pd-select {
   margin-top: 7px;
 }
+
+.review-filters > label {
+  display: grid;
+  gap: 8px;
+  flex: 0 1 420px;
+  min-width: 0;
+}
+.review-filters input {
+  width: 100%;
+  min-width: 0;
+}
+.review-filters > .pd-select {
+  width: 190px;
+}
+.review-sync {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-bottom: 20px;
+}
+.review-sync .git-operation {
+  justify-items: start;
+}
+.review-sync > p {
+  margin: 0;
+  font-size: 12px;
+}
+.review-list {
+  max-height: 65vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.review-detail {
+  min-width: 0;
+}
+.review-provider-link {
+  margin-left: 0;
+}
+.section-skeleton {
+  width: 100%;
+}
+.skeleton-block {
+  background: var(--line);
+  border-radius: 6px;
+  animation: skeleton-pulse 1.8s ease-in-out infinite alternate;
+  height: 14px;
+}
+.skeleton-title {
+  width: 32%;
+  height: 32px;
+  margin-bottom: 32px;
+}
+.skeleton-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.skeleton-toolbar > div {
+  width: 140px;
+  height: 38px;
+}
+.skeleton-columns {
+  display: grid;
+  grid-template-columns: minmax(160px, 25%) minmax(0, 1fr);
+  gap: 24px;
+}
+.skeleton-list,
+.skeleton-content {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-height: 340px;
+}
+.skeleton-content > div:nth-child(2n) {
+  width: 75%;
+}
+@keyframes skeleton-pulse {
+  to {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .skeleton-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .skeleton-list {
+    display: none;
+  }
+  .review-filters > label {
+    flex-basis: 100%;
+  }
+  .review-list {
+    max-height: 280px;
+  }
+}

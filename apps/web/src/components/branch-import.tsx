@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { gitOperationStatusAction, synchronizeBranchAction } from "@/app/actions";
 import { ProjectContext } from "./project-context";
+import { SectionSkeleton } from "./section-skeleton";
 
 export function BranchImport({ projectId, branch }: { projectId: string; branch: string }) {
   const router = useRouter();
@@ -87,16 +88,7 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
           </button>
         </>
       ) : (
-        <div className="branch-import-loading">
-          <p role="status">Загружаем файлы ветки…</p>
-          <div
-            className="branch-import-progress"
-            role="progressbar"
-            aria-label="Загрузка файлов ветки"
-          >
-            <span />
-          </div>
-        </div>
+        <SectionSkeleton label="Загрузка файлов ветки" />
       )}
     </section>
   );

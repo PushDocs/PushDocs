@@ -40,8 +40,8 @@ it("polls the job without refreshing the route, then refreshes once when loading
     projectId: "project",
     branch: "docs/fix #1",
   });
-  expect(screen.getByRole("status").textContent).toContain("Загружаем");
-  const progress = screen.getByRole("progressbar", { name: "Загрузка файлов ветки" });
+  expect(screen.getByRole("status").getAttribute("aria-busy")).toBe("true");
+  const progress = screen.getByRole("status", { name: "Загрузка файлов ветки" });
   expect(progress.hasAttribute("aria-valuenow")).toBe(false);
   expect(mocks.status).toHaveBeenCalledWith("project", "job");
   expect(mocks.router.refresh).not.toHaveBeenCalled();
@@ -50,9 +50,9 @@ it("polls the job without refreshing the route, then refreshes once when loading
   });
   expect(mocks.status).toHaveBeenCalledTimes(2);
   expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole("progressbar")).toBe(progress);
+  expect(screen.getByRole("status")).toBe(progress);
   view.unmount();
-  expect(screen.queryByRole("progressbar")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
   await act(async () => {
     vi.advanceTimersByTime(4000);
   });
@@ -63,12 +63,12 @@ it("offers a retry on failure and starts loading again", async () => {
   mocks.status.mockResolvedValue({ status: "queued" });
   render(<BranchImport projectId="project" branch="docs/update" />);
   expect(await screen.findByRole("alert")).toBeTruthy();
-  expect(screen.queryByRole("progressbar")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку" }));
   await act(async () => {});
   expect(mocks.sync).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("progressbar", { name: "Загрузка файлов ветки" })).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Загрузка файлов ветки" })).toBeTruthy();
 });
 it("stops polling and offers a retry when loading times out", async () => {
   vi.useFakeTimers();
@@ -80,7 +80,7 @@ it("stops polling and offers a retry when loading times out", async () => {
     vi.advanceTimersByTime(300_000);
   });
   expect(screen.getByRole("alert").textContent).toContain("ещё не загрузилась");
-  expect(screen.queryByRole("progressbar")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
   const count = mocks.status.mock.calls.length;
   await act(async () => {
     vi.advanceTimersByTime(4000);

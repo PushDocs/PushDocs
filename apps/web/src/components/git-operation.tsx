@@ -42,7 +42,7 @@ export function GitOperation({
               ? createReview
                 ? `${reviewLabel} создан`
                 : reviewsOnly
-                  ? "Состояние запросов обновлено"
+                  ? `Состояние ${reviewLabel} обновлено`
                   : "Изменения получены"
               : "Операция не завершена. Повторите попытку.",
           );
@@ -113,7 +113,7 @@ export function GitOperation({
           ? createReview
             ? `Создаём ${reviewLabel}…`
             : reviewsOnly
-              ? "Обновляем запросы…"
+              ? `Обновляем ${reviewLabel}…`
               : "Получаем изменения…"
           : createReview
             ? `Создать ${reviewLabel}`

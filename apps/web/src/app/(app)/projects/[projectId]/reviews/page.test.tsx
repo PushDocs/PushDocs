@@ -171,9 +171,23 @@ it("shows an actionable empty state for unmatched state filters", async () => {
       searchParams: Promise.resolve({ state: "merged" }),
     }),
   );
-  expect(screen.getByText("Запросы не найдены")).toBeTruthy();
+  expect(screen.getByText("MR не найдены")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Сбросить" }).getAttribute("href")).toBe(
     "/projects/project/reviews",
   );
   expect(mocks.checks).not.toHaveBeenCalled();
+});
+
+it("does not claim readiness or a running preview when checks are absent", async () => {
+  vi.stubEnv("PUSHDOCS_PREVIEW_URL", "https://pr-{MR_NUMBER}.docs.example.test/");
+  mocks.checks.mockResolvedValueOnce([]);
+  const html = renderToStaticMarkup(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected" }),
+    }),
+  );
+  expect(html).not.toContain("Готово");
+  expect(html).not.toContain("Предпросмотр обновляется");
+  expect(html).toContain("Нет данных");
 });
