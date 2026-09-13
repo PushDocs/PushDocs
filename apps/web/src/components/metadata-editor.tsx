@@ -243,8 +243,13 @@ function NumberField({
       disabled={disabled}
       onChange={(event) => setInput(event.target.value)}
       onBlur={() => {
-        if (!input) onCommit(undefined);
-        else if (Number.isFinite(Number(input))) onCommit(Number(input));
+        if (!input) {
+          onCommit(undefined);
+          return;
+        }
+        const parsed = Number(input);
+        /* v8 ignore else -- number inputs expose invalid browser input as an empty string. */
+        if (Number.isFinite(parsed)) onCommit(parsed);
       }}
       onKeyDown={(event) => {
         if (event.key === "Enter") event.currentTarget.blur();

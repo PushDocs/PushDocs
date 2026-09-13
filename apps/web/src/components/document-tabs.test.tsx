@@ -54,9 +54,11 @@ it("ignores external drags, cancelled drags and dropping on the source tab", () 
   const source = screen.getByRole("tab", { name: "a.md" });
   const destination = screen.getByRole("tab", { name: "b.md" });
   const dataTransfer = transfer();
+  fireEvent.dragOver(destination, { dataTransfer });
   fireEvent.drop(destination, { dataTransfer });
   expect(onReorder).not.toHaveBeenCalled();
   fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragOver(source.parentElement as HTMLElement, { dataTransfer });
   fireEvent.drop(source, { dataTransfer });
   expect(onReorder).not.toHaveBeenCalled();
   fireEvent.dragStart(source, { dataTransfer });
@@ -77,4 +79,28 @@ it("keeps closing separate from selection and supports keyboard reordering", () 
     key: "ArrowRight",
   });
   expect(onReorder).toHaveBeenCalledExactlyOnceWith(["docs/a.md", "docs/c.md", "docs/b.md"]);
+});
+
+it("auto-scrolls near strip edges and clears a departed drop target", () => {
+  mount();
+  const source = screen.getByRole("tab", { name: "a.md" });
+  const target = screen.getByRole("tab", { name: "b.md" }).parentElement as HTMLElement;
+  const strip = target.parentElement as HTMLElement;
+  vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ left: 100, width: 100 } as DOMRect);
+  vi.spyOn(strip, "getBoundingClientRect").mockReturnValue({ left: 0, right: 300 } as DOMRect);
+  strip.scrollLeft = 100;
+  const dataTransfer = transfer();
+  fireEvent.dragStart(source, { dataTransfer });
+  const left = new MouseEvent("dragover", { bubbles: true, cancelable: true, clientX: 10 });
+  Object.defineProperty(left, "dataTransfer", { value: dataTransfer });
+  fireEvent(target, left);
+  expect(strip.scrollLeft).toBe(76);
+  const right = new MouseEvent("dragover", { bubbles: true, cancelable: true, clientX: 290 });
+  Object.defineProperty(right, "dataTransfer", { value: dataTransfer });
+  fireEvent(target, right);
+  expect(strip.scrollLeft).toBe(100);
+  fireEvent.dragLeave(target, { relatedTarget: document.body });
+  expect(target.dataset.drop).toBeUndefined();
+  fireEvent.keyDown(source, { key: "ArrowLeft" });
+  fireEvent.keyDown(source, { key: "ArrowLeft", altKey: true, shiftKey: true });
 });

@@ -6,6 +6,7 @@ export function CopyInvitation({ value }: { value: string }) {
   const input = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   async function copy() {
+    /* v8 ignore next -- the button is disabled synchronously while a copy is pending. */
     if (pending.current) return;
     pending.current = true;
     setStatus("copying");

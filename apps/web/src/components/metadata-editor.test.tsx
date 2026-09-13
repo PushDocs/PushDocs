@@ -111,3 +111,93 @@ it("clears optional fields back to defaults and explains excluding a page", () =
   fireEvent.click(screen.getByRole("button", { name: "Сбросить: Видимость на сайте" }));
   expect(screen.getByRole("status").textContent).not.toContain("draft:");
 });
+
+it("edits descriptions and commits numeric fields from blur or Enter", () => {
+  const change = vi.fn();
+  render(
+    <MetadataEditor
+      value={"---\ntitle: Guide\ndescription: Old\nsidebar_position: 2\n---\n\nBody"}
+      onChange={change}
+      readOnly={false}
+      fields={parseProjectConfig().metadata}
+      path="docs/guide.md"
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Описание для поиска"), {
+    target: { value: "New description" },
+  });
+  expect(change).toHaveBeenCalled();
+  const position = screen.getByLabelText("Порядок в разделе");
+  fireEvent.change(position, { target: { value: "4" } });
+  fireEvent.keyDown(position, { key: "Enter" });
+  fireEvent.change(position, { target: { value: "invalid" } });
+  fireEvent.blur(position);
+});
+
+it("supports custom string, boolean, and number metadata without a document heading", () => {
+  const fields = [
+    { name: "slug", label: "Slug", type: "string" as const },
+    { name: "featured", label: "Featured", type: "boolean" as const },
+    { name: "weight", label: "Weight", type: "number" as const },
+    { name: "custom", label: "Custom label", type: "string" as const },
+  ];
+  const change = vi.fn();
+  render(
+    <MetadataEditor
+      value={"Body without heading"}
+      fields={fields}
+      path=""
+      readOnly={false}
+      onChange={change}
+    />,
+  );
+  expect((screen.getByLabelText("Свой адрес") as HTMLInputElement).placeholder).toBe(
+    "Из пути файла",
+  );
+  fireEvent.change(screen.getByLabelText("Featured"), { target: { value: "true" } });
+  fireEvent.change(screen.getByLabelText("Featured"), { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("Custom label"), { target: { value: "value" } });
+  const weight = screen.getByLabelText("Weight");
+  fireEvent.change(weight, { target: { value: "not-a-number" } });
+  fireEvent.blur(weight);
+  expect(change).toHaveBeenCalledTimes(4);
+});
+
+it("renders path and stored-value fallbacks and ignores unfinished numeric input", () => {
+  const fields = [
+    { name: "title", label: "Title", type: "string" as const },
+    { name: "description", label: "Description", type: "string" as const },
+    { name: "slug", label: "Slug", type: "string" as const },
+    { name: "featured", label: "Featured", type: "boolean" as const },
+    { name: "weight", label: "Weight", type: "number" as const },
+  ];
+  const change = vi.fn();
+  render(
+    <MetadataEditor
+      value={"---\nslug: /guide\nfeatured: true\n---\nBody"}
+      fields={fields}
+      path="docs/guide.mdx"
+      readOnly={false}
+      onChange={change}
+    />,
+  );
+
+  expect((screen.getByLabelText("Название страницы") as HTMLInputElement).placeholder).toBe(
+    "guide",
+  );
+  expect((screen.getByLabelText("Описание для поиска") as HTMLTextAreaElement).placeholder).toBe(
+    "По умолчанию — начало текста статьи",
+  );
+  expect(screen.getByText("/guide")).toBeTruthy();
+  expect((screen.getByLabelText("Featured") as HTMLSelectElement).value).toBe("true");
+
+  const description = screen.getByLabelText("Описание для поиска");
+  fireEvent.change(description, { target: { value: "temporary" } });
+  fireEvent.change(description, { target: { value: "" } });
+  const weight = screen.getByLabelText("Weight") as HTMLInputElement;
+  fireEvent.keyDown(weight, { key: "Escape" });
+  Object.defineProperty(weight, "value", { configurable: true, value: "unfinished" });
+  fireEvent.change(weight);
+  fireEvent.blur(weight);
+  expect(change).toHaveBeenCalledOnce();
+});

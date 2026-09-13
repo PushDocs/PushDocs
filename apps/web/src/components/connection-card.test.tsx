@@ -49,6 +49,8 @@ it("closes after saving and announces the result", async () => {
   expect((await screen.findByRole("status")).textContent).toBe("Настройки подключения сохранены");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(update).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть уведомление" }));
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 it("keeps the dialog open and announces an error when saving fails", async () => {
@@ -160,4 +162,25 @@ it("lists the projects affected by an installation-wide connection", () => {
   expect(screen.getByRole("dialog").textContent).toContain("Изменения затронут все");
   expect(screen.getByText("Alpha docs")).toBeTruthy();
   expect(screen.getByText("Beta docs")).toBeTruthy();
+});
+
+it("renders Russian project plurals and GitHub-specific settings", () => {
+  const actions = { updateAction: vi.fn(), deleteAction: vi.fn() };
+  render(
+    <ConnectionCard
+      connection={{ ...connection, kind: "github", projectCount: 2 }}
+      projectId="project"
+      {...actions}
+    />,
+  );
+  expect(screen.getByText("2 проекта")).toBeTruthy();
+  fireEvent.click(screen.getByText("Редактировать"));
+  expect(screen.queryByText(/OpenVPN/)).toBeNull();
+  expect(screen.getByRole("dialog").querySelector('input[name="projectId"]')).toHaveProperty(
+    "value",
+    "project",
+  );
+  cleanup();
+  render(<ConnectionCard connection={{ ...connection, projectCount: 5 }} {...actions} />);
+  expect(screen.getByText("5 проектов")).toBeTruthy();
 });

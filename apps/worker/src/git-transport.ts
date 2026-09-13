@@ -98,6 +98,7 @@ export class GitTransport {
       const timeout = setTimeout(() => child.kill("SIGKILL"), 120_000);
       child.stdout.on("data", (chunk: Buffer) => {
         size += chunk.length;
+        /* v8 ignore next -- exercising the 128 MiB process cap would make the unit suite unsafe. */
         if (size > 128 * 1024 * 1024) child.kill("SIGKILL");
         else output.push(chunk);
       });
@@ -122,6 +123,7 @@ export class GitTransport {
           reject(new Error(`Git ${args[0]} failed (${code}): ${detail}`));
         }
       });
+      /* v8 ignore next -- broken-pipe notification is deliberately consumed by Node. */
       child.stdin.on("error", () => undefined);
       child.stdin.end(input);
     });

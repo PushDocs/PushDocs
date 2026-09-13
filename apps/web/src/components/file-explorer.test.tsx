@@ -242,7 +242,103 @@ it("hides internal .pushdocs files even when selected and creates files outside 
   expect(screen.getByText("Нет файлов")).toBeTruthy();
 });
 
-it("virtualizes a large flat repository and keeps the selected file reachable", () => {
+it("supports every toolbar, context-menu and tree keyboard action", async () => {
+  vi.useFakeTimers();
+  const onCreate = vi.fn();
+  const onOpen = vi.fn();
+  const onRefresh = vi.fn();
+  const onMedia = vi.fn();
+  const onUpload = vi.fn();
+  const onAction = vi.fn();
+  try {
+    render(
+      <FileExplorer
+        paths={paths}
+        selected="docs/a.md"
+        statuses={new Map()}
+        readOnly={false}
+        busy={false}
+        onOpen={onOpen}
+        onCreate={onCreate}
+        onRefresh={onRefresh}
+        onMedia={onMedia}
+        onUpload={onUpload}
+        onAction={onAction}
+        canEdit={() => true}
+        revealDirectory="docs/nested"
+        statusError="comparison failed"
+      />,
+    );
+    expect(screen.getByLabelText("comparison failed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Вложения" }));
+    fireEvent.click(screen.getByRole("button", { name: "Получить из Git" }));
+    expect(onMedia).toHaveBeenCalledOnce();
+    expect(onRefresh).toHaveBeenCalledOnce();
+
+    const input = screen.getByLabelText("Файлы для загрузки") as HTMLInputElement;
+    const pickerClick = vi.spyOn(input, "click");
+    fireEvent.click(screen.getByRole("button", { name: "Загрузить файлы в папку" }));
+    expect(pickerClick).toHaveBeenCalledOnce();
+    const upload = new File(["x"], "x.md");
+    fireEvent.change(input, { target: { files: [upload] } });
+    expect(onUpload).toHaveBeenCalledWith([upload], "docs/nested");
+
+    const folder = screen.getByRole("treeitem", { name: "nested" });
+    fireEvent.contextMenu(folder);
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Новая папка" }));
+    expect(onCreate).toHaveBeenCalledWith("folder", "docs/nested");
+    fireEvent.contextMenu(folder);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Новый файл" }));
+    expect(onCreate).toHaveBeenCalledWith("new", "docs/nested");
+
+    const tree = screen.getByRole("tree");
+    Object.defineProperty(tree, "clientHeight", { configurable: true, value: 100 });
+    vi.spyOn(tree, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 100 } as DOMRect);
+    tree.scrollTop = 50;
+    fireEvent.scroll(tree);
+    const dataTransfer = { files: [upload], items: [], types: ["Files"], dropEffect: "" };
+    fireEvent.dragOver(tree, {
+      dataTransfer: { files: [], items: [], types: ["text/plain"], dropEffect: "" },
+    });
+    const topDrag = new MouseEvent("dragover", { bubbles: true, cancelable: true, clientY: 1 });
+    Object.defineProperty(topDrag, "dataTransfer", { value: dataTransfer });
+    fireEvent(tree, topDrag);
+    expect(tree.scrollTop).toBe(34);
+    const bottomDrag = new MouseEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      clientY: 99,
+    });
+    Object.defineProperty(bottomDrag, "dataTransfer", { value: dataTransfer });
+    fireEvent(tree, bottomDrag);
+    expect(tree.scrollTop).toBe(50);
+    fireEvent.dragLeave(tree, { relatedTarget: document.body });
+
+    fireEvent.click(screen.getByTitle("Создавать файлы в корне проекта"));
+    const docs = screen.getByRole("treeitem", { name: "docs" });
+    fireEvent.keyDown(docs, { key: "ArrowRight" });
+    fireEvent.keyDown(docs, { key: "ArrowRight" });
+    await act(async () => vi.runAllTimers());
+    fireEvent.keyDown(screen.getByRole("treeitem", { name: "a.md" }), { key: "ArrowLeft" });
+    fireEvent.keyDown(docs, { key: "ArrowDown" });
+    fireEvent.keyDown(docs, { key: "ArrowUp" });
+    fireEvent.keyDown(docs, { key: "Home" });
+    fireEvent.keyDown(docs, { key: "End" });
+    fireEvent.keyDown(docs, { key: "Enter" });
+
+    const file = screen.getByRole("treeitem", { name: "a.md" });
+    fireEvent.contextMenu(file);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Переместить" }));
+    expect(onAction).toHaveBeenCalledWith("move", "docs/a.md");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("virtualizes a large flat repository and keeps the selected file reachable", async () => {
+  vi.useFakeTimers();
   const manyPaths = Array.from({ length: 5_000 }, (_, index) => `docs-${index}.md`);
   render(
     <FileExplorer
@@ -261,4 +357,8 @@ it("virtualizes a large flat repository and keeps the selected file reachable", 
   expect(screen.getByRole("treeitem", { name: "docs-4999.md" }).getAttribute("aria-setsize")).toBe(
     "5000",
   );
+  fireEvent.keyDown(screen.getByRole("treeitem", { name: "docs-4999.md" }), { key: "Home" });
+  await act(async () => vi.runAllTimers());
+  expect(screen.getByRole("treeitem", { name: "docs-0.md" })).toBeTruthy();
+  vi.useRealTimers();
 });

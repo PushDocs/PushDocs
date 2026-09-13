@@ -196,6 +196,41 @@ describe("realtime request handler", () => {
     expect(listEvents).toHaveBeenCalledTimes(1);
     await timers.callbacks[0]?.();
     expect(listEvents).toHaveBeenCalledTimes(1);
+    timers.callbacks[1]?.();
+    expect(stream.write).not.toHaveBeenCalledWith(": heartbeat\n\n");
+  });
+
+  it("continues after a successful periodic session validation", async () => {
+    const timers = scheduler();
+    let currentTime = 0;
+    const auth = vi.fn().mockResolvedValue({ id: "user" });
+    const listEvents = vi.fn().mockResolvedValue([]);
+    createRealtimeHandler({
+      findUserByToken: auth,
+      listEvents,
+      now: () => currentTime,
+      setInterval: timers.setInterval,
+    })(request("/events", { cookie: "pushdocs_session=token" }), response());
+    await vi.waitFor(() => expect(timers.callbacks).toHaveLength(2));
+    currentTime = 30_000;
+    await timers.callbacks[0]?.();
+    expect(auth).toHaveBeenCalledTimes(2);
+    expect(listEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not install timers when the session is revoked during the initial poll", async () => {
+    const timers = scheduler();
+    let clockReads = 0;
+    const auth = vi.fn().mockResolvedValueOnce({ id: "user" }).mockResolvedValueOnce(undefined);
+    const stream = response();
+    createRealtimeHandler({
+      findUserByToken: auth,
+      listEvents: vi.fn(),
+      now: () => (clockReads++ === 0 ? 0 : 30_000),
+      setInterval: timers.setInterval,
+    })(request("/events", { cookie: "pushdocs_session=token" }), stream);
+    await vi.waitFor(() => expect(stream.end).toHaveBeenCalled());
+    expect(timers.setInterval).not.toHaveBeenCalled();
   });
 
   it("logs polling errors and continues on the next interval", async () => {

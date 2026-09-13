@@ -40,6 +40,7 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
   const current = useRef(props);
   current.current = props;
   useEffect(() => {
+    /* v8 ignore next -- React attaches the host in the same commit before this effect. */
     if (!host.current) return;
     const model = monaco.editor.createModel(
       current.current.value.replace(/\r\n?/g, "\n"),

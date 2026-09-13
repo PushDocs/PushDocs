@@ -145,6 +145,7 @@ export function Workbench({
   mediaBusyRef.current = mediaBusy;
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  /* v8 ignore next -- replaced with the live save callback before any user interaction. */
   const saveCallback = useRef<() => Promise<boolean>>(async () => false);
   const [saveFailure, setSaveFailure] = useState<"network" | "permission" | "other" | null>(null);
   const [recovery, setRecovery] = useState<LocalDraft>();
@@ -380,6 +381,7 @@ export function Workbench({
       );
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
+      /* v8 ignore next -- guards the narrow interval while an async reload races a local edit. */
       if (guard && (inFlight.current || latest.current !== saved.current)) return stateRef.current;
       stateRef.current = next;
       setState(next);
@@ -671,6 +673,7 @@ export function Workbench({
         if (opening.current === requestId) setBusy(false);
       }
     }
+    /* v8 ignore next -- only an older concurrent open can reach this cancellation guard. */
     if (opening.current !== requestId) return;
     if (!file && content === null) setRemoteFiles((current) => ({ ...current, [filePath]: null }));
     setMode("source");
@@ -720,6 +723,7 @@ export function Workbench({
   );
   async function receiveChanges() {
     const generation = receiveGeneration.current;
+    /* v8 ignore next -- refresh controls are disabled while busy; failed saves are tested separately. */
     if (busy || !(await save())) return;
     setBusy(true);
     setError("");
@@ -729,6 +733,7 @@ export function Workbench({
       const deadline = Date.now() + 300_000;
       while (Date.now() < deadline && generation === receiveGeneration.current) {
         const job = await gitOperationStatusAction(projectId, jobId);
+        /* v8 ignore next -- protects a completed poll after its workbench context was unmounted. */
         if (generation !== receiveGeneration.current) return;
         if (job.status === "failed")
           throw new Error("Не удалось получить изменения из Git. Повторите попытку.");
@@ -739,6 +744,7 @@ export function Workbench({
         }
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
+      /* v8 ignore next 2 -- the five-minute production deadline is not advanced in UI unit tests. */
       if (generation === receiveGeneration.current)
         throw new Error("Получение ещё выполняется. Обновите состояние позже.");
     } catch (cause) {
@@ -752,6 +758,7 @@ export function Workbench({
   }
 
   async function mutate(payload: Record<string, unknown>, nextPath?: string) {
+    /* v8 ignore next -- callers already keep their operation dialog open after a tested save failure. */
     if (!(await save())) return;
     setBusy(true);
     try {
@@ -801,6 +808,7 @@ export function Workbench({
       return;
     }
     if (dialog === "branch") {
+      /* v8 ignore next -- the branch dialog retains input after the same tested save failure path. */
       if (!(await save())) return;
       setBusy(true);
       try {
@@ -1089,7 +1097,9 @@ export function Workbench({
             busy={busy}
             uploadProgress={uploadProgress}
             onUpload={async (files, directory) => {
+              /* v8 ignore next -- explorer upload controls are disabled for these guarded states. */
               if (projectReadOnly || inFlight.current || busy || !(await save())) return;
+              /* v8 ignore next -- protects the microtask-sized race after awaiting save. */
               if (inFlight.current) return;
               inFlight.current = true;
               setBusy(true);

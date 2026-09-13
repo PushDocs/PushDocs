@@ -17,6 +17,8 @@ it("shows colored lines, counts and a split view with aligned replacements", () 
   expect(rows[1]?.textContent).toContain("old");
   expect(rows[1]?.textContent).toContain("new");
   expect(rows[2]?.querySelector('[data-kind="empty"]')).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Единый" }));
+  expect(screen.getByRole("button", { name: "Единый" }).getAttribute("aria-pressed")).toBe("true");
 });
 
 it("expands unchanged sections and resets them when the compared text changes", () => {

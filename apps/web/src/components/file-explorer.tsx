@@ -197,6 +197,7 @@ export function FileExplorer({
   const selectedIndex = rows.findIndex((node) => node.path === selected);
   useLayoutEffect(() => {
     const element = container.current;
+    /* v8 ignore next -- the layout effect follows attachment of the rendered tree ref. */
     if (!element) return;
     const height = element.clientHeight || 600;
     let top = element.scrollTop;
@@ -227,6 +228,7 @@ export function FileExplorer({
     });
   }
   function focus(path: string | undefined) {
+    /* v8 ignore next -- every caller derives a path from a non-empty rendered row. */
     if (!path) return;
     setFocused(path);
     const index = rows.findIndex((node) => node.path === path);

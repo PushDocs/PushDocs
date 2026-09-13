@@ -380,6 +380,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("id", "=", input.connectionId)
         .returning(["id", "name", "kind", "base_url", "vpn_slot"])
         .executeTakeFirst();
+      /* v8 ignore next -- the row was locked and verified earlier in this transaction. */
       if (!connection) throw new NotFoundError("Connection not found");
       return connection;
     });
@@ -639,6 +640,7 @@ export class PushDocsRepository extends SecurityRepository {
           .execute();
       for (let offset = 0; offset < documents.length; offset += 250) {
         const batch = documents.slice(offset, offset + 250);
+        /* v8 ignore next -- the loop condition makes an empty batch impossible. */
         if (batch.length === 0) continue;
         await transaction
           .insertInto("imported_documents")
@@ -1944,6 +1946,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("project_id", "=", input.projectId)
         .forUpdate()
         .executeTakeFirst();
+      /* v8 ignore next -- the same row was found and locked above in this transaction. */
       if (!changeSet) throw new NotFoundError("Change set not found");
       if (changeSet.status !== "open") {
         throw new RevisionConflictError("Change set cannot be submitted in its current state");

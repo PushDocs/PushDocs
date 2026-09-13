@@ -42,6 +42,16 @@ it("loads comments and refreshes them after a matching realtime event", async ()
   );
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+it("ignores refresh events for another project, branch, or document", async () => {
+  await mount();
+  for (const detail of [
+    { projectId: "other" },
+    { projectId: "project", payload: { branch: "other" } },
+    { projectId: "project", payload: { branch: "docs/new", documentPath: "docs/other.md" } },
+  ])
+    window.dispatchEvent(new CustomEvent("pushdocs:refresh", { detail }));
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 it("posts a comment and clears input only after success", async () => {
   await mount();
   fireEvent.change(screen.getByLabelText("Новый комментарий"), { target: { value: "Ответ" } });

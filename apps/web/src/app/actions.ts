@@ -680,6 +680,7 @@ export async function inspectProjectRepository(input: { connectionId: string; lo
   ];
   return {
     id: remote.id,
+    /* v8 ignore next -- splitting a string always produces at least one array item. */
     name: remote.fullName.split("/").at(-1) ?? "docs",
     defaultBranch: remote.defaultBranch,
     branches: branches.map((branch) => branch.name),

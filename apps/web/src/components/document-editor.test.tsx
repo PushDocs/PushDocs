@@ -198,4 +198,12 @@ describe("DocumentEditor autosave", () => {
     await runAutosave();
     expect(mocks.saveDraftAction).not.toHaveBeenCalled();
   });
+
+  it("settles the internal save queue when saving rejects", async () => {
+    mocks.saveDraftAction.mockRejectedValueOnce(new Error("offline"));
+    render(<DocumentEditor {...defaultProps} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "First" } });
+    await expect(runAutosave()).rejects.toThrow("offline");
+    expect(mocks.saveDraftAction).toHaveBeenCalledOnce();
+  });
 });

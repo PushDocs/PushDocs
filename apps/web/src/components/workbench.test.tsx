@@ -428,6 +428,7 @@ it("keeps MDX bytes on open and exposes technical files without filters", async 
 it("loads the selected file body on demand without reloading the whole workbench", async () => {
   if (!state.files[1]) throw new Error("Missing fixture");
   state.files[1] = { ...state.files[1], content: "", baseContent: "", loaded: false };
+  state.repositoryPaths.push("src/bad.ts");
   const original = vi.mocked(fetch).getMockImplementation();
   vi.mocked(fetch).mockImplementation(async (url, options) => {
     if (String(url).includes("path=docs%2Fb.md"))
@@ -742,7 +743,7 @@ it("avoids full workbench polling and reports a failed background status refresh
     vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/workbench?")),
   ).toHaveLength(0);
   await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
   });
   expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
   expect(screen.getByText("Изменения получены из Git")).toBeTruthy();
@@ -833,7 +834,7 @@ it("keeps a failed operation visible and handles failed reload, sync and events"
   expect(screen.getByRole("alert").textContent).toContain("Нет связи с сервером");
   mocks.start.mockRejectedValueOnce(new Error("sync failed"));
   await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
   });
   expect(screen.getByRole("alert").textContent).toContain("sync failed");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("offline"));
@@ -1076,4 +1077,376 @@ it("saves the open draft before a dropped article and reveals its branch change"
   expect((screen.getByLabelText("Исходник документа") as HTMLTextAreaElement).value).toBe(
     "# My draft",
   );
+});
+
+it("reports unavailable browser storage and can discard its recovery copy", async () => {
+  writeDraft(draftKey("project", "main", "docs/a.mdx"), "Recovered", "# Первый\n<Widget />");
+  mount();
+  await click("Удалить резервную копию");
+  expect(readDraft(draftKey("project", "main", "docs/a.mdx"))).toBeUndefined();
+
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Unsaved" } });
+  expect(screen.getByText(/Не удалось сохранить резервную копию/)).toBeTruthy();
+  await click("Закрыть");
+  expect(screen.queryByText(/Не удалось сохранить резервную копию/)).toBeNull();
+  storage.mockRestore();
+});
+
+it("filters unrelated refresh events and refreshes status when the tab becomes visible", async () => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  mount();
+  await act(async () => {});
+  const calls = vi.mocked(fetch).mock.calls.length;
+  window.dispatchEvent(new CustomEvent("pushdocs:refresh", { detail: { projectId: "other" } }));
+  window.dispatchEvent(
+    new CustomEvent("pushdocs:refresh", { detail: { payload: { branch: "other" } } }),
+  );
+  window.dispatchEvent(
+    new CustomEvent("pushdocs:refresh", {
+      detail: { type: "files.staged", revision: 0 },
+    }),
+  );
+  expect(vi.mocked(fetch).mock.calls).toHaveLength(calls);
+  document.dispatchEvent(new Event("visibilitychange"));
+  await act(async () => {});
+  expect(
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("file-statuses")),
+  ).toHaveLength(2);
+});
+
+it("loads the initially selected lazy file and rejects malformed file responses", async () => {
+  if (!state.files[1]) throw new Error("Missing fixture");
+  state.files[1] = { ...state.files[1], content: "", baseContent: "", loaded: false };
+  state.repositoryPaths.push("src/bad.ts");
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("path=docs%2Fb.md"))
+      return Response.json({
+        content: "# Lazy",
+        file: { ...state.files[1], content: "# Lazy", baseContent: "# Lazy", loaded: true },
+      });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="docs/b.md"
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Lazy");
+
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ content: 42 }));
+  await click("src");
+  await click("bad.ts");
+  expect(screen.getByRole("alert").textContent).toContain("Не удалось прочитать файл");
+});
+
+it("handles file actions, invalid renames, and navigator clipboard failures", async () => {
+  const clipboard = vi.fn().mockRejectedValue(new Error("denied"));
+  vi.stubGlobal("navigator", { clipboard: { writeText: clipboard } });
+  mount();
+  fireEvent.contextMenu(screen.getByRole("treeitem", { name: "a.mdx" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Копировать путь" })));
+  expect(screen.getByText("Путь файла: docs/a.mdx")).toBeTruthy();
+  await click("Закрыть");
+
+  await act(async () => fireEvent.contextMenu(screen.getByRole("treeitem", { name: "a.mdx" })));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Переименовать" })));
+  fireEvent.change(screen.getByLabelText("Имя файла"), { target: { value: "nested/name.mdx" } });
+  await click("Применить");
+  expect(screen.getByRole("alert").textContent).toContain("без пути");
+  fireEvent.change(screen.getByLabelText("Имя файла"), { target: { value: "a.mdx" } });
+  await click("Применить");
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: /Найти файл/ })));
+  expect(document.activeElement).toBe(screen.getByLabelText("Поиск файлов"));
+  fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  await click("Закрыть");
+});
+
+it("resizes the explorer with pointer controls", () => {
+  mount();
+  const separator = screen.getByRole("separator", { name: "Ширина проводника" });
+  const captured = new Set<number>();
+  separator.setPointerCapture = (id) => captured.add(id);
+  separator.hasPointerCapture = (id) => captured.has(id);
+  separator.releasePointerCapture = (id) => captured.delete(id);
+  vi.spyOn(separator.parentElement as HTMLElement, "getBoundingClientRect").mockReturnValue({
+    left: 20,
+  } as DOMRect);
+  fireEvent.keyDown(separator, { key: "Enter" });
+  const pointer = (type: string, pointerId: number, clientX = 0) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperties(event, {
+      pointerId: { value: pointerId },
+      clientX: { value: clientX },
+    });
+    fireEvent(separator, event);
+  };
+  pointer("pointerdown", 7);
+  pointer("pointermove", 7, 470);
+  expect(separator.getAttribute("aria-valuenow")).toBe("450");
+  pointer("pointerup", 7);
+  pointer("pointermove", 7, 500);
+  expect(separator.getAttribute("aria-valuenow")).toBe("450");
+});
+
+it("shows failed and pending Git imports", async () => {
+  mount();
+  mocks.status.mockResolvedValueOnce({ status: "failed" });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
+  });
+  expect(screen.getByRole("alert").textContent).toContain("Не удалось получить изменения");
+
+  mocks.status
+    .mockResolvedValueOnce({ status: "queued" })
+    .mockResolvedValueOnce({ status: "done" });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
+  });
+  await tick(2000);
+  expect(screen.getByText("Изменения получены из Git")).toBeTruthy();
+});
+
+it("copies and replaces an uploaded attachment", async () => {
+  state.repositoryPaths = ["static/img/logo.png"];
+  state.uploads = [{ path: "static/img/logo.png" }];
+  const clipboard = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { clipboard: { writeText: clipboard } });
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("/media?"))
+      return Response.json({
+        assets: [],
+        revision: 0,
+        role: "editor",
+        status: "open",
+        locale: "ru",
+      });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="static/img/logo.png"
+    />,
+  );
+  await click("Копировать ссылку");
+  expect(clipboard).toHaveBeenCalled();
+  expect(screen.getByText("Ссылка скопирована")).toBeTruthy();
+  await click("Заменить файл");
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
+it("reports invalid media configuration and an unsuccessful Git status response", async () => {
+  state.config.media = { directory: "../{name}", publicUrl: "pathname:///img" };
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("file-statuses"))
+      return Response.json({ error: "comparison failed" }, { status: 500 });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  mount();
+  await act(async () => {});
+  expect(screen.getByLabelText(/Не удалось получить изменения из Git/)).toBeTruthy();
+});
+
+it.each([
+  ["failed.md", { error: "read failed" }, 500, "read failed"],
+  ["malformed.md", { content: 42 }, 200, "Не удалось прочитать файл"],
+] as const)("reports a failed initial lazy load for %s", async (path, body, status, message) => {
+  state.repositoryPaths = [path];
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes(`path=${encodeURIComponent(path)}`))
+      return Response.json(body, { status });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath={path}
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain(message);
+});
+
+it("loads a repository-only text file and ignores its late response after unmount", async () => {
+  state.repositoryPaths = ["raw.md"];
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("path=raw.md")) return Response.json({ content: "# Raw" });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  const loaded = render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="raw.md"
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Raw");
+  loaded.unmount();
+
+  let release: ((response: Response) => void) | undefined;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("path=raw.md"))
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  const late = render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="raw.md"
+    />,
+  );
+  await act(async () => {});
+  late.unmount();
+  await act(async () => release?.(Response.json({ content: "late" })));
+});
+
+it("keeps the current dialog when the quick-open shortcut is pressed", async () => {
+  mount();
+  await click("Новая папка");
+  expect(screen.getByRole("dialog").textContent).toContain("Новая папка");
+  fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+  expect(screen.getByRole("dialog").textContent).toContain("Новая папка");
+});
+
+it("requires a successful save before mutating files or creating a branch", async () => {
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Dirty" } });
+  await click("Удалить документ");
+  vi.mocked(fetch).mockRejectedValueOnce(new Error("save failed"));
+  await click("Применить");
+  expect(screen.getByRole("alert").textContent).toContain("Нет связи");
+  expect(requests).toHaveLength(0);
+
+  cleanup();
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Dirty" } });
+  await click("Новая ветка");
+  vi.mocked(fetch).mockRejectedValueOnce(new Error("save failed"));
+  const branchForm = screen.getByRole("dialog").querySelector("form");
+  expect(branchForm).toBeTruthy();
+  await act(async () => fireEvent.submit(branchForm as HTMLFormElement));
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("enters merge mode when retry finds a third version", async () => {
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Local" } });
+  vi.mocked(fetch).mockRejectedValueOnce(new Error("offline"));
+  await tick();
+  if (!state.files[0]) throw new Error("Missing fixture");
+  state.files[0].content = "Remote";
+  await click("Повторить сохранение");
+  expect(screen.getByText("Автосохранение остановлено")).toBeTruthy();
+});
+
+it("renders reader, submitting, and empty workbench states", async () => {
+  state.role = "reader";
+  mount();
+  expect(screen.getByText(/роль читателя/)).toBeTruthy();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
+  cleanup();
+
+  state.role = "editor";
+  state.status = "submitting";
+  mount();
+  expect(screen.getByText(/после завершения отправки/)).toBeTruthy();
+  cleanup();
+
+  state.status = "open";
+  state.files = [];
+  state.repositoryPaths = [];
+  mount();
+  expect(screen.getByRole("heading", { name: "Выберите или создайте документ" })).toBeTruthy();
+});
+
+it("renders local and remote deletions plus an uploaded non-image", async () => {
+  if (!state.files[0]) throw new Error("Missing fixture");
+  state.files[0].status = "delete";
+  mount();
+  expect(screen.getByText(/будет удалён при отправке/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "Изменения" }));
+  expect(screen.getByRole("region", { name: "Сравнение изменений" })).toBeTruthy();
+  cleanup();
+
+  state.files = [];
+  state.repositoryPaths = ["remote.md"];
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("file-statuses"))
+      return Response.json({ sha: "12345678", statuses: { "remote.md": "delete" } });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="remote.md"
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByText("Файл удалён в этой ветке.")).toBeTruthy();
+  cleanup();
+
+  state.files = [
+    {
+      path: "docs/a.md",
+      title: "A",
+      content: "# A",
+      baseContent: "# A",
+      locale: "ru",
+      version: "current",
+      status: "clean",
+    },
+  ];
+  state.repositoryPaths = [];
+  state.uploads = [{ path: "static/img/manual.pdf" }];
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="static/img/manual.pdf"
+    />,
+  );
+  expect(screen.getByText("Скачать файл").getAttribute("href")).toContain("/assets?");
 });

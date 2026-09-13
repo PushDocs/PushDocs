@@ -26,6 +26,7 @@ export function ChangeFileList({
 
   useEffect(() => {
     const list = listRef.current;
+    /* v8 ignore next -- the effect only runs after React attaches this rendered list ref. */
     if (!list) return;
     const measure = () => setViewport({ height: list.clientHeight || 480, top: list.scrollTop });
     measure();

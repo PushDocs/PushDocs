@@ -30,6 +30,25 @@ it("restores cursor and both scroll offsets separately for each file", () => {
   expect(props.inputRef.current?.scrollLeft).toBe(80);
   expect(screen.getByTestId("source-highlight").style.transform).toBe("translate(-80px, -48px)");
 });
+it("uses safe cursor and scroll defaults for an older empty position", () => {
+  sessionStorage.setItem("empty-position", JSON.stringify({}));
+  const ref = createRef<HTMLTextAreaElement>();
+  render(
+    <SourceEditor
+      value="Text"
+      onChange={vi.fn()}
+      onSave={vi.fn()}
+      onIndent={vi.fn()}
+      readOnly={false}
+      inputRef={ref}
+      storageKey="empty-position"
+    />,
+  );
+  expect(ref.current?.selectionStart).toBe(0);
+  expect(ref.current?.selectionEnd).toBe(0);
+  expect(ref.current?.scrollTop).toBe(0);
+  expect(ref.current?.scrollLeft).toBe(0);
+});
 it("focuses the requested original source line", () => {
   const ref = createRef<HTMLTextAreaElement>();
   render(

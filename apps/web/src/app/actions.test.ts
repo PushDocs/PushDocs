@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
     cookieSet: vi.fn(),
     createOpaqueToken: vi.fn(() => ({ hash: "invitation-hash", token: "invitation-token-value" })),
     createProvider: vi.fn(),
+    clearVpnAccess: vi.fn(),
     decryptSecret: vi.fn((value: string) => `decrypted:${value}`),
     encryptSecret: vi.fn((value: string) => `encrypted:${value}`),
     hashInvitationToken: vi.fn((value: string) => `invitation:${value}`),
@@ -123,6 +124,10 @@ vi.mock("@pushdocs/providers", () => ({
   createProvider: mocks.createProvider,
   normalizeRepositoryLocator: mocks.normalizeRepositoryLocator,
 }));
+vi.mock("@pushdocs/vpn", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pushdocs/vpn")>()),
+  clearVpnAccess: mocks.clearVpnAccess,
+}));
 vi.mock("@/lib/provider", () => ({ providerForConnection: mocks.providerForConnection }));
 vi.mock("@/lib/server", () => ({
   actor: mocks.actor,
@@ -162,6 +167,7 @@ import {
   startGitOperationAction,
   submitChangeSetAction,
   synchronizeBranchAction,
+  twoFactorStatusAction,
   updateConnectionAction,
   updateProjectAction,
   uploadAttachmentAction,
@@ -207,6 +213,7 @@ beforeEach(() => {
   mocks.requireUser.mockResolvedValue(mocks.user);
   mocks.argonHash.mockResolvedValue("password-hash");
   mocks.argonVerify.mockResolvedValue(true);
+  mocks.clearVpnAccess.mockResolvedValue(undefined);
   mocks.repo.takeAuthAttempt.mockResolvedValue(true);
   mocks.repo.consumeTotp.mockResolvedValue(true);
   mocks.repo.getSecurityUser.mockResolvedValue({
@@ -332,6 +339,108 @@ describe("authentication actions", () => {
 });
 
 describe("two-factor actions", () => {
+  it("redirects an already verified session and completes a fresh setup", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "pending" });
+    mocks.repo.getAuthenticationSession.mockResolvedValueOnce({ id: "user", purpose: "full" });
+    await expect(verifyTwoFactorAction(form({ otp: "123456" }))).rejects.toThrow(
+      "REDIRECT:/settings/profile",
+    );
+
+    mocks.repo.getAuthenticationSession.mockResolvedValueOnce({ id: "user", purpose: "mfa" });
+    mocks.repo.getSecurityUser.mockResolvedValueOnce({
+      id: "user",
+      password_hash: "hash",
+      totp_secret: null,
+    });
+    await expect(beginTwoFactorAction(form({ password: "correct" }))).rejects.toThrow(
+      "REDIRECT:/two-factor",
+    );
+    expect(mocks.repo.beginTotpSetup).toHaveBeenCalledWith("user");
+  });
+
+  it("does not start setup when the verified user already has a secret", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "verified" });
+    mocks.repo.getAuthenticationSession.mockResolvedValue({ id: "user", purpose: "full" });
+    mocks.repo.getSecurityUser.mockResolvedValue({
+      id: "user",
+      password_hash: "hash",
+      totp_secret: "encrypted-secret",
+    });
+    await expect(beginTwoFactorAction(form({ password: "correct" }))).rejects.toThrow(
+      "REDIRECT:/settings/profile",
+    );
+    expect(mocks.repo.beginTotpSetup).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe password changes and concurrent updates", async () => {
+    await expect(
+      changePasswordAction(form({ password: "old", newPassword: "short", otp: "123456" })),
+    ).rejects.toThrow("от 12 до 200");
+    mocks.argonVerify.mockResolvedValueOnce(false);
+    await expect(
+      changePasswordAction(
+        form({ password: "wrong", newPassword: "a secure new password", otp: "123456" }),
+      ),
+    ).rejects.toThrow("Текущий пароль неверен");
+    mocks.repo.changePassword.mockResolvedValueOnce(false);
+    await expect(
+      changePasswordAction(
+        form({ password: "old", newPassword: "a secure new password", otp: "123456" }),
+      ),
+    ).rejects.toThrow("Пароль уже изменён");
+  });
+
+  it("normalizes critical form failures and rejects unknown actions", async () => {
+    await expect(criticalSettingsAction("unknown", form({}))).rejects.toThrow(
+      "Unknown settings action",
+    );
+    mocks.app.updateProject.mockResolvedValueOnce(undefined);
+    mocks.repo.getProjectSettings.mockResolvedValueOnce({
+      default_branch: "main",
+      root_path: ".",
+    });
+    await expect(
+      criticalSettingsAction(
+        "updateProject",
+        form({
+          defaultBranch: "main",
+          name: "Docs",
+          projectId,
+          rootPath: ".",
+          slug: "docs",
+          otp: "123456",
+        }),
+      ),
+    ).resolves.toEqual({});
+    mocks.repo.manageMember.mockRejectedValueOnce(
+      new Error("Нельзя удалить или понизить роль последнего администратора"),
+    );
+    await expect(
+      criticalSettingsAction(
+        "manageMember",
+        form({ projectId, userId: connectionId, role: "remove", otp: "123456" }),
+      ),
+    ).resolves.toEqual({ error: "Нельзя удалить или понизить роль последнего администратора" });
+    mocks.app.updateProject.mockRejectedValueOnce(new Error("database failed"));
+    mocks.repo.getProjectSettings.mockResolvedValueOnce({
+      default_branch: "main",
+      root_path: ".",
+    });
+    await expect(
+      criticalSettingsAction(
+        "updateProject",
+        form({
+          defaultBranch: "main",
+          name: "Docs",
+          projectId,
+          rootPath: ".",
+          slug: "docs",
+          otp: "123456",
+        }),
+      ),
+    ).rejects.toThrow("database failed");
+  });
+
   it("does not grant a full session after password authentication", async () => {
     mocks.repo.findUserByEmail.mockResolvedValue({
       id: "user",
@@ -422,6 +531,28 @@ describe("two-factor actions", () => {
     expect(mocks.repo.beginTotpSetup).not.toHaveBeenCalled();
   });
 
+  it("normalizes omitted verification fields and redirects an MFA session locally", async () => {
+    mocks.cookieGet.mockReturnValue({ value: "pending" });
+    mocks.repo.consumeTotp.mockResolvedValueOnce(false);
+    await expect(verifyTwoFactorAction(form({}))).rejects.toThrow(
+      "REDIRECT:/two-factor?error=code",
+    );
+    expect(mocks.repo.consumeTotp).toHaveBeenCalledWith("user", "", false);
+
+    mocks.argonVerify.mockResolvedValueOnce(false);
+    await expect(beginTwoFactorAction(form({}))).rejects.toThrow(
+      "REDIRECT:/two-factor?error=password",
+    );
+    expect(mocks.argonVerify).toHaveBeenCalledWith("hash", "");
+
+    await expect(changePasswordAction(form({}))).rejects.toThrow("от 12 до 200");
+    mocks.argonVerify.mockResolvedValueOnce(false);
+    await expect(
+      changePasswordAction(form({ newPassword: "a secure new password" })),
+    ).rejects.toThrow("Текущий пароль неверен");
+    expect(mocks.argonVerify).toHaveBeenLastCalledWith("hash", "");
+  });
+
   it.each([
     createConnectionAction,
     updateConnectionAction,
@@ -479,6 +610,28 @@ describe("two-factor actions", () => {
 });
 
 describe("installation actions", () => {
+  it("rejects invalid VPN uploads and incompatible providers", async () => {
+    const values = {
+      baseUrl: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      token: "plain-token",
+    };
+    await expect(
+      createConnectionAction(form({ ...values, vpnProfile: new File([vpnProfile], "client.txt") })),
+    ).rejects.toThrow("VPN_PROFILE_INVALID_FILE");
+    await expect(
+      createConnectionAction(
+        form({
+          ...values,
+          kind: "github",
+          baseUrl: "https://github.com",
+          vpnProfile: new File([vpnProfile], "client.ovpn"),
+        }),
+      ),
+    ).rejects.toThrow("VPN_REQUIRES_HTTPS_GITLAB");
+  });
+
   it("encrypts provider credentials before storage", async () => {
     await createConnectionAction(
       form({
@@ -498,6 +651,21 @@ describe("installation actions", () => {
       },
     );
     expect(mocks.revalidatePath).toHaveBeenCalledWith("/settings/connections");
+  });
+
+  it("refreshes a project-scoped connection page after creation", async () => {
+    await createConnectionAction(
+      form({
+        baseUrl: "https://gitlab.test",
+        kind: "gitlab",
+        name: "GitLab",
+        projectId,
+        token: "plain-token",
+      }),
+    );
+    expect(mocks.revalidatePath).toHaveBeenCalledWith(
+      `/projects/${projectId}/settings/connections`,
+    );
   });
 
   it("validates and encrypts an uploaded OpenVPN profile", async () => {
@@ -652,6 +820,151 @@ describe("installation actions", () => {
     );
   });
 
+  it("revalidates a new base URL with the stored token", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    mocks.repo.listConnectionRepositories.mockResolvedValueOnce([]);
+    await updateConnectionAction(
+      form({ baseUrl: "https://new-gitlab.test", connectionId, name: "GitLab" }),
+    );
+    expect(mocks.providerForConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ secret_encrypted: "encrypted:old" }),
+    );
+  });
+
+  it("encrypts a replacement VPN profile", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    await updateConnectionAction(
+      form({
+        baseUrl: "https://gitlab.test",
+        connectionId,
+        name: "GitLab",
+        vpnProfile: new File([vpnProfile], "client.ovpn"),
+      }),
+    );
+    expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ vpnProfileEncrypted: expect.stringContaining("encrypted:client") }),
+    );
+  });
+
+  it("validates connection replacement edge cases and project-scoped refreshes", async () => {
+    const current = {
+      id: connectionId,
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+      vpn_slot: 2,
+    };
+    mocks.repo.getConnection.mockResolvedValue(undefined);
+    await expect(
+      updateConnectionAction(form({ baseUrl: current.base_url, connectionId, name: current.name })),
+    ).rejects.toThrow("CONNECTION_NOT_FOUND");
+
+    mocks.repo.getConnection.mockResolvedValue(current);
+    await expect(
+      updateConnectionAction(
+        form({
+          baseUrl: "http://gitlab.test",
+          connectionId,
+          name: current.name,
+          vpnProfile: new File([vpnProfile], "client.ovpn"),
+        }),
+      ),
+    ).rejects.toThrow("VPN_REQUIRES_HTTPS_GITLAB");
+    await expect(
+      updateConnectionAction(
+        form({
+          baseUrl: current.base_url,
+          connectionId,
+          name: current.name,
+          removeVpn: "on",
+          vpnProfile: new File([vpnProfile], "client.ovpn"),
+        }),
+      ),
+    ).rejects.toThrow("VPN_PROFILE_CHANGE_CONFLICT");
+
+    mocks.clearVpnAccess.mockRejectedValueOnce(new Error("already cleared"));
+    await updateConnectionAction(
+      form({
+        baseUrl: current.base_url,
+        connectionId,
+        name: current.name,
+        projectId,
+        removeVpn: "on",
+      }),
+    );
+    expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ vpnProfileEncrypted: null }),
+    );
+    expect(mocks.revalidatePath).toHaveBeenCalledWith(
+      `/projects/${projectId}/settings/connections`,
+    );
+  });
+
+  it("maps every safe connection settings result", async () => {
+    const input = (extra: Record<string, string | File> = {}) =>
+      form({ baseUrl: "https://gitlab.test", connectionId, name: "GitLab", ...extra });
+    mocks.requireOperator.mockRejectedValueOnce("bad input");
+    await expect(saveConnectionSettingsAction(input())).resolves.toEqual({
+      ok: false,
+      message: "Не удалось сохранить настройки. Повторите попытку.",
+    });
+    mocks.repo.getConnection.mockResolvedValueOnce(undefined);
+    await expect(saveConnectionSettingsAction(input())).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("не найдено"),
+    });
+    mocks.repo.getConnection.mockResolvedValue({
+      id: connectionId,
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      name: "GitLab",
+      secret_encrypted: "encrypted:old",
+    });
+    await expect(
+      saveConnectionSettingsAction(input({ vpnProfile: new File([vpnProfile], "client.txt") })),
+    ).resolves.toMatchObject({ ok: false, message: expect.stringContaining(".ovpn") });
+    await expect(
+      saveConnectionSettingsAction(
+        input({
+          removeVpn: "on",
+          vpnProfile: new File([vpnProfile], "client.ovpn"),
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, message: expect.stringContaining("одновременно") });
+    mocks.repo.listConnectionRepositories.mockRejectedValueOnce(new Error("unknown"));
+    await expect(saveConnectionSettingsAction(input())).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("Проверьте данные"),
+    });
+    await expect(saveConnectionSettingsAction(input())).resolves.toMatchObject({ ok: true });
+  });
+
+  it("returns the two-factor failure from connection settings", async () => {
+    mocks.repo.consumeTotp.mockResolvedValue(false);
+    await expect(
+      saveConnectionSettingsAction(
+        form({ baseUrl: "https://gitlab.test", connectionId, name: "GitLab", otp: "000000" }),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      message:
+        "Код 2FA неверен или уже использован. Введите новый код. После 10 попыток подождите 15 минут.",
+    });
+  });
+
   it("requires the connection name before deletion", async () => {
     mocks.repo.getConnection.mockResolvedValue({ name: "GitLab" });
     await expect(
@@ -662,6 +975,65 @@ describe("installation actions", () => {
       deleteConnectionAction(form({ confirmation: "GitLab", connectionId })),
     ).rejects.toThrow("REDIRECT:/settings/connections");
     expect(mocks.app.deleteConnection).toHaveBeenCalledWith(expect.anything(), connectionId);
+  });
+
+  it("handles missing connections and VPN cleanup failures during deletion", async () => {
+    mocks.repo.getConnection.mockResolvedValueOnce(undefined);
+    await expect(
+      deleteConnectionAction(form({ confirmation: "GitLab", connectionId })),
+    ).rejects.toThrow("CONNECTION_NOT_FOUND");
+    mocks.repo.getConnection.mockResolvedValueOnce({ name: "GitLab", vpn_slot: 3 });
+    mocks.clearVpnAccess.mockRejectedValueOnce(new Error("gone"));
+    await expect(
+      deleteConnectionAction(form({ confirmation: "GitLab", connectionId })),
+    ).rejects.toThrow("REDIRECT:/settings/connections");
+  });
+
+  it("rejects missing branches and validates changed project branches", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      id: connectionId,
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      secret_encrypted: "encrypted",
+    });
+    await expect(
+      createProjectAction(
+        form({
+          connectionId,
+          defaultBranch: "missing",
+          name: "Docs",
+          repositoryProviderId: "group/docs",
+          slug: "docs",
+        }),
+      ),
+    ).rejects.toThrow("DEFAULT_BRANCH_NOT_FOUND");
+
+    const update = form({
+      defaultBranch: "stable",
+      name: "Docs",
+      projectId,
+      rootPath: ".",
+      slug: "docs",
+    });
+    mocks.repo.getProjectSettings.mockResolvedValueOnce(undefined);
+    await expect(updateProjectAction(update)).rejects.toThrow("PROJECT_NOT_FOUND");
+    mocks.repo.getProjectSettings.mockResolvedValue({ default_branch: "main", root_path: "." });
+    mocks.repo.getProjectSyncTarget.mockResolvedValueOnce(undefined);
+    await expect(updateProjectAction(update)).rejects.toThrow("PROJECT_CONNECTION_NOT_FOUND");
+    mocks.repo.getProjectSyncTarget.mockResolvedValue({ provider_repository_id: "42" });
+    const provider = mocks.createProvider();
+    provider.listBranches.mockResolvedValueOnce([{ name: "main" }]);
+    mocks.providerForConnection.mockResolvedValueOnce(provider);
+    await expect(updateProjectAction(update)).rejects.toThrow("DEFAULT_BRANCH_NOT_FOUND");
+    await updateProjectAction(update);
+    expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "stable");
+  });
+
+  it("rejects deletion of a project that no longer exists", async () => {
+    mocks.repo.getProjectSettings.mockResolvedValue(undefined);
+    await expect(deleteProjectAction(form({ confirmation: "docs", projectId }))).rejects.toThrow(
+      "PROJECT_NOT_FOUND",
+    );
   });
 
   it("updates project settings and queues the configured branch", async () => {
@@ -817,6 +1189,16 @@ describe("document and review actions", () => {
     expect(mocks.repo.getProjectJob).toHaveBeenCalledWith(projectId, "job");
     mocks.repo.requireProjectAccess.mockRejectedValueOnce(new Error("denied"));
     await expect(gitOperationStatusAction(projectId, "job")).rejects.toThrow("denied");
+  });
+
+  it("rejects missing jobs and exposes whether 2FA is configured", async () => {
+    mocks.repo.getProjectJob.mockResolvedValue(undefined);
+    await expect(gitOperationStatusAction(projectId, "missing")).rejects.toThrow(
+      "Операция не найдена",
+    );
+    await expect(twoFactorStatusAction()).resolves.toBe(true);
+    mocks.repo.getSecurityUser.mockResolvedValueOnce(undefined);
+    await expect(twoFactorStatusAction()).resolves.toBe(false);
   });
 
   it("retries the existing submission using the signed-in actor", async () => {
@@ -1052,6 +1434,14 @@ it("inspects repository defaults without creating a project", async () => {
   });
   expect(mocks.app.createProject).not.toHaveBeenCalled();
 });
+it("recognizes a repository config stored at its root", async () => {
+  const provider = mocks.createProvider();
+  provider.listFiles.mockResolvedValueOnce(["docusaurus.config.js"]);
+  mocks.repo.getConnection.mockResolvedValue({ id: connectionId, kind: "gitlab" });
+  await expect(
+    inspectProjectRepository({ connectionId, locator: "group/docs" }),
+  ).resolves.toMatchObject({ roots: ["."] });
+});
 it("requires an operator before inspecting remote repository data", async () => {
   mocks.requireOperator.mockRejectedValueOnce(new Error("denied"));
   await expect(inspectProjectRepository({ connectionId, locator: "group/docs" })).rejects.toThrow(
@@ -1077,4 +1467,32 @@ it("requires 2FA before changing access or revoking invitations", async () => {
   await expect(revokeInvitationAction(input)).rejects.toThrow();
   expect(mocks.repo.manageMember).not.toHaveBeenCalled();
   expect(mocks.repo.revokeInvitation).not.toHaveBeenCalled();
+});
+
+it("updates member roles, removes the current user, and revokes invitations", async () => {
+  await manageMemberAction(
+    form({ projectId, userId: connectionId, role: "editor", otp: "123456" }),
+  );
+  expect(mocks.repo.manageMember).toHaveBeenCalledWith({
+    actorId: "user",
+    projectId,
+    userId: connectionId,
+    role: "editor",
+  });
+  mocks.requireUser.mockResolvedValueOnce({ ...mocks.user, id: connectionId });
+  await expect(
+    manageMemberAction(form({ projectId, userId: connectionId, role: "remove", otp: "123456" })),
+  ).rejects.toThrow("REDIRECT:/projects");
+  expect(mocks.repo.manageMember).toHaveBeenLastCalledWith(
+    expect.objectContaining({ role: null, userId: connectionId }),
+  );
+  await revokeInvitationAction(form({ projectId, invitationId: connectionId, otp: "123456" }));
+  expect(mocks.repo.revokeInvitation).toHaveBeenCalledWith("user", projectId, connectionId);
+});
+
+it("rejects repository inspection when the connection disappears", async () => {
+  mocks.repo.getConnection.mockResolvedValue(undefined);
+  await expect(inspectProjectRepository({ connectionId, locator: "group/docs" })).rejects.toThrow(
+    "Подключение не найдено",
+  );
 });

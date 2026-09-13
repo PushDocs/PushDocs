@@ -2126,3 +2126,384 @@ it("revokes only invitations in the permitted project", async () => {
   expect(await repository.listInvitations(fixture.projectId)).toHaveLength(0);
   expect(await repository.getInvitation("invite-test-hash")).toBeUndefined();
 });
+
+describe("repository edge projections", () => {
+  it("covers optional administration defaults, shared repositories, and unlocked job updates", async () => {
+    const fixture = await projectFixture();
+    await database
+      .updateTable("projects")
+      .set({ status: "attention" })
+      .where("id", "=", fixture.projectId)
+      .execute();
+    expect((await repository.listProjects(fixture.operatorId))[0]?.syncStatus).toBe("attention");
+    expect(
+      (await repository.getProjectForUser(fixture.operatorId, fixture.projectId))?.syncStatus,
+    ).toBe("attention");
+    const second = await repository.createProject({
+      connectionId: fixture.connectionId,
+      defaultBranch: "main",
+      name: "Second",
+      operatorUserId: fixture.operatorId,
+      repositoryFullName: "acme/docs",
+      repositoryProviderId: "42",
+      repositoryUrl: "https://gitlab.example.test/acme/docs.git",
+      rootPath: "",
+      slug: "second",
+    });
+    await repository.updateProject({
+      defaultBranch: "main",
+      name: "Second",
+      projectId: second.id,
+      rootPath: "",
+      slug: "second",
+    });
+    await repository.deleteProject(fixture.projectId);
+    expect(await repository.getProjectSettings(second.id)).toBeTruthy();
+    const completed = await repository.enqueueReviewsSync(second.id);
+    await repository.completeJob(completed);
+    const failed = await repository.enqueueReviewsSync(second.id);
+    await repository.failJob(failed, "failed", false);
+  });
+
+  it("projects draft-only, deleted, localized, and imported working files", async () => {
+    const fixture = await synchronizedProject();
+    await repository.stageFiles({
+      branch: "main",
+      expectedRevision: 0,
+      files: [
+        { path: "docs/intro.md", content: null },
+        { path: "i18n/fr/new.md", content: "Body without heading" },
+      ],
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    const changed = await repository.listChangedWorkingFiles(fixture.projectId, "main");
+    expect(changed.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "docs/intro.md", content: "" }),
+        expect.objectContaining({ path: "i18n/fr/new.md", locale: "fr" }),
+      ]),
+    );
+    await expect(
+      repository.getWorkingFile(fixture.projectId, "main", "i18n/fr/new.md"),
+    ).resolves.toMatchObject({
+      baseContent: "",
+      locale: "fr",
+      status: "add",
+      title: "new",
+      version: "current",
+    });
+    await repository.stageFiles({
+      branch: "main",
+      expectedRevision: 1,
+      files: [{ path: "i18n/fr/new.md", revert: true }],
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await expect(
+      repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"),
+    ).resolves.toMatchObject({ content: "", baseContent: "# Intro\n", status: "delete" });
+  });
+
+  it("allocates every VPN slot and rejects connections beyond the limit", async () => {
+    const plain = await repository.createConnection({
+      baseUrl: "https://plain.test",
+      kind: "gitlab",
+      name: "Plain",
+      secretEncrypted: "secret",
+    });
+    await repository.updateConnection({
+      baseUrl: "https://plain.test",
+      connectionId: plain.id,
+      name: "Plain",
+      vpnProfileEncrypted: "profile",
+    });
+    for (let slot = 2; slot <= 4; slot++) {
+      const connection = await repository.createConnection({
+        baseUrl: `https://vpn-${slot}.test`,
+        kind: "gitlab",
+        name: `VPN ${slot}`,
+        secretEncrypted: "secret",
+        vpnProfileEncrypted: "profile",
+      });
+      expect((await repository.getConnection(connection.id))?.vpn_slot).toBe(slot);
+    }
+    await expect(
+      repository.createConnection({
+        baseUrl: "https://vpn-5.test",
+        kind: "gitlab",
+        name: "VPN 5",
+        secretEncrypted: "secret",
+        vpnProfileEncrypted: "profile",
+      }),
+    ).rejects.toThrow("VPN_CONNECTION_LIMIT");
+    const another = await repository.createConnection({
+      baseUrl: "https://another.test",
+      kind: "gitlab",
+      name: "Another",
+      secretEncrypted: "secret",
+    });
+    await expect(
+      repository.updateConnection({
+        baseUrl: "https://another.test",
+        connectionId: another.id,
+        name: "Another",
+        vpnProfileEncrypted: "profile",
+      }),
+    ).rejects.toThrow("VPN_CONNECTION_LIMIT");
+  });
+
+  it("reports missing administration targets", async () => {
+    const missing = randomUUID();
+    await expect(
+      repository.updateConnection({
+        baseUrl: "https://missing.test",
+        connectionId: missing,
+        name: "Missing",
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(repository.deleteConnection(missing)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      repository.updateProject({
+        defaultBranch: "main",
+        name: "Missing",
+        projectId: missing,
+        rootPath: ".",
+        slug: "missing",
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(repository.deleteProject(missing)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("returns empty working projections and queues review synchronization", async () => {
+    const fixture = await synchronizedProject();
+    await expect(
+      repository.listChangedWorkingFiles(fixture.projectId, "main"),
+    ).resolves.toMatchObject({
+      changeSet: undefined,
+      files: [],
+    });
+    await expect(
+      repository.getWorkingFile(fixture.projectId, "main", "docs/missing.md"),
+    ).resolves.toBeUndefined();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Temporary",
+      expectedRevision: 0,
+      path: "docs/temporary.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.stageFiles({
+      branch: "main",
+      expectedRevision: 1,
+      files: [{ path: "docs/temporary.md", revert: true }],
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await expect(
+      repository.listChangedWorkingFiles(fixture.projectId, "main"),
+    ).resolves.toMatchObject({
+      changeSet: { id: draft.changeSetId },
+      files: [],
+    });
+    await expect(repository.enqueueReviewsSync(fixture.projectId)).resolves.toEqual(
+      expect.any(String),
+    );
+    await expect(
+      repository.getSubmissionStatus(fixture.projectId, "missing"),
+    ).resolves.toBeUndefined();
+    await expect(
+      repository.getSubmissionStatus(fixture.projectId, "main"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("finds open reviews and lists attachments by branch and change set", async () => {
+    const fixture = await synchronizedProject();
+    await repository.replaceChangeRequests(fixture.projectId, [
+      {
+        checks: [],
+        externalId: "review-1",
+        headSha: "head-2",
+        sourceBranch: "docs/update",
+        state: "open",
+        targetBranch: "main",
+        title: "Update",
+        url: "https://git.test/review/1",
+      },
+    ]);
+    await expect(
+      repository.findOpenChangeRequestByBranch(fixture.projectId, "docs/update"),
+    ).resolves.toMatchObject({ external_id: "review-1" });
+    await repository.recordAttachment({
+      branch: "main",
+      mediaType: "image/png",
+      originalName: "asset.png",
+      projectId: fixture.projectId,
+      repositoryPath: "static/asset.png",
+      sha256: "hash",
+      sizeBytes: 1,
+      storageKey: "stored/asset",
+    });
+    await expect(
+      repository.listAttachmentsForBranch(fixture.projectId, "main"),
+    ).resolves.toHaveLength(1);
+    await expect(
+      repository.listAttachmentsForChangeSet(
+        fixture.projectId,
+        (await repository.getBranchState(fixture.projectId, "main")).changeSet?.id ?? "",
+      ),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("validates submission branches, draft attachment collisions, and missing members", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# New",
+      expectedRevision: 0,
+      path: "docs/new.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.stageFiles({
+      branch: "main",
+      expectedRevision: 1,
+      files: [{ path: "docs/another.md", content: "# Another", createOnly: true }],
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await expect(
+      repository.recordAttachment({
+        branch: "main",
+        createOnly: true,
+        expectedRevision: 2,
+        mediaType: "image/png",
+        originalName: "nested.png",
+        projectId: fixture.projectId,
+        repositoryPath: "docs/new.md/nested.png",
+        sha256: "hash",
+        sizeBytes: 1,
+        storageKey: "stored/nested",
+      }),
+    ).rejects.toThrow("Путь уже занят");
+    await expect(
+      repository.queueChangeSetSubmission({
+        changeSetId: randomUUID(),
+        createReview: false,
+        message: "Missing",
+        projectId: fixture.projectId,
+        userId: fixture.operatorId,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      repository.queueChangeSetSubmission({
+        changeSetId: draft.changeSetId,
+        createReview: false,
+        message: "New branch",
+        newBranch: "docs/no-review",
+        projectId: fixture.projectId,
+        userId: fixture.operatorId,
+      }),
+    ).rejects.toThrow("требует создания");
+    await expect(
+      repository.manageMember({
+        actorId: randomUUID(),
+        projectId: fixture.projectId,
+        role: "reader",
+        userId: fixture.operatorId,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      repository.manageMember({
+        actorId: fixture.operatorId,
+        projectId: fixture.projectId,
+        role: "reader",
+        userId: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("blocks submission retries during uploads and for completed change sets", async () => {
+    const fixture = await synchronizedProject();
+    const draft = await repository.saveDraft({
+      baseCommitSha: "head-1",
+      branch: "main",
+      content: "# Edit",
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.queueChangeSetSubmission({
+      changeSetId: draft.changeSetId,
+      createReview: false,
+      message: "Edit",
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("kind", "=", "change-set.submit")
+      .executeTakeFirstOrThrow();
+    await repository.failJob(job.id, "failed", false);
+    const { branch } = await repository.getBranchState(fixture.projectId, "main");
+    await database
+      .insertInto("upload_leases")
+      .values({
+        branch_context_id: branch.id,
+        expires_at: new Date(Date.now() + 60_000),
+        project_id: fixture.projectId,
+      })
+      .execute();
+    await expect(
+      repository.retryChangeSetSubmission(draft.changeSetId, fixture.projectId, fixture.operatorId),
+    ).rejects.toThrow("загрузка");
+    await database
+      .deleteFrom("upload_leases")
+      .where("project_id", "=", fixture.projectId)
+      .execute();
+    await database
+      .updateTable("change_sets")
+      .set({ status: "submitted" })
+      .where("id", "=", draft.changeSetId)
+      .execute();
+    await expect(
+      repository.retryChangeSetSubmission(draft.changeSetId, fixture.projectId, fixture.operatorId),
+    ).rejects.toThrow("не ожидает повтора");
+  });
+
+  it("applies submitted deletions and ready attachment paths to the cached branch", async () => {
+    const fixture = await synchronizedProject();
+    const staged = await repository.stageFiles({
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: null }],
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+    });
+    await repository.recordAttachment({
+      branch: "main",
+      expectedRevision: 1,
+      mediaType: "image/png",
+      originalName: "asset.png",
+      projectId: fixture.projectId,
+      repositoryPath: "static/asset.png",
+      sha256: "hash",
+      sizeBytes: 1,
+      storageKey: "stored/asset",
+    });
+    await repository.markChangeSetSubmitted({
+      changeSetId: staged.changeSetId,
+      commitSha: "head-2",
+      commitUrl: "https://git.test/commit/head-2",
+      projectId: fixture.projectId,
+    });
+    const { branch } = await repository.getBranchState(fixture.projectId, "main");
+    expect(branch.repository_paths).not.toContain("docs/intro.md");
+    expect(branch.repository_paths).toContain("static/asset.png");
+  });
+});

@@ -7,7 +7,11 @@ vi.mock("@/app/actions", () => ({ createProjectComponentAction: mocks.save }));
 
 import { ComponentCatalog } from "./component-catalog";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  mocks.save.mockReset();
+});
 const props = {
   projectId: "project",
   branch: "stable",
@@ -76,4 +80,38 @@ it("shows where the template is used, previews edits and saves the template fiel
   expect(screen.getByRole("link", { name: "Открыть редактор" }).getAttribute("href")).toBe(
     "/projects/project/documents?branch=stable",
   );
+});
+
+it("copies insertion code, reports clipboard errors and closes the editor", async () => {
+  const writeText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error());
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  const { container } = render(<ComponentCatalog {...props} />);
+  const card = container.querySelector(".component-card") as HTMLDetailsElement;
+  card.open = true;
+  fireEvent(card, new Event("toggle"));
+  fireEvent.click(await screen.findByRole("button", { name: "Копировать" }));
+  expect(await screen.findByRole("button", { name: "Скопировано" })).toBeTruthy();
+  expect(writeText).toHaveBeenCalledWith(props.examples.RecentlyUpdatedArticlesIframe.snippet);
+  fireEvent.click(screen.getByRole("button", { name: "Скопировано" }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Изменить шаблон вставки" }));
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+  expect(screen.getByRole("heading", { name: "Пример вставки" })).toBeTruthy();
+});
+
+it("closes a new template form and reports save failures", async () => {
+  mocks.save.mockRejectedValue(new Error("offline"));
+  const { container } = render(<ComponentCatalog {...props} />);
+  const add = container.querySelector(".component-add") as HTMLDetailsElement;
+  add.open = true;
+  fireEvent(add, new Event("toggle"));
+  const form = await screen.findByRole("button", { name: "Сохранить шаблон" });
+  fireEvent.change(screen.getByLabelText("Название в меню"), { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("Код для вставки в статью"), {
+    target: { value: "<SupportLink />" },
+  });
+  fireEvent.submit(form.closest("form") as HTMLFormElement);
+  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось сохранить");
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+  expect(screen.queryByLabelText("Код для вставки в статью")).toBeNull();
 });

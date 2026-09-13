@@ -17,9 +17,10 @@ const props = {
 };
 it("offers a new branch and MR for drafts on the default branch", () => {
   render(<SubmitChanges {...props} />);
-  expect(screen.getByLabelText("Новая рабочая ветка").getAttribute("value")).toBe(
-    "docs/update-12345678",
-  );
+  const branch = screen.getByLabelText("Новая рабочая ветка");
+  expect(branch.getAttribute("value")).toBe("docs/update-12345678");
+  fireEvent.change(branch, { target: { value: "docs/custom" } });
+  expect(screen.getByText("docs/custom")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();
   fireEvent.click(screen.getByRole("checkbox"));
   expect(screen.queryByLabelText("Новая рабочая ветка")).toBeNull();

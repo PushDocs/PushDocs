@@ -152,6 +152,39 @@ it("renders component examples as collapsible content, tabs and video", () => {
   expect(container.querySelector("video")?.hasAttribute("controls")).toBe(true);
 });
 
+it("falls back for a Tabs wrapper without tab items and uses an explicit site preview", () => {
+  const view = render(preview("<Tabs>Plain child</Tabs>"));
+  expect(screen.getByText("Plain child")).toBeTruthy();
+  expect(screen.queryByRole("tablist")).toBeNull();
+  view.rerender(
+    <DocumentPreview
+      {...context}
+      source="<Custom />"
+      sitePreviewUrl="https://preview.example.test/docs/a"
+    />,
+  );
+  const link = screen.getByRole("link", { name: "Открыть предпросмотр сайта" });
+  expect(link.getAttribute("href")).toBe("https://preview.example.test/docs/a");
+  expect(link.getAttribute("target")).toBe("_blank");
+});
+
+it("supports keyboard navigation across preview tabs", () => {
+  render(
+    preview(
+      '<Tabs>\n<TabItem value="a" label="First">One</TabItem>\n<TabItem value="b" label="Second">Two</TabItem>\n</Tabs>',
+    ),
+  );
+  const first = screen.getByRole("tab", { name: "First" });
+  fireEvent.keyDown(first, { key: "ArrowRight" });
+  expect(screen.getByRole("tabpanel").textContent).toBe("Two");
+  expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Second" }));
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Second" }), { key: "ArrowLeft" });
+  fireEvent.keyDown(first, { key: "End" });
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Second" }), { key: "Home" });
+  fireEvent.keyDown(first, { key: "Escape" });
+  expect(screen.getByRole("tabpanel").textContent).toBe("One");
+});
+
 it("provides a branch-specific route to the real preview for unsupported components", () => {
   render(preview("<Custom />"));
   expect(

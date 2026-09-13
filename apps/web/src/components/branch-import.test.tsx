@@ -88,3 +88,60 @@ it("stops polling and offers a retry when loading times out", async () => {
   expect(mocks.status).toHaveBeenCalledTimes(count);
   expect(mocks.router.refresh).not.toHaveBeenCalled();
 });
+
+it("retries status errors but ignores late work after unmount", async () => {
+  vi.useFakeTimers();
+  let finishSync: ((job: string) => void) | undefined;
+  mocks.sync.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finishSync = resolve;
+      }),
+  );
+  const first = render(<BranchImport projectId="project" branch="late" />);
+  first.unmount();
+  await act(async () => finishSync?.("job"));
+  expect(mocks.status).not.toHaveBeenCalled();
+
+  mocks.sync.mockResolvedValue("job-2");
+  mocks.status.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ status: "running" });
+  render(<BranchImport projectId="project" branch="retry" />);
+  await act(async () => {});
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
+  expect(mocks.status).toHaveBeenCalledTimes(2);
+});
+
+it("shows a terminal job failure and ignores a late poll result after unmount", async () => {
+  mocks.sync.mockResolvedValue("failed-job");
+  mocks.status.mockResolvedValue({ status: "failed" });
+  const failed = render(<BranchImport projectId="project" branch="failed" />);
+  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось загрузить ветку");
+  failed.unmount();
+
+  let finish: ((value: { status: "done" }) => void) | undefined;
+  mocks.status.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const late = render(<BranchImport projectId="project" branch="late-status" />);
+  await act(async () => {});
+  late.unmount();
+  await act(async () => finish?.({ status: "done" }));
+  expect(mocks.router.refresh).not.toHaveBeenCalled();
+
+  let rejectStatus: ((error: Error) => void) | undefined;
+  mocks.status.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStatus = reject)));
+  const statusFailure = render(<BranchImport projectId="project" branch="late-failure" />);
+  await act(async () => {});
+  statusFailure.unmount();
+  await act(async () => rejectStatus?.(new Error("late")));
+
+  let rejectSync: ((error: Error) => void) | undefined;
+  mocks.sync.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSync = reject)));
+  const syncFailure = render(<BranchImport projectId="project" branch="late-start" />);
+  syncFailure.unmount();
+  await act(async () => rejectSync?.(new Error("late")));
+});

@@ -187,6 +187,32 @@ describe("branch and review synchronization", () => {
     expect(client.readFile).toHaveBeenCalledTimes(2);
   });
 
+  it("imports an editable repository rooted below the repository top level", async () => {
+    const port = repository();
+    const client = provider();
+    const rooted = { ...syncTarget, root_path: "site" };
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(rooted as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "main", sha: "head" }]);
+    vi.mocked(client.listFiles).mockResolvedValue([
+      "README.md",
+      "site/.pushdocs/config.json",
+      "site/custom.json",
+    ]);
+    vi.mocked(client.readFile)
+      .mockResolvedValueOnce('{"version":1,"editableFiles":["custom.json"]}')
+      .mockResolvedValueOnce('{"custom":true}');
+    await createWorkerService({ repository: port }).synchronizeBranch("project", "main", client);
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "main",
+      "head",
+      expect.arrayContaining([
+        expect.objectContaining({ path: "custom.json", title: "custom.json" }),
+      ]),
+      [".pushdocs/config.json", "custom.json"],
+    );
+  });
+
   it("loads large branches in bounded batches", async () => {
     const port = repository();
     const client = provider();
@@ -1096,5 +1122,149 @@ describe("job execution and review polling", () => {
     }).synchronizeActiveReviews();
     expect(port.replaceChangeRequests).toHaveBeenCalledWith("one", []);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("database unavailable"));
+  });
+
+  it("synchronizes closed reviews without checks and logs non-Error polling failures", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.listActiveProjectIds).mockResolvedValue(["closed", "broken"]);
+    vi.mocked(port.getProjectSyncTarget)
+      .mockResolvedValueOnce(syncTarget as never)
+      .mockRejectedValueOnce("offline");
+    vi.mocked(client.listChangeRequests).mockResolvedValue([
+      {
+        id: "closed-review",
+        sourceBranch: "docs/closed",
+        state: "closed",
+        targetBranch: "main",
+        title: "Closed",
+        url: "url",
+        headSha: "head",
+      },
+    ] as never);
+    const logger = { error: vi.fn() };
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      logger,
+      repository: port,
+    }).synchronizeActiveReviews();
+    expect(client.listChecks).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("offline"));
+  });
+
+  it("marks a project after a fifth non-submission failure without releasing a change set", async () => {
+    const port = repository();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 5,
+      id: "job",
+      kind: "review.create",
+      payload: { projectId: "project", branch: "docs/update", title: "Guide", userId: "actor" },
+    } as never);
+    vi.mocked(port.requireProjectAccess).mockRejectedValue("denied");
+    await createWorkerService({ logger: { error: vi.fn() }, repository: port }).runJob();
+    expect(port.markProjectAttention).toHaveBeenCalledWith("project");
+    expect(port.releaseChangeSetSubmission).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalledWith("job", "denied", false, 5);
+  });
+
+  it.each([
+    ["reviews.sync", { projectId: "project" }, "Подключение проекта недоступно"],
+    [
+      "review.create",
+      { projectId: "project", branch: "docs/update", title: "Guide", userId: "actor" },
+      "Подключение проекта недоступно",
+    ],
+  ] as const)(
+    "fails %s jobs whose project connection disappeared",
+    async (kind, payload, message) => {
+      const port = repository();
+      vi.mocked(port.claimNextJob).mockResolvedValue({
+        id: "job",
+        kind,
+        attempts: 1,
+        payload,
+      } as never);
+      vi.mocked(port.getProjectSyncTarget).mockResolvedValue(undefined);
+      await createWorkerService({ logger: { error: vi.fn() }, repository: port }).runJob();
+      expect(port.failJob).toHaveBeenCalledWith("job", message, true, 1);
+    },
+  );
+
+  it("rejects review creation on the default branch and keeps an existing open review", async () => {
+    const defaultPort = repository();
+    vi.mocked(defaultPort.claimNextJob).mockResolvedValue({
+      id: "default-job",
+      kind: "review.create",
+      attempts: 1,
+      payload: { projectId: "project", branch: "main", title: "Guide", userId: "actor" },
+    } as never);
+    await createWorkerService({ logger: { error: vi.fn() }, repository: defaultPort }).runJob();
+    expect(defaultPort.failJob).toHaveBeenCalledWith(
+      "default-job",
+      "Для PR / MR нужна отдельная ветка",
+      true,
+      1,
+    );
+
+    const existingPort = repository();
+    const client = provider();
+    vi.mocked(existingPort.claimNextJob).mockResolvedValue({
+      id: "existing-job",
+      kind: "review.create",
+      attempts: 1,
+      payload: { projectId: "project", branch: "docs/update", title: "Guide", userId: "actor" },
+    } as never);
+    vi.mocked(client.listChangeRequests).mockResolvedValue([
+      {
+        id: "review",
+        sourceBranch: "docs/update",
+        state: "open",
+        targetBranch: "main",
+        title: "Existing",
+        url: "url",
+        headSha: "head",
+      },
+    ] as never);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: existingPort,
+    }).runJob();
+    expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("vanishing worker targets", () => {
+  it("detects a project removed between branch lock acquisition and synchronization", async () => {
+    const port = repository();
+    vi.mocked(port.getProjectSyncTarget)
+      .mockResolvedValueOnce(syncTarget as never)
+      .mockResolvedValueOnce(undefined);
+    await expect(
+      createWorkerService({ repository: port }).synchronizeBranch("project", "main"),
+    ).rejects.toThrow("Project sync target is unavailable");
+  });
+
+  it("rejects project synchronization without a current target", async () => {
+    const port = repository();
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(undefined);
+    await expect(
+      createWorkerService({ repository: port }).synchronizeProject("project"),
+    ).rejects.toThrow("Project sync target is unavailable");
+  });
+
+  it("detects a change set removed after its submission lock is acquired", async () => {
+    const port = repository();
+    vi.mocked(port.getChangeSetSubmission)
+      .mockResolvedValueOnce(submissionTarget as never)
+      .mockResolvedValueOnce(undefined);
+    await expect(
+      createWorkerService({ repository: port }).submitChangeSet({
+        changeSetId: "change",
+        message: "Update",
+        projectId: "project",
+      }),
+    ).rejects.toThrow("Change set is unavailable");
   });
 });

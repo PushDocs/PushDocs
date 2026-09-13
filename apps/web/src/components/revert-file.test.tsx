@@ -72,6 +72,13 @@ it("keeps the draft on failure and allows retry", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Откатить файл" }));
   await screen.findByRole("button", { name: "Изменения отменены" });
 });
+it("uses a safe fallback when an error response has no JSON body", async () => {
+  mocks.fetch.mockResolvedValueOnce(new Response("not json", { status: 500 }));
+  render(<RevertFile {...props} />);
+  confirm();
+  fireEvent.click(screen.getByRole("button", { name: "Откатить файл" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось откатить файл");
+});
 it("blocks stale confirmation after a refresh or server conflict", async () => {
   const view = render(<RevertFile {...props} />);
   confirm();

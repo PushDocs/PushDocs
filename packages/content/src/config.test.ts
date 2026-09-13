@@ -8,6 +8,16 @@ import {
   safePath,
 } from "./config";
 
+it("validates the optional preview output path", () => {
+  expect(
+    parseProjectConfig(JSON.stringify({ version: 1, preview: { output: "build/index.html" } }))
+      .preview?.output,
+  ).toBe("build/index.html");
+  expect(() =>
+    parseProjectConfig(JSON.stringify({ version: 1, preview: { output: "../outside" } })),
+  ).toThrow("Недопустимый путь");
+});
+
 it("plans an article and exact companion edits together without rewriting unrelated source", () => {
   const config = parseProjectConfig(
     JSON.stringify({

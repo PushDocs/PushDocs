@@ -40,6 +40,9 @@ it("navigates between text diffs and keeps the source branch in the edit link", 
     "/projects/p/documents?branch=docs%2Ffix&path=docs%2Fnew.md",
   );
   expect(screen.getByRole("button", { name: "Следующий файл" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Предыдущий файл" }));
+  expect(screen.getByText("Before")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
   fireEvent.click(screen.getByRole("option", { name: "docs/a.md M" }));
   expect(screen.getByText("Before")).toBeTruthy();
 });

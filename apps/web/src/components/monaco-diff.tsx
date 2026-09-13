@@ -23,6 +23,7 @@ export function MonacoDiff({
   const current = useRef({ split, showAll });
   current.current = { split, showAll };
   useEffect(() => {
+    /* v8 ignore next -- React attaches the host in the same commit before this effect. */
     if (!host.current) return;
     const original = monaco.editor.createModel(before, fileLanguage(path));
     const modified = monaco.editor.createModel(after, fileLanguage(path));

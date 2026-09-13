@@ -66,6 +66,52 @@ it("replaces the selected asset at its exact path regardless of the uploaded fil
   expect(url.searchParams.get("branch")).toBe("fix");
   expect(url.searchParams.get("revision")).toBe("3");
 });
+it("rejects multiple replacement files before starting a transfer", async () => {
+  await act(async () => {
+    render(
+      <MediaLibrary
+        projectId="p"
+        branch="fix"
+        document="docs/intro.md"
+        replacePath="static/img/a.png"
+      />,
+    );
+  });
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
+      target: { files: [new File(["a"], "a.png"), new File(["b"], "b.png")] },
+    });
+  });
+  expect(screen.getByRole("alert").textContent).toContain("выберите один файл");
+});
+
+it("keeps the upload error when cleanup refresh callbacks also fail", async () => {
+  class Request extends EventTarget {
+    upload = new EventTarget();
+    timeout = 0;
+    open() {}
+    send() {
+      queueMicrotask(() => this.dispatchEvent(new Event("error")));
+    }
+  }
+  vi.stubGlobal("XMLHttpRequest", Request);
+  const fetchMock = vi.mocked(fetch);
+  fetchMock
+    .mockResolvedValueOnce(Response.json(state))
+    .mockResolvedValueOnce(Response.json(state))
+    .mockRejectedValueOnce(new Error("refresh failed"));
+  const changed = vi.fn().mockRejectedValue(new Error("callback failed"));
+  await act(async () => {
+    render(<MediaLibrary projectId="p" branch="main" document="docs/a.md" onChanged={changed} />);
+  });
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
+      target: { files: [new File(["x"], "a.png")] },
+    });
+  });
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(changed).toHaveBeenCalledWith();
+});
 it("shows upload progress and lets the user cancel a transfer", async () => {
   let request: FakeRequest | undefined;
   class FakeRequest extends EventTarget {

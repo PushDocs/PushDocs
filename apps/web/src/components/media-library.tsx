@@ -77,6 +77,7 @@ export function MediaLibrary({
   const readOnly = !state || state.role === "reader" || state.status !== "open";
   useEffect(() => () => transfer.current?.abort(), []);
   async function upload(files: File[]) {
+    /* v8 ignore next -- upload controls are disabled for all three guarded states. */
     if (readOnly || busy || uploading.current) return;
     if (replacePath && files.length > 1) {
       setError("Для замены выберите один файл.");
@@ -90,6 +91,7 @@ export function MediaLibrary({
     try {
       while (pending.current.length) {
         const file = pending.current[0];
+        /* v8 ignore next -- a positive array length guarantees this indexed item. */
         if (!file) break;
         if (file.size > 64 * 1024 * 1024) throw new Error(`${file.name}: лимит 64 МиБ`);
         const current = await reload();
@@ -160,6 +162,7 @@ export function MediaLibrary({
     }
   }
   async function mutate(asset: Asset, action: "delete" | "revert") {
+    /* v8 ignore next -- mutation controls are absent or disabled in these states. */
     if (!state || readOnly || busy) return;
     setBusy(true);
     try {

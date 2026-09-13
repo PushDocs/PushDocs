@@ -356,6 +356,63 @@ it("searches article bodies only when the user asks for content search", async (
   expect(mocks.provider).not.toHaveBeenCalled();
 });
 
+it("returns no search results for blank or unmatched queries", async () => {
+  const snapshot = await mocks.context();
+  snapshot.state.files = [
+    { path: "docs/intro.md", content: "# Intro", title: "Intro", status: "clean" },
+  ];
+  mocks.context.mockResolvedValue(snapshot);
+  expect(
+    await (await GET(new Request("https://cms.test/api?branch=main&search=%20"), context)).json(),
+  ).toEqual({ results: [] });
+  expect(
+    await (
+      await GET(new Request("https://cms.test/api?branch=main&search=missing"), context)
+    ).json(),
+  ).toEqual({ results: [] });
+});
+
+it("hydrates the selected file in the lightweight index response", async () => {
+  const snapshot = await mocks.context();
+  snapshot.state.files = [
+    { path: "docs/intro.md", title: "Intro", status: "clean", loaded: false },
+    { path: "docs/other.md", title: "Other", status: "clean", loaded: false },
+  ];
+  snapshot.store.getWorkingFile = vi.fn().mockResolvedValue({
+    path: "docs/intro.md",
+    title: "Loaded",
+    content: "# Loaded",
+    status: "modify",
+    loaded: true,
+  });
+  mocks.context.mockResolvedValue(snapshot);
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&selected=docs%2Fintro.md"),
+    context,
+  );
+  expect((await response.json()).files).toEqual([
+    expect.objectContaining({ path: "docs/intro.md", title: "Loaded", loaded: true }),
+    expect.objectContaining({ path: "docs/other.md", title: "Other" }),
+  ]);
+});
+
+it("considers non-deleted draft files when creating folders", async () => {
+  const snapshot = await mocks.context();
+  snapshot.state.files = [
+    { path: "drafts/a.md", content: "draft", status: "add" },
+    { path: "removed/a.md", content: "old", status: "delete" },
+  ];
+  mocks.context.mockResolvedValue(snapshot);
+  expect(
+    (await request({ action: "folder", branch: "main", expectedRevision: 7, path: "drafts" }))
+      .status,
+  ).toBe(400);
+  expect(
+    (await request({ action: "folder", branch: "main", expectedRevision: 7, path: "removed" }))
+      .status,
+  ).toBe(200);
+});
+
 it("reads and saves imported text while VPN initialization is unavailable", async () => {
   mocks.provider.mockRejectedValue(new Error("VPN unavailable"));
   expect((await GET(new Request("https://cms.test/api?branch=main"), context)).status).toBe(200);

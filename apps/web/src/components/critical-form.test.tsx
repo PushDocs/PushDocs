@@ -41,12 +41,14 @@ it("requests the code only after submitting details and preserves them through v
 });
 it("offers setup without asking for an impossible code when 2FA is disabled", async () => {
   mocks.status.mockResolvedValue(false);
-  setup();
+  const { container } = setup();
   fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
   expect(
     (await screen.findByRole("link", { name: "Настроить 2FA в профиле" })).getAttribute("href"),
   ).toBe("/settings/profile");
   expect(screen.queryByLabelText("Код 2FA")).toBeNull();
+  expect(mocks.save).not.toHaveBeenCalled();
+  fireEvent.submit(container.querySelector("form") as HTMLFormElement);
   expect(mocks.save).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Вернуться к форме" }));
   expect(screen.getByLabelText("Название")).toHaveProperty("value", "Docs");
@@ -63,4 +65,50 @@ it("keeps the action and object visible on the code step and restores input on b
   fireEvent.click(screen.getByText("Назад"));
   expect(screen.getByLabelText("Название")).toHaveProperty("value", "Sendsay");
   expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it("blocks duplicate submissions and reports status and action failures", async () => {
+  let finishStatus: ((enabled: boolean) => void) | undefined;
+  mocks.status.mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finishStatus = resolve;
+      }),
+  );
+  const first = setup();
+  const form = first.container.querySelector("form") as HTMLFormElement;
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+  finishStatus?.(true);
+  await screen.findByLabelText("Код 2FA");
+  mocks.save.mockRejectedValueOnce(new Error("offline"));
+  fireEvent.submit(form);
+  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось выполнить");
+  first.unmount();
+
+  mocks.status.mockResolvedValue(true);
+  const action = vi.fn().mockResolvedValue({ ok: false, message: "Code expired" });
+  const second = render(
+    <CriticalForm action={action} description="Custom operation">
+      <input name="name" defaultValue="Object" />
+      <button type="submit">Save custom</button>
+    </CriticalForm>,
+  );
+  fireEvent.submit(second.container.querySelector("form") as HTMLFormElement);
+  expect(await screen.findByText("Custom operation")).toBeTruthy();
+  fireEvent.submit(second.container.querySelector("form") as HTMLFormElement);
+  expect((await screen.findByRole("alert")).textContent).toBe("Code expired");
+});
+
+it("survives a failed background 2FA status hint", async () => {
+  mocks.status.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(false);
+  const view = render(
+    <CriticalForm warnBefore>
+      <button type="submit">Continue</button>
+    </CriticalForm>,
+  );
+  await Promise.resolve();
+  expect(screen.queryByText(/Для сохранения нужна 2FA/)).toBeNull();
+  view.unmount();
 });

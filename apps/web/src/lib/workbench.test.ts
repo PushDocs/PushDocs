@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   requireProjectAccess: vi.fn(),
   getProjectSyncTarget: vi.fn(),
   listWorkingFiles: vi.fn(),
+  listWorkingFileIndex: vi.fn(),
   createProvider: vi.fn(),
   providerForConnection: vi.fn(),
 }));
@@ -20,6 +21,7 @@ import {
   assertEditable,
   assertSameOrigin,
   localWorkbenchContext,
+  localWorkbenchIndexContext,
   workbenchContext,
 } from "./workbench";
 
@@ -33,6 +35,7 @@ beforeEach(() => {
     secret_encrypted: "encrypted",
   });
   mocks.listWorkingFiles.mockResolvedValue({ files: [] });
+  mocks.listWorkingFileIndex.mockResolvedValue({ files: [], configContent: undefined });
 });
 it("checks membership before accessing branch content", async () => {
   expect((await workbenchContext("project", "docs/new")).config.version).toBe(1);
@@ -83,4 +86,22 @@ it("opens local documents without waiting for a Git or VPN connection", async ()
   const context = await localWorkbenchContext("project", "main");
   expect(context.config.version).toBe(1);
   expect(mocks.providerForConnection).not.toHaveBeenCalled();
+});
+
+it("loads the lightweight file index with either an explicit or required user", async () => {
+  mocks.listWorkingFileIndex.mockResolvedValue({
+    files: [{ path: "docs/a.md" }],
+    configContent: '{"version":1,"defaultLocale":"de"}',
+  });
+  const explicit = { id: "explicit" } as never;
+  const context = await localWorkbenchIndexContext("project", "main", explicit);
+  expect(context.user).toBe(explicit);
+  expect(context.config.defaultLocale).toBe("de");
+  expect(mocks.requireProjectAccess).toHaveBeenCalledWith("explicit", "project");
+  expect(mocks.requireUser).not.toHaveBeenCalled();
+
+  await localWorkbenchIndexContext("project", "main");
+  expect(mocks.requireUser).toHaveBeenCalledOnce();
+  mocks.getProjectSyncTarget.mockResolvedValueOnce(undefined);
+  await expect(localWorkbenchIndexContext("project", "main")).rejects.toThrow("Подключение");
 });

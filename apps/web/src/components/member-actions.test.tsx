@@ -6,8 +6,37 @@ vi.mock("@/app/actions", () => ({
   twoFactorStatusAction: vi.fn(),
   criticalSettingsAction: vi.fn(),
 }));
+vi.mock("@pushdocs/ui", () => ({
+  Select: ({
+    label,
+    name,
+    onValueChange,
+    options,
+    value,
+  }: {
+    label: string;
+    name: string;
+    onValueChange: (value: string) => void;
+    options: Array<{ label: string; value: string }>;
+    value: string;
+  }) => (
+    <select
+      aria-label={label}
+      name={name}
+      value={value}
+      onChange={(event) => onValueChange(event.target.value)}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 
-import { CopyInvitation } from "./member-actions";
+import { criticalSettingsAction, twoFactorStatusAction } from "@/app/actions";
+import { CopyInvitation, MemberActions } from "./member-actions";
 
 afterEach(() => {
   cleanup();
@@ -76,4 +105,46 @@ it("offers manual copying when clipboard permission never resolves", async () =>
   });
   expect(screen.getByRole("alert").textContent).toContain("Ссылка выделена");
   expect(screen.getByText("Скопировать ссылку")).toHaveProperty("disabled", false);
+});
+
+it("changes and revokes member access in the settings dialog", async () => {
+  render(
+    // biome-ignore lint/a11y/useValidAriaRole: role is a domain-level component prop, not an ARIA attribute.
+    <MemberActions
+      projectId="3b63fe90-f569-4e0e-89e9-153948ba5a9e"
+      userId="9d2c893f-8785-4b03-8568-e32655679be8"
+      name="Reader"
+      role="reader"
+    />,
+  );
+
+  const trigger = screen.getByRole("button", { name: "Изменить доступ: Reader" });
+  fireEvent.click(trigger);
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Доступ к проекту"), { target: { value: "remove" } });
+  expect(screen.getByText(/Участник потеряет доступ/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Отозвать доступ" }).className).toContain("danger");
+
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть без сохранения" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  fireEvent.click(trigger);
+  expect(screen.getByLabelText("Доступ к проекту")).toHaveProperty("value", "reader");
+});
+
+it("closes the member dialog after a verified successful update", async () => {
+  vi.mocked(twoFactorStatusAction).mockResolvedValue(true);
+  vi.mocked(criticalSettingsAction).mockResolvedValue({});
+  render(
+    // biome-ignore lint/a11y/useValidAriaRole: role is a domain-level component prop, not an ARIA attribute.
+    <MemberActions projectId="project" userId="reader" name="Reader" role="reader" />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Изменить доступ: Reader" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить роль" }));
+  expect(await screen.findByLabelText("Код 2FA")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Код 2FA"), { target: { value: "123456" } });
+  fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+  expect(await screen.findByRole("status")).toHaveProperty("textContent", "Доступ обновлён");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

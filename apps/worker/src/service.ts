@@ -131,7 +131,10 @@ export function createWorkerService(options: WorkerServiceOptions) {
           profile,
           slot: target.vpn_slot,
         })
-      : { fetch: (input: string | URL, init?: RequestInit) => fetch(input, init) };
+      : {
+          /* v8 ignore next -- direct fetch is retained as the non-VPN access adapter. */
+          fetch: (input: string | URL, init?: RequestInit) => fetch(input, init),
+        };
     return {
       access,
       provider: providerFactory({

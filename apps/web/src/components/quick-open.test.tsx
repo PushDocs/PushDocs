@@ -114,3 +114,66 @@ it("shows a server-search error instead of an empty result state", async () => {
     vi.useRealTimers();
   }
 });
+
+it("switches search modes, opens clicked results and caps broad matches", () => {
+  const open = vi.fn();
+  const many = Array.from({ length: 105 }, (_, index) => ({
+    path: `docs/file-${index}.md`,
+    title: `File ${index}`,
+    content: "common",
+    status: "clean",
+  }));
+  render(<QuickOpen paths={many.map((file) => file.path)} files={many} onOpen={open} />);
+  const input = screen.getByLabelText("Поиск файлов");
+  fireEvent.change(input, { target: { value: "file" } });
+  expect(screen.getByText("Первые 100 результатов. Уточните запрос.")).toBeTruthy();
+  fireEvent.click(screen.getAllByRole("option")[1] as HTMLElement);
+  expect(open).toHaveBeenCalledWith("docs/file-1.md", undefined);
+  fireEvent.click(screen.getByRole("button", { name: "Текст статей" }));
+  expect(input.getAttribute("placeholder")).toContain("Фраза");
+  fireEvent.click(screen.getByRole("button", { name: "Имя или название" }));
+  expect(input.getAttribute("placeholder")).toContain("Название");
+  fireEvent.keyDown(input, { key: "ArrowUp" });
+});
+
+it("falls back to a path basename and exposes pending remote search", async () => {
+  vi.useFakeTimers();
+  try {
+    let finish: ((results: never[]) => void) | undefined;
+    const remote = vi.fn(
+      () =>
+        new Promise<never[]>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = render(
+      <QuickOpen
+        paths={["docs/unloaded.md", "static/logo.png"]}
+        files={[
+          {
+            path: "docs/unloaded.md",
+            title: "",
+            content: "",
+            status: "clean",
+            loaded: false,
+          },
+        ]}
+        onOpen={vi.fn()}
+        onSearchContent={remote}
+      />,
+    );
+    const input = screen.getByLabelText("Поиск файлов");
+    fireEvent.change(input, { target: { value: "logo" } });
+    expect(screen.getByRole("option").textContent).toContain("logo.png");
+    fireEvent.click(screen.getByRole("button", { name: "Текст статей" }));
+    fireEvent.change(input, { target: { value: "remote" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(screen.getByRole("status").textContent).toContain("Ищем");
+    view.unmount();
+    await act(async () => finish?.([]));
+  } finally {
+    vi.useRealTimers();
+  }
+});

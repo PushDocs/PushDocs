@@ -77,6 +77,7 @@ export function ProjectImportForm({
       className="project-form project-import-form"
       onSubmit={async (event) => {
         event.preventDefault();
+        /* v8 ignore next -- the enclosing fieldset is disabled as soon as busy is set. */
         if (busy) return;
         setBusy(true);
         setError("");

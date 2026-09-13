@@ -31,6 +31,7 @@ export function RevertFile({
   const stale = conflict || (confirmation !== undefined && confirmation !== revision);
 
   async function revert() {
+    /* v8 ignore next -- confirmation controls are hidden or disabled for every guarded state. */
     if (confirmation === undefined || stale || inFlight.current || done) return;
     inFlight.current = true;
     setPending(true);

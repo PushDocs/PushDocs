@@ -56,3 +56,16 @@ it("skips Git comparison on the default branch and never returns a failed compar
   mocks.compare.mockRejectedValue(new Error("offline"));
   expect((await get("feature", "failure")).status).toBe(400);
 });
+
+it("rejects providers without comparison support and bounds the comparison cache", async () => {
+  mocks.provider.mockResolvedValueOnce({});
+  expect((await get("feature", "unsupported")).status).toBe(400);
+
+  for (let index = 0; index <= 100; index++) {
+    const snapshot = await mocks.context();
+    snapshot.state.branch.head_commit_sha = `sha-${index}`;
+    mocks.context.mockResolvedValueOnce(snapshot);
+    expect((await get("feature", `cache-${index}`)).status).toBe(200);
+  }
+  expect(mocks.compare).toHaveBeenCalled();
+});
