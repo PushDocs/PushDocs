@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { CriticalForm } from "./critical-form";
+import { FilePicker } from "./file-picker";
 import { SettingsModal, SettingsModalCancel } from "./settings-modal";
 
 type SaveResult = { ok: boolean; message: string };
@@ -156,11 +157,11 @@ export function ConnectionCard({
               />
             </label>
             {connection.kind === "gitlab" ? (
+              // biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input.
               <label>
                 {connection.vpnSlot ? "Заменить профиль OpenVPN" : "Профиль OpenVPN"}
-                <input
+                <FilePicker
                   name="vpnProfile"
-                  type="file"
                   accept=".ovpn,application/x-openvpn-profile,text/plain"
                 />
                 <small>Самодостаточный .ovpn с встроенными CA, сертификатом и ключом.</small>

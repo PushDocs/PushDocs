@@ -4,6 +4,7 @@ import { Button } from "@pushdocs/ui";
 import { FileText, GitBranch, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FilePicker } from "./file-picker";
 
 interface Asset {
   path: string;
@@ -221,14 +222,14 @@ export function MediaLibrary({
           void upload(Array.from(event.dataTransfer.files));
         }}
       >
+        {/* biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input. */}
         <label className="media-upload-picker">
           <span>
             <Upload size={16} /> Загрузить файлы
           </span>
           <small>или перетащите сюда · до 64 МиБ</small>
-          <input
+          <FilePicker
             aria-label="Загрузить файлы"
-            type="file"
             multiple={!replacePath}
             disabled={readOnly || busy}
             onChange={(event) => {

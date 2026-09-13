@@ -20,6 +20,7 @@ export function MemberActions({
   return (
     <>
       <button
+        className="pd-button pd-button--secondary"
         type="button"
         onClick={(event) => {
           event.currentTarget.focus();
@@ -58,7 +59,10 @@ export function MemberActions({
             {selected === "remove" ? (
               <p>Участник потеряет доступ к этому проекту. Его правки и комментарии сохранятся.</p>
             ) : null}
-            <button type="submit">
+            <button
+              className={`pd-button pd-button--${selected === "remove" ? "danger" : "primary"}`}
+              type="submit"
+            >
               {selected === "remove" ? "Отозвать доступ" : "Сохранить роль"}
             </button>
           </CriticalForm>
@@ -67,25 +71,4 @@ export function MemberActions({
     </>
   );
 }
-export function CopyInvitation({ value }: { value: string }) {
-  const [message, setMessage] = useState("");
-  return (
-    <>
-      <input readOnly value={value} aria-label="Ссылка приглашения" />
-      <button
-        type="button"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value);
-            setMessage("Ссылка скопирована");
-          } catch {
-            setMessage("Не удалось скопировать. Выделите и скопируйте ссылку вручную.");
-          }
-        }}
-      >
-        Скопировать ссылку
-      </button>
-      <span role="status">{message}</span>
-    </>
-  );
-}
+export { CopyInvitation } from "./copy-invitation";

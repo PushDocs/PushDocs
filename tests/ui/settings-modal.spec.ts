@@ -73,3 +73,32 @@ test("keeps keyboard focus inside and prevents dismissal while saving", async ({
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toBeVisible();
 });
+
+test("shared controls have styled states and copying reports its result", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => {} } });
+  });
+  await page.goto(`${baseURL}/?controls`);
+  const button = page.getByRole("button", { name: "Изменить доступ" });
+  expect(await button.evaluate((el) => getComputedStyle(el).appearance)).toBe("none");
+  expect(await button.evaluate((el) => getComputedStyle(el).borderRadius)).toBe("8px");
+  const checkbox = page.getByRole("checkbox");
+  expect(await checkbox.evaluate((el) => getComputedStyle(el).appearance)).toBe("none");
+  await checkbox.check();
+  await expect(checkbox).toBeChecked();
+  await page.getByLabel("Профиль OpenVPN").setInputFiles({
+    name: "company.ovpn",
+    mimeType: "text/plain",
+    buffer: Buffer.from("fixture"),
+  });
+  await expect(page.getByText("company.ovpn")).toBeVisible();
+  await page.getByRole("button", { name: "Скопировать ссылку" }).click();
+  await expect(page.getByRole("status")).toHaveText("Ссылка скопирована");
+  await expect(page.getByRole("button", { name: "Скопировано" })).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()?.width ?? 0,
+  );
+  await page.screenshot({ path: testInfo.outputPath("controls.png") });
+});

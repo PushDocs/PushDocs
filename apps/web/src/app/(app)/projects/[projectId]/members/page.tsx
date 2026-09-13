@@ -41,7 +41,7 @@ export default async function MembersPage({
       {access.role === "admin" ? (
         <>
           {invitationToken ? (
-            <div className="invitation-result" role="status">
+            <div className="invitation-result">
               <strong>Приглашение создано</strong>
               <p>
                 Отправьте ссылку пользователю в мессенджере. Она предназначена для одного
@@ -87,14 +87,16 @@ export default async function MembersPage({
           <h2>Ожидают приглашения</h2>
           {invitations.map((invitation) => (
             <div key={invitation.id}>
-              <span>
-                {invitation.email} ·{" "}
-                {invitation.role === "admin"
-                  ? "Администратор"
-                  : invitation.role === "editor"
-                    ? "Редактор"
-                    : "Читатель"}{" "}
-                · до {new Date(invitation.expires_at).toLocaleString("ru-RU")}
+              <span className="pending-invitation-info">
+                <strong>{invitation.email}</strong>
+                <small>
+                  {invitation.role === "admin"
+                    ? "Администратор"
+                    : invitation.role === "editor"
+                      ? "Редактор"
+                      : "Читатель"}{" "}
+                  · до {new Date(invitation.expires_at).toLocaleString("ru-RU")}
+                </small>
               </span>
               <CriticalForm
                 kind="revokeInvitation"
@@ -102,7 +104,9 @@ export default async function MembersPage({
               >
                 <input type="hidden" name="projectId" value={projectId} />
                 <input type="hidden" name="invitationId" value={invitation.id} />
-                <button type="submit">Отменить приглашение</button>
+                <button className="pd-button pd-button--secondary" type="submit">
+                  Отменить приглашение
+                </button>
               </CriticalForm>
             </div>
           ))}

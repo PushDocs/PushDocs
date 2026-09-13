@@ -80,7 +80,13 @@ export function SettingsModal({
       >
         <header>
           <h2 id={titleId}>{title}</h2>
-          <button type="button" aria-label="Закрыть" disabled={pending} onClick={close}>
+          <button
+            className="pd-button pd-button--ghost"
+            type="button"
+            aria-label="Закрыть"
+            disabled={pending}
+            onClick={close}
+          >
             ×
           </button>
         </header>
@@ -89,10 +95,14 @@ export function SettingsModal({
           <section role="alert">
             <p>Закрыть без сохранения? Введённые данные будут потеряны.</p>
             <div className="settings-modal-actions">
-              <button type="button" onClick={() => setConfirm(false)}>
+              <button
+                className="pd-button pd-button--secondary"
+                type="button"
+                onClick={() => setConfirm(false)}
+              >
                 Продолжить редактирование
               </button>
-              <button type="button" onClick={onClose}>
+              <button className="pd-button pd-button--danger" type="button" onClick={onClose}>
                 Закрыть без сохранения
               </button>
             </div>

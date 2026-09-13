@@ -7,6 +7,7 @@ import { settingsProjectChoices } from "@/lib/settings-project";
 import { ConnectionCard } from "./connection-card";
 import { CreateConnectionDialog } from "./create-connection-dialog";
 import { CriticalForm } from "./critical-form";
+import { FilePicker } from "./file-picker";
 import { SettingsNavigation } from "./settings-navigation";
 
 export async function ConnectionSettings({ projectId }: { projectId?: string }) {
@@ -91,11 +92,11 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
               Access token
               <input name="token" type="password" autoComplete="off" required />
             </label>
+            {/* biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input. */}
             <label>
               Профиль OpenVPN
-              <input
+              <FilePicker
                 name="vpnProfile"
-                type="file"
                 accept=".ovpn,application/x-openvpn-profile,text/plain"
               />
               <small>Необязательно.</small>

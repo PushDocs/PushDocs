@@ -47,6 +47,27 @@ textarea {
   font: inherit;
 }
 
+/* Defaults sit below component selectors and never style Monaco's controls. */
+:where(button:not(.monaco-editor *)) {
+  appearance: none;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+:where(button:not(.monaco-editor *)):hover:not(:disabled) {
+  background: var(--violet-wash);
+}
+:where(button:not(.monaco-editor *)):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--violet) 24%, transparent);
+  outline-offset: 2px;
+}
+:where(button:not(.monaco-editor *)):disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 button,
 a {
   -webkit-tap-highlight-color: transparent;
@@ -3439,5 +3460,166 @@ textarea:where(:not(.monaco-editor *)):focus {
   }
   .review-list {
     max-height: 280px;
+  }
+}
+
+input[type="checkbox"]:not(.monaco-editor *),
+input[type="radio"]:not(.monaco-editor *) {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--paper);
+  vertical-align: middle;
+  cursor: pointer;
+}
+input[type="radio"]:not(.monaco-editor *) {
+  border-radius: 50%;
+}
+input[type="checkbox"]:checked:not(.monaco-editor *),
+input[type="radio"]:checked:not(.monaco-editor *) {
+  background: var(--violet);
+  border-color: var(--violet);
+}
+input[type="checkbox"]:checked:not(.monaco-editor *)::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid white;
+  border-bottom: 2px solid white;
+  transform: translateY(-1px) rotate(-45deg);
+}
+input[type="radio"]:checked:not(.monaco-editor *)::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: white;
+}
+input:is([type="checkbox"], [type="radio"]):disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+progress {
+  appearance: none;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-strong);
+  color: var(--violet);
+  height: 6px;
+}
+progress::-webkit-progress-bar {
+  background: var(--surface-strong);
+}
+progress::-webkit-progress-value {
+  background: var(--violet);
+  border-radius: 8px;
+}
+progress::-moz-progress-bar {
+  background: var(--violet);
+  border-radius: 8px;
+}
+
+.file-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.file-picker .file-picker-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+.file-picker:focus-within > .pd-button {
+  outline: 3px solid color-mix(in srgb, var(--violet) 24%, transparent);
+  outline-offset: 2px;
+}
+.file-picker[data-disabled] {
+  opacity: 0.48;
+}
+.file-picker[data-disabled] .file-picker-input {
+  cursor: not-allowed;
+}
+.file-picker-name {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.invitation-copy {
+  display: grid;
+  gap: 10px;
+}
+.invitation-copy-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.invitation-copy-controls input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.invitation-copy-controls button {
+  flex: 0 0 auto;
+}
+.invitation-copy > p {
+  margin: 0;
+  font-size: 13px;
+}
+.invitation-copy .invitation-copy-success {
+  color: var(--success);
+}
+.invitation-copy .invitation-copy-error {
+  color: var(--danger);
+}
+.pending-invitations {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.pending-invitations h2 {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+.pending-invitations > div {
+  justify-content: space-between;
+}
+.pending-invitations > div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.pending-invitation-info {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pending-invitation-info small {
+  color: var(--ink-muted);
+}
+@media (max-width: 640px) {
+  .invitation-copy-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .invitation-copy-controls button {
+    align-self: flex-start;
   }
 }

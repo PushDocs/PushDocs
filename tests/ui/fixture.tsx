@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
+import { FilePicker } from "../../apps/web/src/components/file-picker";
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
 import { Select } from "../../packages/ui/src";
 import "../../packages/ui/src/styles.css";
@@ -35,7 +37,7 @@ function Form() {
     </form>
   );
 }
-function App() {
+function SettingsFixture() {
   const [open, setOpen] = useState(false);
   return (
     <main className="page">
@@ -50,6 +52,29 @@ function App() {
       ) : null}
     </main>
   );
+}
+
+function App() {
+  if (new URLSearchParams(window.location.search).has("controls"))
+    return (
+      <main className="page">
+        <section className="invitation-result">
+          <strong>Приглашение создано</strong>
+          <CopyInvitation value="https://docs.example/invite/example-long-invitation-link" />
+        </section>
+        <div style={{ display: "grid", gap: 16, justifyItems: "start" }}>
+          <button type="button">Изменить доступ</button>
+          <label>
+            <input type="checkbox" /> Создать MR
+          </label>
+          <label htmlFor="fixture-profile">
+            Профиль OpenVPN
+            <FilePicker id="fixture-profile" aria-label="Профиль OpenVPN" name="vpnProfile" />
+          </label>
+        </div>
+      </main>
+    );
+  return <SettingsFixture />;
 }
 const root = document.getElementById("root");
 if (root) createRoot(root).render(<App />);
