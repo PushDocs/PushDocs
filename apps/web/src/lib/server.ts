@@ -4,6 +4,7 @@ import { PushDocs } from "@pushdocs/core";
 import { getDatabase, hashOpaqueToken, PushDocsRepository } from "@pushdocs/db";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 
 export const sessionCookieName = "pushdocs_session";
 
@@ -22,7 +23,7 @@ export function application(): PushDocs {
   return new PushDocs(repository());
 }
 
-export async function optionalUser(): Promise<CurrentUser | null> {
+const readCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const token = (await cookies()).get(sessionCookieName)?.value;
   if (!token) return null;
   const user = await repository().findUserBySessionHash(hashOpaqueToken(token));
@@ -33,6 +34,10 @@ export async function optionalUser(): Promise<CurrentUser | null> {
     id: user.id,
     isInstanceOperator: user.is_instance_operator,
   };
+});
+
+export async function optionalUser(): Promise<CurrentUser | null> {
+  return readCurrentUser();
 }
 
 export async function requireUser(): Promise<CurrentUser> {

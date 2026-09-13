@@ -1128,6 +1128,9 @@
   overflow: auto;
   padding: 4px 0 16px;
 }
+.wb-explorer-spacer {
+  pointer-events: none;
+}
 .wb-explorer button.wb-explorer-row,
 .wb-explorer button.wb-explorer-root {
   display: flex;

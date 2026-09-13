@@ -1,5 +1,4 @@
-import { Select } from "@pushdocs/ui";
-import { ArrowLeft, GitBranch, LockKeyhole } from "lucide-react";
+import { ArrowLeft, LockKeyhole } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ProjectImportForm } from "@/components/project-import-form";

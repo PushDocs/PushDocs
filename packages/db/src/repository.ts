@@ -207,6 +207,48 @@ export class PushDocsRepository extends SecurityRepository {
     }));
   }
 
+  async getProjectForUser(userId: string, projectId: string): Promise<ProjectSummary | undefined> {
+    const row = await this.database
+      .selectFrom("projects")
+      .innerJoin("project_memberships", "project_memberships.project_id", "projects.id")
+      .innerJoin("repositories", "repositories.id", "projects.repository_id")
+      .innerJoin("provider_connections", "provider_connections.id", "repositories.connection_id")
+      .select([
+        "projects.id",
+        "projects.slug",
+        "projects.name",
+        "projects.default_branch",
+        "projects.updated_at",
+        "projects.status",
+        "project_memberships.role",
+        "provider_connections.kind",
+        "provider_connections.name as provider_name",
+      ])
+      .where("projects.id", "=", projectId)
+      .where("project_memberships.user_id", "=", userId)
+      .where("projects.status", "!=", "archived")
+      .executeTakeFirst();
+    if (!row) return undefined;
+    const open = await this.database
+      .selectFrom("change_requests")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("project_id", "=", projectId)
+      .where("state", "=", "open")
+      .executeTakeFirstOrThrow();
+    return {
+      defaultBranch: row.default_branch,
+      id: row.id,
+      name: row.name,
+      openChangeRequests: Number(open.count),
+      provider: row.kind as ProviderKind,
+      providerLabel: row.provider_name,
+      role: row.role,
+      slug: row.slug,
+      syncStatus: row.status === "attention" ? "attention" : "current",
+      updatedAt: new Date(row.updated_at).toISOString(),
+    };
+  }
+
   async listConnections() {
     return this.database
       .selectFrom("provider_connections")
@@ -446,6 +488,8 @@ export class PushDocsRepository extends SecurityRepository {
         "projects.root_path",
         "projects.repository_id",
         "provider_connections.name as provider_name",
+        "provider_connections.base_url as provider_base_url",
+        "provider_connections.vpn_slot as provider_vpn_slot",
       ])
       .where("projects.id", "=", projectId)
       .where("projects.status", "!=", "archived")
@@ -677,7 +721,7 @@ export class PushDocsRepository extends SecurityRepository {
       .set({ locked_at: null, status: "done", updated_at: new Date() })
       .where("id", "=", jobId)
       .$if(attempt !== undefined, (query) =>
-        query.where("attempts", "=", attempt!).where("status", "=", "running"),
+        query.where("attempts", "=", attempt ?? 0).where("status", "=", "running"),
       )
       .execute();
   }
@@ -694,7 +738,7 @@ export class PushDocsRepository extends SecurityRepository {
       })
       .where("id", "=", jobId)
       .$if(attempt !== undefined, (query) =>
-        query.where("attempts", "=", attempt!).where("status", "=", "running"),
+        query.where("attempts", "=", attempt ?? 0).where("status", "=", "running"),
       )
       .execute();
   }
@@ -864,13 +908,143 @@ export class PushDocsRepository extends SecurityRepository {
     return { branch, changeSet, files: [...files.values()] };
   }
 
+  async listChangedWorkingFiles(projectId: string, branchName: string) {
+    const { branch, changeSet } = await this.getBranchState(projectId, branchName);
+    if (!changeSet) return { branch, changeSet, files: [] };
+    const drafts = await this.database
+      .selectFrom("draft_files")
+      .selectAll()
+      .where("change_set_id", "=", changeSet.id)
+      .execute();
+    if (drafts.length === 0) return { branch, changeSet, files: [] };
+    const imported = await this.database
+      .selectFrom("imported_documents")
+      .select(["path", "content", "locale", "version", "title"])
+      .where("branch_context_id", "=", branch.id)
+      .where(
+        "path",
+        "in",
+        drafts.map((file) => file.path),
+      )
+      .execute();
+    const base = new Map(imported.map((file) => [file.path, file]));
+    return {
+      branch,
+      changeSet,
+      files: drafts.map((file) => {
+        const existing = base.get(file.path);
+        return {
+          path: file.path,
+          content: file.content ?? "",
+          baseContent: existing?.content ?? "",
+          title: titleFromDraft(file.content, file.path),
+          locale: existing?.locale ?? file.path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
+          version: existing?.version ?? "current",
+          status: file.operation,
+        };
+      }),
+    };
+  }
+
+  async listWorkingFileIndex(projectId: string, branchName: string) {
+    const { branch, changeSet } = await this.getBranchState(projectId, branchName);
+    const [imported, drafts, importedConfig] = await Promise.all([
+      this.database
+        .selectFrom("imported_documents")
+        .select(["path", "locale", "version", "title"])
+        .where("branch_context_id", "=", branch.id)
+        .execute(),
+      changeSet
+        ? this.database
+            .selectFrom("draft_files")
+            .select(["path", "content", "operation"])
+            .where("change_set_id", "=", changeSet.id)
+            .execute()
+        : Promise.resolve([]),
+      this.database
+        .selectFrom("imported_documents")
+        .select("content")
+        .where("branch_context_id", "=", branch.id)
+        .where("path", "=", ".pushdocs/config.json")
+        .executeTakeFirst(),
+    ]);
+    const files = new Map(
+      imported.map((file) => [
+        file.path,
+        {
+          ...file,
+          content: "",
+          baseContent: "",
+          loaded: false,
+          status: "clean" as string,
+        },
+      ]),
+    );
+    for (const file of drafts) {
+      const existing = files.get(file.path);
+      files.set(file.path, {
+        path: file.path,
+        content: "",
+        baseContent: "",
+        loaded: false,
+        title: titleFromDraft(file.content, file.path),
+        locale: existing?.locale ?? file.path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
+        version: existing?.version ?? "current",
+        status: file.operation,
+      });
+    }
+    const draftConfig = drafts.find((file) => file.path === ".pushdocs/config.json");
+    return {
+      branch,
+      changeSet,
+      configContent:
+        draftConfig?.operation === "delete"
+          ? undefined
+          : (draftConfig?.content ?? importedConfig?.content),
+      files: [...files.values()],
+    };
+  }
+
+  async getWorkingFile(projectId: string, branchName: string, path: string) {
+    const { branch, changeSet } = await this.getBranchState(projectId, branchName);
+    const [imported, draft] = await Promise.all([
+      this.database
+        .selectFrom("imported_documents")
+        .select(["path", "content", "locale", "version", "title"])
+        .where("branch_context_id", "=", branch.id)
+        .where("path", "=", path)
+        .executeTakeFirst(),
+      changeSet
+        ? this.database
+            .selectFrom("draft_files")
+            .select(["path", "content", "operation"])
+            .where("change_set_id", "=", changeSet.id)
+            .where("path", "=", path)
+            .executeTakeFirst()
+        : Promise.resolve(undefined),
+    ]);
+    if (!imported && !draft) return undefined;
+    return {
+      path,
+      content: draft ? (draft.content ?? "") : (imported?.content ?? ""),
+      baseContent: imported?.content ?? "",
+      loaded: true,
+      title: draft
+        ? titleFromDraft(draft.content, path)
+        : (imported?.title ?? titleFromDraft(null, path)),
+      locale: imported?.locale ?? path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
+      version: imported?.version ?? "current",
+      status: draft?.operation ?? "clean",
+    };
+  }
+
   async stageFiles(input: {
     projectId: string;
     branch: string;
     userId: string;
     expectedRevision: number;
     files: Array<{ path: string; content?: string | null; revert?: boolean; createOnly?: boolean }>;
-  }): Promise<void> {
+  }): Promise<{ changeSetId: string; revision: number }> {
     await this.requireProjectAccess(input.userId, input.projectId, "document:write");
     if (
       !input.files.length ||
@@ -890,7 +1064,7 @@ export class PushDocsRepository extends SecurityRepository {
         throw new Error("Invalid file path");
       if (!file.revert && file.content === undefined) throw new Error("File content required");
     }
-    await this.database.transaction().execute(async (transaction) => {
+    return this.database.transaction().execute(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -1013,8 +1187,9 @@ export class PushDocsRepository extends SecurityRepository {
         entityId: changeSet.id,
         type: "files.staged",
         revision: changeSet.revision + 1,
-        payload: { branch: input.branch },
+        payload: { branch: input.branch, paths: input.files.map((file) => file.path) },
       });
+      return { changeSetId: changeSet.id, revision: changeSet.revision + 1 };
     });
   }
 
@@ -1422,6 +1597,17 @@ export class PushDocsRepository extends SecurityRepository {
       .execute();
   }
 
+  async findOpenChangeRequestByBranch(projectId: string, branch: string) {
+    return this.database
+      .selectFrom("change_requests")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("source_branch", "=", normalizeBranchRef(branch))
+      .where("state", "=", "open")
+      .orderBy("updated_at", "desc")
+      .executeTakeFirst();
+  }
+
   async replaceChangeRequests(
     projectId: string,
     requests: Array<{
@@ -1559,6 +1745,51 @@ export class PushDocsRepository extends SecurityRepository {
       ])
       .where("attachments.project_id", "=", projectId)
       .orderBy("attachments.created_at", "desc")
+      .execute();
+  }
+
+  async listAttachmentsForBranch(projectId: string, branch: string) {
+    return this.database
+      .selectFrom("attachments")
+      .innerJoin("change_sets", "change_sets.id", "attachments.change_set_id")
+      .innerJoin("branch_contexts", "branch_contexts.id", "change_sets.branch_context_id")
+      .select([
+        "attachments.id",
+        "attachments.original_name",
+        "attachments.media_type",
+        "attachments.size_bytes",
+        "attachments.sha256",
+        "attachments.status",
+        "attachments.created_at",
+        "attachments.repository_path",
+        "branch_contexts.full_ref as branch",
+        "change_sets.id as change_set_id",
+        "change_sets.status as change_set_status",
+      ])
+      .where("attachments.project_id", "=", projectId)
+      .where("branch_contexts.full_ref", "=", normalizeBranchRef(branch))
+      .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
+      .orderBy("attachments.created_at", "desc")
+      .execute();
+  }
+
+  async listAttachmentsForChangeSet(projectId: string, changeSetId: string) {
+    return this.database
+      .selectFrom("attachments")
+      .select([
+        "id",
+        "original_name",
+        "media_type",
+        "size_bytes",
+        "sha256",
+        "status",
+        "created_at",
+        "repository_path",
+        "change_set_id",
+      ])
+      .where("project_id", "=", projectId)
+      .where("change_set_id", "=", changeSetId)
+      .orderBy("created_at", "desc")
       .execute();
   }
 

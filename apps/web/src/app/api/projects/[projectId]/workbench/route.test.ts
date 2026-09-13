@@ -16,6 +16,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/workbench", async (original) => ({
   ...(await original<typeof import("@/lib/workbench")>()),
   localWorkbenchContext: mocks.context,
+  localWorkbenchIndexContext: mocks.context,
 }));
 
 vi.mock("@/lib/provider", () => ({
@@ -32,7 +33,7 @@ beforeEach(() => {
   mocks.access.mockImplementation(async (_user, _project, action) => {
     if (role === "reader") throw new AccessDeniedError(action);
   });
-  mocks.stage.mockResolvedValue(undefined);
+  mocks.stage.mockResolvedValue({ changeSetId: "change", revision: 8 });
   mocks.create.mockResolvedValue({ name: "docs/new", sha: "sha" });
   mocks.context.mockImplementation(async () => ({
     store: {
@@ -41,10 +42,10 @@ beforeEach(() => {
       enqueueBranchSync: mocks.sync,
       ensureBranch: mocks.ensure,
       listBranches: async () => [{ full_ref: "main" }],
-      listAttachments: async () => [
+      listAttachmentsForChangeSet: async () => [
         { repository_path: "static/img/new.png", change_set_id: "change" },
-        { repository_path: "other.png", change_set_id: "other" },
       ],
+      getWorkingFile: async () => undefined,
     },
     user: { id: "user" },
     access: { role },
@@ -100,9 +101,9 @@ it("stages multiple files with a single revision check", async () => {
     { path: "docs/old.md", content: null },
     { path: "docs/new.md", content: "# New", createOnly: true },
   ];
-  expect(
-    (await request({ action: "files", branch: "main", expectedRevision: 7, files })).status,
-  ).toBe(200);
+  const response = await request({ action: "files", branch: "main", expectedRevision: 7, files });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ saved: true, changeSetId: "change", revision: 8 });
   expect(mocks.stage).toHaveBeenCalledWith({
     projectId: "project",
     branch: "main",
@@ -293,6 +294,66 @@ it("reads only known repository paths at the imported revision without allowing 
   expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
   expect(response.headers.get("Content-Disposition")).toContain("attachment");
   expect(response.headers.get("Content-Security-Policy")).toBe("sandbox");
+});
+
+it("loads an imported working file locally without initializing Git or VPN", async () => {
+  const snapshot = await mocks.context();
+  snapshot.state.branch.repository_paths = ["docs/intro.md"];
+  snapshot.store.getWorkingFile = vi.fn().mockResolvedValue({
+    path: "docs/intro.md",
+    content: "# Local draft",
+    baseContent: "# Imported",
+    loaded: true,
+    title: "Local draft",
+    locale: "default",
+    version: "current",
+    status: "modify",
+  });
+  mocks.context.mockResolvedValue(snapshot);
+  mocks.provider.mockRejectedValue(new Error("VPN unavailable"));
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&path=docs%2Fintro.md"),
+    context,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    content: "# Local draft",
+    file: { path: "docs/intro.md", status: "modify", loaded: true },
+  });
+  expect(mocks.provider).not.toHaveBeenCalled();
+});
+
+it("searches article bodies only when the user asks for content search", async () => {
+  const snapshot = await mocks.context();
+  snapshot.state.files = [
+    {
+      path: "docs/intro.md",
+      content: "# Intro\n\nA unique phrase",
+      title: "Intro",
+      status: "clean",
+    },
+    {
+      path: "sidebars.js",
+      content: "A unique phrase",
+      title: "Navigation",
+      status: "clean",
+    },
+  ];
+  mocks.context.mockResolvedValue(snapshot);
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&search=unique"),
+    context,
+  );
+  expect(await response.json()).toEqual({
+    results: [
+      expect.objectContaining({
+        path: "docs/intro.md",
+        title: "Intro",
+        line: 3,
+      }),
+    ],
+  });
+  expect(mocks.provider).not.toHaveBeenCalled();
 });
 
 it("reads and saves imported text while VPN initialization is unavailable", async () => {

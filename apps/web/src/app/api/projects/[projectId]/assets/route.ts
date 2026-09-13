@@ -27,6 +27,13 @@ const mediaTypes: Record<string, string> = {
   ".mp4": "video/mp4",
 };
 
+function attachmentPath(storageKey: string) {
+  const configuredRoot = process.env.PUSHDOCS_ATTACHMENTS_DIR;
+  return configuredRoot
+    ? path.join(/*turbopackIgnore: true*/ configuredRoot, storageKey)
+    : path.join(process.cwd(), "data", "attachments", storageKey);
+}
+
 export async function POST(request: Request, context: Context) {
   let destination: string | undefined;
   let finish: (() => Promise<void>) | undefined;
@@ -69,9 +76,7 @@ export async function POST(request: Request, context: Context) {
     });
     finish = () => store.finishUpload(lease.id, projectId);
     const storageKey = `${projectId}/${randomBytes(20).toString("hex")}`;
-    const attachmentsRoot =
-      process.env.PUSHDOCS_ATTACHMENTS_DIR ?? path.join(process.cwd(), "data", "attachments");
-    destination = path.join(attachmentsRoot, storageKey);
+    destination = attachmentPath(storageKey);
     await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
     const stored = await storeUpload(request.body, destination, maxBytes);
     await store.recordAttachment({
@@ -141,10 +146,8 @@ export async function GET(request: Request, context: Context) {
       (!asset && !conflict?.theirs_content && !state.branch.repository_paths.includes(filePath))
     )
       throw new Error("Вложение не найдено");
-    const attachmentsRoot =
-      process.env.PUSHDOCS_ATTACHMENTS_DIR ?? path.join(process.cwd(), "data", "attachments");
     const bytes = asset
-      ? await readFile(path.join(attachmentsRoot, asset.storage_key))
+      ? await readFile(attachmentPath(asset.storage_key))
       : Buffer.from(
           await provider.readBinary(
             target.provider_repository_id,

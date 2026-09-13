@@ -1,10 +1,14 @@
 import "server-only";
 import { isEditableFile, parseProjectConfig, safePath } from "@pushdocs/content";
 import { providerForConnection } from "./provider";
-import { repository, requireUser } from "./server";
+import { type CurrentUser, repository, requireUser } from "./server";
 
-export async function localWorkbenchContext(projectId: string, branch: string) {
-  const user = await requireUser();
+export async function localWorkbenchContext(
+  projectId: string,
+  branch: string,
+  currentUser?: CurrentUser,
+) {
+  const user = currentUser ?? (await requireUser());
   const store = repository();
   const access = await store.requireProjectAccess(user.id, projectId);
   const target = await store.getProjectSyncTarget(projectId);
@@ -15,6 +19,22 @@ export async function localWorkbenchContext(projectId: string, branch: string) {
   );
   const config = parseProjectConfig(configFile?.content);
   return { user, store, access, target, state, config };
+}
+
+export async function localWorkbenchIndexContext(
+  projectId: string,
+  branch: string,
+  currentUser?: CurrentUser,
+) {
+  const user = currentUser ?? (await requireUser());
+  const store = repository();
+  const [access, target, state] = await Promise.all([
+    store.requireProjectAccess(user.id, projectId),
+    store.getProjectSyncTarget(projectId),
+    store.listWorkingFileIndex(projectId, branch),
+  ]);
+  if (!target) throw new Error("Подключение проекта недоступно");
+  return { user, store, access, target, state, config: parseProjectConfig(state.configContent) };
 }
 
 export async function workbenchContext(projectId: string, branch: string) {

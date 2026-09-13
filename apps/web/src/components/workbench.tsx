@@ -57,6 +57,7 @@ export interface WorkingFile {
   locale: string;
   version: string;
   status: string;
+  loaded?: boolean;
 }
 export interface WorkbenchState {
   files: WorkingFile[];
@@ -144,6 +145,7 @@ export function Workbench({
   mediaBusyRef.current = mediaBusy;
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const saveCallback = useRef<() => Promise<boolean>>(async () => false);
   const [saveFailure, setSaveFailure] = useState<"network" | "permission" | "other" | null>(null);
   const [recovery, setRecovery] = useState<LocalDraft>();
   const [searchContent, setSearchContent] = useState(false);
@@ -276,10 +278,15 @@ export function Workbench({
       }
     };
     void update();
-    const timer = setInterval(() => void update(), 30_000);
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void update();
+    };
+    const timer = setInterval(refreshVisible, 120_000);
+    document.addEventListener("visibilitychange", refreshVisible);
     return () => {
       controller.abort();
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, [projectId, branch, state.sha, state.revision]);
   latest.current = text;
@@ -326,7 +333,7 @@ export function Workbench({
     if (
       !selected ||
       uploaded ||
-      active ||
+      (active && active.loaded !== false) ||
       branchStatuses[selected] === "delete" ||
       remoteFiles[selected] !== undefined
     )
@@ -342,7 +349,16 @@ export function Workbench({
         if (result.content !== null && typeof result.content !== "string")
           throw new Error("Не удалось прочитать файл");
         if (controller.signal.aborted) return;
-        setRemoteFiles((current) => ({ ...current, [selected]: result.content }));
+        if (result.file) {
+          const nextState = {
+            ...stateRef.current,
+            files: stateRef.current.files.map((file) =>
+              file.path === selected ? result.file : file,
+            ),
+          };
+          stateRef.current = nextState;
+          setState(nextState);
+        } else setRemoteFiles((current) => ({ ...current, [selected]: result.content }));
         saved.current = result.content ?? "";
         latest.current = saved.current;
         setText(saved.current);
@@ -358,9 +374,10 @@ export function Workbench({
 
   const load = useCallback(
     async (guard = false) => {
-      const response = await fetch(`${endpoint}?branch=${encodeURIComponent(branch)}`, {
-        cache: "no-store",
-      });
+      const response = await fetch(
+        `${endpoint}?${new URLSearchParams({ branch, ...(selected ? { selected } : {}) })}`,
+        { cache: "no-store" },
+      );
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
       if (guard && (inFlight.current || latest.current !== saved.current)) return stateRef.current;
@@ -368,7 +385,7 @@ export function Workbench({
       setState(next);
       return next as WorkbenchState;
     },
-    [branch, endpoint],
+    [branch, endpoint, selected],
   );
 
   const command = useCallback(
@@ -392,19 +409,41 @@ export function Workbench({
     setBusy(true);
     setSaving(true);
     const snapshot = latest.current;
+    let persisted = false;
     try {
-      await command({
+      const result = await command({
         action: "files",
         expectedRevision: stateRef.current.revision,
         files: [{ path: selected, content: snapshot }],
       });
       saved.current = snapshot;
-      await load();
+      const currentState = stateRef.current;
+      const files = currentState.files.map((file) =>
+        file.path === selected
+          ? {
+              ...file,
+              content: snapshot,
+              loaded: true,
+              status:
+                file.status === "add" ? "add" : snapshot === file.baseContent ? "clean" : "modify",
+            }
+          : file,
+      );
+      const nextState = {
+        ...currentState,
+        files,
+        revision: typeof result.revision === "number" ? result.revision : currentState.revision + 1,
+        changeSetId:
+          typeof result.changeSetId === "string" ? result.changeSetId : currentState.changeSetId,
+      };
+      stateRef.current = nextState;
+      setState(nextState);
       recoveryBase.current = undefined;
       if (latest.current === snapshot) clearDraft(draftId);
       else writeDraft(draftId, latest.current, snapshot);
       setError("");
       setSaveFailure(null);
+      persisted = true;
       return latest.current === snapshot;
     } catch (cause) {
       const status = cause instanceof WorkbenchRequestError ? cause.status : 0;
@@ -431,14 +470,17 @@ export function Workbench({
       inFlight.current = false;
       setBusy(false);
       setSaving(false);
+      if (persisted && latest.current !== saved.current)
+        queueMicrotask(() => void saveCallback.current());
     }
-  }, [command, load, readOnly, selected, draftId]);
+  }, [command, readOnly, selected, draftId]);
+  saveCallback.current = save;
 
   useEffect(() => {
-    if (text === saved.current || !dirty || error || busy) return;
+    if (text === saved.current || !dirty || error || busy || saving) return;
     const timer = setTimeout(() => void save(), 1200);
     return () => clearTimeout(timer);
-  }, [dirty, text, error, busy, save]);
+  }, [dirty, text, error, busy, saving, save]);
 
   useEffect(() => {
     const prevent = (event: BeforeUnloadEvent) => {
@@ -464,24 +506,16 @@ export function Workbench({
     return () => window.removeEventListener("keydown", handle);
   }, [dialog]);
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (inFlight.current || latest.current !== saved.current) return;
-      void load(true)
-        .then((next) => {
-          const current = next.files.find((file) => file.path === selected);
-          if (current && latest.current === saved.current) {
-            saved.current = current.content;
-            latest.current = current.content;
-            setText(current.content);
-          }
-        })
-        .catch(() => setNotice("Нет связи с сервером. Ваш текст остаётся в редакторе."));
-    }, 15000);
-    return () => clearInterval(timer);
-  }, [load, selected]);
-
-  useEffect(() => {
-    const refresh = () => {
+    const refresh = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : undefined;
+      if (detail?.projectId && detail.projectId !== projectId) return;
+      if (detail?.payload?.branch && detail.payload.branch !== branch) return;
+      if (
+        detail?.type === "files.staged" &&
+        typeof detail.revision === "number" &&
+        detail.revision <= stateRef.current.revision
+      )
+        return;
       if (!inFlight.current && latest.current === saved.current) {
         void load(true)
           .then((next) => {
@@ -497,7 +531,7 @@ export function Workbench({
     };
     window.addEventListener("pushdocs:refresh", refresh);
     return () => window.removeEventListener("pushdocs:refresh", refresh);
-  }, [load, selected]);
+  }, [load, selected, branch, projectId]);
 
   useEffect(() => {
     const navigate = (event: MouseEvent) => {
@@ -603,13 +637,13 @@ export function Workbench({
       (item) => item.path === filePath && (!isUpload || item.status === "delete"),
     );
     let content =
-      file?.content ??
+      (file?.loaded === false ? undefined : file?.content) ??
       (isUpload ||
       branchStatuses[filePath] === "delete" ||
       (branchStatuses[filePath] && !stateRef.current.repositoryPaths.includes(filePath))
         ? null
         : remoteFiles[filePath]);
-    if (!file && content === undefined) {
+    if (content === undefined) {
       setBusy(true);
       try {
         const response = await fetch(
@@ -620,7 +654,16 @@ export function Workbench({
         if (result.content !== null && typeof result.content !== "string")
           throw new Error("Не удалось прочитать файл");
         content = result.content;
-        setRemoteFiles((current) => ({ ...current, [filePath]: result.content }));
+        if (result.file) {
+          const nextState = {
+            ...stateRef.current,
+            files: stateRef.current.files.map((item) =>
+              item.path === filePath ? result.file : item,
+            ),
+          };
+          stateRef.current = nextState;
+          setState(nextState);
+        } else setRemoteFiles((current) => ({ ...current, [filePath]: result.content }));
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Не удалось открыть файл");
         return;
@@ -1619,6 +1662,15 @@ export function Workbench({
                   file.path === selected ? { ...file, content: text } : file,
                 )}
                 initialContent={searchContent}
+                onSearchContent={async (query, signal) => {
+                  const response = await fetch(
+                    `${endpoint}?${new URLSearchParams({ branch, search: query })}`,
+                    { signal },
+                  );
+                  const result = await response.json();
+                  if (!response.ok) throw new Error(result.error);
+                  return result.results ?? [];
+                }}
                 onOpen={async (path, line) => {
                   if (await openFile(path)) {
                     setDialog(null);

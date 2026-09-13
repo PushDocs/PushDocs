@@ -241,3 +241,24 @@ it("hides internal .pushdocs files even when selected and creates files outside 
   view.rerender(<FileExplorer {...props} paths={[".pushdocs/config.json"]} />);
   expect(screen.getByText("Нет файлов")).toBeTruthy();
 });
+
+it("virtualizes a large flat repository and keeps the selected file reachable", () => {
+  const manyPaths = Array.from({ length: 5_000 }, (_, index) => `docs-${index}.md`);
+  render(
+    <FileExplorer
+      paths={manyPaths}
+      selected="docs-4999.md"
+      statuses={new Map()}
+      readOnly={false}
+      busy={false}
+      onOpen={vi.fn()}
+      onCreate={vi.fn()}
+      onRefresh={vi.fn()}
+    />,
+  );
+  expect(screen.getAllByRole("treeitem").length).toBeLessThan(60);
+  expect(screen.getByRole("treeitem", { name: "docs-4999.md" })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: "docs-4999.md" }).getAttribute("aria-setsize")).toBe(
+    "5000",
+  );
+});

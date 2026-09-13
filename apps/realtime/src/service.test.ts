@@ -115,7 +115,7 @@ describe("realtime request handler", () => {
     });
     const stream = response();
     handler(
-      request("/events?project=one", {
+      request("/events?projectId=one", {
         cookie: "pushdocs_session=token",
         "last-event-id": "10",
       }),
@@ -129,13 +129,33 @@ describe("realtime request handler", () => {
       "Content-Type": "text/event-stream",
       "X-Accel-Buffering": "no",
     });
-    expect(listEvents).toHaveBeenCalledWith("user", 10);
-    expect(stream.write).toHaveBeenNthCalledWith(1, 'event: connected\ndata: {"cursor":10}\n\n');
+    expect(listEvents).toHaveBeenCalledWith("user", 10, "one");
+    expect(stream.write).toHaveBeenNthCalledWith(
+      1,
+      'id: 10\nevent: connected\ndata: {"cursor":10}\n\n',
+    );
     expect(stream.write).toHaveBeenNthCalledWith(
       2,
       'id: 12\nevent: document.updated\ndata: {"entityId":"document","payload":{"path":"docs/a.md"},"projectId":"project","revision":3}\n\n',
     );
-    expect(timers.delays).toEqual([2000, 20_000]);
+    expect(timers.delays).toEqual([5000, 20_000]);
+  });
+
+  it("starts fresh connections at the current cursor instead of replaying history", async () => {
+    const timers = scheduler();
+    const listEvents = vi.fn().mockResolvedValue([]);
+    const getCurrentCursor = vi.fn().mockResolvedValue(48);
+    const stream = response();
+    createRealtimeHandler({
+      findUserByToken: vi.fn().mockResolvedValue({ id: "user" }),
+      getCurrentCursor,
+      listEvents,
+      setInterval: timers.setInterval,
+    })(request("/events", { cookie: "pushdocs_session=token" }), stream);
+    await vi.waitFor(() => expect(stream.write).toHaveBeenCalled());
+    expect(getCurrentCursor).toHaveBeenCalledOnce();
+    expect(listEvents).toHaveBeenCalledWith("user", 48, undefined);
+    expect(stream.write).toHaveBeenCalledWith('id: 48\nevent: connected\ndata: {"cursor":48}\n\n');
   });
 
   it("sends heartbeats and clears both timers when the client closes", async () => {
@@ -158,15 +178,19 @@ describe("realtime request handler", () => {
 
   it("stops an open stream when its session is revoked", async () => {
     const timers = scheduler();
+    let currentTime = 0;
     const auth = vi.fn().mockResolvedValue({ id: "user" });
     const listEvents = vi.fn().mockResolvedValue([]);
     const stream = response();
-    createRealtimeHandler({ findUserByToken: auth, listEvents, setInterval: timers.setInterval })(
-      request("/events", { cookie: "pushdocs_session=token" }),
-      stream,
-    );
+    createRealtimeHandler({
+      findUserByToken: auth,
+      listEvents,
+      now: () => currentTime,
+      setInterval: timers.setInterval,
+    })(request("/events", { cookie: "pushdocs_session=token" }), stream);
     await vi.waitFor(() => expect(timers.callbacks).toHaveLength(2));
     auth.mockResolvedValue(undefined);
+    currentTime = 30_000;
     await timers.callbacks[0]?.();
     expect(stream.end).toHaveBeenCalled();
     expect(listEvents).toHaveBeenCalledTimes(1);
@@ -236,7 +260,7 @@ describe("realtime request handler", () => {
       await Promise.resolve();
       await Promise.resolve();
       incoming.emit("close");
-      expect(stream.write).toHaveBeenCalledWith('event: connected\ndata: {"cursor":0}\n\n');
+      expect(stream.write).toHaveBeenCalledWith('id: 0\nevent: connected\ndata: {"cursor":0}\n\n');
     } finally {
       vi.useRealTimers();
     }

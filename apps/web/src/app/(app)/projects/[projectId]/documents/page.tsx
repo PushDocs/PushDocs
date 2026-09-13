@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { BranchImport } from "@/components/branch-import";
 import { Workbench } from "@/components/workbench";
-import { actor, application, repository, requireUser } from "@/lib/server";
-import { localWorkbenchContext } from "@/lib/workbench";
+import { repository, requireUser } from "@/lib/server";
+import { localWorkbenchIndexContext } from "@/lib/workbench";
 
 export const metadata: Metadata = { title: "Документы" };
 
@@ -13,41 +13,59 @@ export default async function DocumentsPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ branch?: string; path?: string; panel?: string }>;
 }) {
-  const user = await requireUser();
-  const { projectId } = await params;
-  const project = (await application().listProjects(actor(user))).find(
-    (item) => item.id === projectId,
-  );
+  const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
+  const store = repository();
+  const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const query = await searchParams;
   const branch = query.branch ?? project.defaultBranch;
-  const branches = await repository().listBranches(projectId);
+  const [branches, workbench] = await Promise.all([
+    store.listBranches(projectId),
+    localWorkbenchIndexContext(projectId, branch, user).then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    ),
+  ]);
   if (!branches.some((item) => item.full_ref === branch))
     return <BranchImport key={branch} projectId={projectId} branch={branch} />;
-  const { state, config, access } = await localWorkbenchContext(projectId, branch);
-  if (
-    state.branch.repository_paths.length === 0 &&
-    state.files.length === 0 &&
-    !(await repository().hasImportedBranch(state.branch.id))
-  )
+  if (!workbench.value) throw workbench.error;
+  const { state, config, access } = workbench.value;
+  const needsImport = state.branch.repository_paths.length === 0 && state.files.length === 0;
+  const [components, uploads, imported] = await Promise.all([
+    store.listProjectComponents(projectId),
+    state.changeSet
+      ? store
+          .listAttachmentsForChangeSet(projectId, state.changeSet.id)
+          .then((files) => files.map((file) => ({ path: file.repository_path })))
+      : Promise.resolve([]),
+    needsImport ? store.hasImportedBranch(state.branch.id) : Promise.resolve(true),
+  ]);
+  if (needsImport && !imported)
     return <BranchImport key={branch} projectId={projectId} branch={branch} />;
+  const initialFilePath =
+    (query.path && state.files.some((file) => file.path === query.path) ? query.path : undefined) ??
+    state.files.find(
+      (file) =>
+        file.status !== "delete" && /\.mdx?$/.test(file.path) && !file.path.startsWith("i18n/"),
+    )?.path ??
+    state.files.find((file) => file.status !== "delete")?.path;
+  const selectedFile = initialFilePath
+    ? await store.getWorkingFile(projectId, branch, initialFilePath)
+    : undefined;
   return (
     <Workbench
       key={`${projectId}:${branch}`}
       projectId={projectId}
       projectName={project.name}
-      components={await repository().listProjectComponents(projectId)}
+      components={components}
       branch={branch}
-      initialPath={query.path}
+      initialPath={query.path ?? initialFilePath}
       initialPanel={query.panel === "files" ? "media" : undefined}
       initial={{
         ownerId: user.id,
-        files: state.files,
-        uploads: state.changeSet
-          ? (await repository().listAttachments(projectId))
-              .filter((file) => file.change_set_id === state.changeSet?.id)
-              .map((file) => ({ path: file.repository_path }))
-          : [],
+        files: state.files.map((file) =>
+          file.path === initialFilePath && selectedFile ? selectedFile : file,
+        ),
+        uploads,
         config,
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",

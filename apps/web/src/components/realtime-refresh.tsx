@@ -1,19 +1,16 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
-const refreshEvents = [
-  "attachment.ready",
+const localEvents = ["attachment.ready", "comment.created", "document.created", "files.staged"];
+const routeEvents = [
   "branch.synchronized",
   "change-set.conflicted",
   "change-set.failed",
   "change-set.submitted",
   "change-set.submitting",
-  "comment.created",
   "conflict.resolved",
-  "document.created",
-  "files.staged",
   "member.joined",
   "project.created",
   "reviews.synchronized",
@@ -21,21 +18,41 @@ const refreshEvents = [
 
 export function RealtimeRefresh() {
   const router = useRouter();
+  const pathname = usePathname();
+  const projectId = pathname.match(/^\/projects\/([^/]+)/)?.[1];
+  const [disconnected, setDisconnected] = useState(false);
 
   useEffect(() => {
-    const source = new EventSource("/events");
+    const source = new EventSource(
+      projectId ? `/events?${new URLSearchParams({ projectId })}` : "/events",
+    );
     let timer: number | undefined;
-    const refresh = () => {
-      window.dispatchEvent(new Event("pushdocs:refresh"));
+    source.onopen = () => setDisconnected(false);
+    source.onerror = () => setDisconnected(true);
+    const dispatch = (event: Event) => {
+      let detail: Record<string, unknown> = { type: event.type };
+      if (event instanceof MessageEvent)
+        try {
+          detail = { ...detail, ...JSON.parse(String(event.data)) };
+        } catch {}
+      window.dispatchEvent(new CustomEvent("pushdocs:refresh", { detail }));
+    };
+    const refresh = (event: Event) => {
+      dispatch(event);
       window.clearTimeout(timer);
       timer = window.setTimeout(() => router.refresh(), 180);
     };
-    for (const event of refreshEvents) source.addEventListener(event, refresh);
+    for (const event of localEvents) source.addEventListener(event, dispatch);
+    for (const event of routeEvents) source.addEventListener(event, refresh);
     return () => {
       window.clearTimeout(timer);
       source.close();
     };
-  }, [router]);
+  }, [router, projectId]);
 
-  return null;
+  return disconnected ? (
+    <div className="connection-banner" role="status">
+      Связь с сервером прервана. Изменения остаются в браузере, подключение восстанавливается…
+    </div>
+  ) : null;
 }

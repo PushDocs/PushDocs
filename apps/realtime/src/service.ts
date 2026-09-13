@@ -12,8 +12,10 @@ export interface RealtimeEvent {
 export interface RealtimeServiceOptions {
   clearInterval?: (handle: ReturnType<typeof globalThis.setInterval>) => void;
   findUserByToken: (token: string) => Promise<{ id: string } | undefined>;
-  listEvents: (userId: string, cursor: number) => Promise<RealtimeEvent[]>;
+  getCurrentCursor?: () => Promise<number>;
+  listEvents: (userId: string, cursor: number, projectId?: string) => Promise<RealtimeEvent[]>;
   logger?: Pick<Console, "error">;
+  now?: () => number;
   setInterval?: (
     callback: () => void | Promise<void>,
     delay: number,
@@ -51,6 +53,7 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
     options.clearInterval ??
     ((handle: ReturnType<typeof globalThis.setInterval>) => globalThis.clearInterval(handle));
   const logger = options.logger ?? console;
+  const now = options.now ?? Date.now;
 
   async function events(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const token = cookieValue(request.headers.cookie, "pushdocs_session");
@@ -59,27 +62,38 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
       response.writeHead(401).end();
       return;
     }
+    const url = new URL(request.url ?? "/events", "http://realtime.local");
+    const projectId = url.searchParams.get("projectId")?.trim() || undefined;
+    const suppliedCursor = request.headers["last-event-id"];
+    const cursorAtConnect =
+      suppliedCursor === undefined && options.getCurrentCursor
+        ? await options.getCurrentCursor()
+        : lastEventCursor(suppliedCursor);
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "Content-Type": "text/event-stream",
       "X-Accel-Buffering": "no",
     });
-    let cursor = lastEventCursor(request.headers["last-event-id"]);
+    let cursor = cursorAtConnect;
     let running = false;
     let closed = false;
-    response.write(formatSseEvent({ data: { cursor }, type: "connected" }));
+    let validateSessionAfter = now() + 30_000;
+    response.write(formatSseEvent({ data: { cursor }, id: cursor, type: "connected" }));
 
     const poll = async () => {
       if (running || closed || response.destroyed) return;
       running = true;
       try {
-        if (!(await options.findUserByToken(token))) {
-          closed = true;
-          response.end();
-          return;
+        if (now() >= validateSessionAfter) {
+          if (!(await options.findUserByToken(token))) {
+            closed = true;
+            response.end();
+            return;
+          }
+          validateSessionAfter = now() + 30_000;
         }
-        const rows = await options.listEvents(user.id, cursor);
+        const rows = await options.listEvents(user.id, cursor, projectId);
         for (const row of rows) {
           cursor = Number(row.sequence);
           response.write(
@@ -104,7 +118,7 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
 
     await poll();
     if (closed) return;
-    const pollTimer = schedule(poll, 2000);
+    const pollTimer = schedule(poll, 5000);
     const heartbeat = schedule(() => {
       if (closed || response.destroyed) return;
       response.write(": heartbeat\n\n");

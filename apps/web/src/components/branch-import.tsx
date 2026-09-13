@@ -11,6 +11,7 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
   const requestRef = useRef<{ attempt: number; promise: Promise<string> } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState("");
+  const [stage, setStage] = useState<"starting" | "queued" | "running">("starting");
 
   useEffect(() => {
     let active = true;
@@ -30,6 +31,7 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
     void request
       .then((jobId) => {
         if (!active) return;
+        setStage("queued");
         const poll = async () => {
           try {
             const job = await gitOperationStatusAction(projectId, jobId);
@@ -46,6 +48,7 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
               setError("Не удалось загрузить ветку. Проверьте подключение и повторите попытку.");
               return;
             }
+            setStage(job.status === "running" ? "running" : "queued");
             pollTimer = setTimeout(poll, 2000);
           } catch {
             if (!active) return;
@@ -81,6 +84,7 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
             type="button"
             onClick={() => {
               setError("");
+              setStage("starting");
               setAttempt((value) => value + 1);
             }}
           >
@@ -88,7 +92,16 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
           </button>
         </>
       ) : (
-        <SectionSkeleton label="Загрузка файлов ветки" />
+        <div className="branch-import-state">
+          <ol aria-label="Этапы загрузки ветки">
+            <li aria-current={stage === "starting" ? "step" : undefined}>Подготавливаем</li>
+            <li aria-current={stage === "queued" ? "step" : undefined}>В очереди</li>
+            <li aria-current={stage === "running" ? "step" : undefined}>Получаем файлы</li>
+            <li>Открываем документы</li>
+          </ol>
+          <p className="muted">Можно перейти в другой раздел. Загрузка продолжится на сервере.</p>
+          <SectionSkeleton label="Загрузка файлов ветки" />
+        </div>
       )}
     </section>
   );

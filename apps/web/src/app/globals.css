@@ -529,6 +529,22 @@ textarea:where(:not(.monaco-editor *)):focus {
   min-width: 0;
 }
 
+.connection-banner {
+  position: fixed;
+  z-index: 120;
+  top: 12px;
+  left: 50%;
+  max-width: min(620px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 9px 14px;
+  border: 1px solid #ead7a2;
+  border-radius: 8px;
+  background: #fff9e8;
+  color: #6f5413;
+  box-shadow: 0 6px 24px rgb(35 31 45 / 12%);
+  font-size: 12px;
+}
+
 .page {
   margin: 0;
   max-width: 1360px;
@@ -1228,6 +1244,33 @@ textarea:where(:not(.monaco-editor *)):focus {
 
 .branch-import h1 {
   overflow-wrap: anywhere;
+}
+
+.branch-import-state > ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.branch-import-state > ol li {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.branch-import-state > ol li[aria-current="step"] {
+  background: var(--violet-wash);
+  color: var(--violet-deep);
+  font-weight: 700;
+}
+
+.branch-import-state > p {
+  margin: 0 0 20px;
 }
 
 .branch-import-loading {

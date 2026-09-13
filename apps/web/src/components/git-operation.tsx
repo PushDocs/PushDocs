@@ -130,8 +130,13 @@ export function SubmissionRefresh({ active }: { active: boolean }) {
   const router = useRouter();
   useEffect(() => {
     if (!active) return;
-    const timer = setInterval(() => router.refresh(), 2000);
-    return () => clearInterval(timer);
+    const refresh = () => router.refresh();
+    const timer = setTimeout(refresh, 30_000);
+    window.addEventListener("online", refresh);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("online", refresh);
+    };
   }, [active, router]);
   return null;
 }

@@ -30,24 +30,29 @@ export function FileComments({
   );
   useEffect(() => {
     const controller = new AbortController();
-    const update = () => {
+    const update = (event?: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : undefined;
+      if (detail?.projectId && detail.projectId !== projectId) return;
+      if (detail?.payload?.branch && detail.payload.branch !== branch) return;
+      if (detail?.payload?.documentPath && detail.payload.documentPath !== path) return;
       void refresh(controller.signal).catch(() => {
         if (!controller.signal.aborted)
           setError("Комментарии недоступны. Повторим загрузку автоматически.");
       });
     };
     update();
-    const interval = setInterval(update, 10000);
     window.addEventListener("pushdocs:refresh", update);
+    window.addEventListener("online", update);
     return () => {
       window.removeEventListener("pushdocs:refresh", update);
+      window.removeEventListener("online", update);
       controller.abort();
-      clearInterval(interval);
     };
-  }, [refresh]);
+  }, [refresh, projectId, branch, path]);
   return (
     <section className="wb-comments">
-      <h2 title="Комментарии сохраняются в PushDocs и не отправляются в PR / MR">Комментарии</h2>
+      <h2>Комментарии PushDocs</h2>
+      <p className="muted">Хранятся в PushDocs и не отправляются в PR или MR.</p>
       {comments.map((comment) => (
         <article key={comment.id}>
           <strong>{comment.author_name}</strong>

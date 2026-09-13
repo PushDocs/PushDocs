@@ -2,7 +2,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  access: vi.fn().mockResolvedValue({ role: "admin" }),
+  project: vi.fn().mockResolvedValue({
+    defaultBranch: "stable",
+    id: "project",
+    name: "Docs",
+    providerLabel: "GitLab",
+    role: "admin",
+  }),
   branches: vi.fn().mockResolvedValue([]),
   components: vi.fn().mockResolvedValue([]),
   projects: vi.fn().mockResolvedValue([
@@ -35,10 +41,10 @@ vi.mock("@/lib/server", () => ({
   actor: (user: unknown) => user,
   application: () => ({ listProjects: mocks.projects }),
   repository: () => ({
+    getProjectForUser: mocks.project,
     getProjectSettings: mocks.settings,
     listBranches: mocks.branches,
     listProjectComponents: mocks.components,
-    requireProjectAccess: mocks.access,
   }),
   requireUser: async () => ({ id: "user", isInstanceOperator: true }),
 }));
@@ -57,7 +63,13 @@ it("allows project administrators to edit and delete a project", async () => {
 });
 
 it("keeps project management hidden from editors", async () => {
-  mocks.access.mockResolvedValueOnce({ role: "editor" });
+  mocks.project.mockResolvedValueOnce({
+    defaultBranch: "stable",
+    id: "project",
+    name: "Docs",
+    providerLabel: "GitLab",
+    role: "editor",
+  });
   const html = renderToStaticMarkup(
     await ProjectSettingsPage({ params: Promise.resolve({ projectId: "project" }) }),
   );

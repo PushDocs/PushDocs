@@ -47,6 +47,13 @@ import {
 } from "@/lib/server";
 import { authenticationSession, requireTwoFactor, TwoFactorError } from "@/lib/two-factor";
 
+function attachmentStoragePath(relativePath: string) {
+  const configuredRoot = process.env.PUSHDOCS_ATTACHMENTS_DIR;
+  return configuredRoot
+    ? path.join(/*turbopackIgnore: true*/ configuredRoot, relativePath)
+    : path.join(process.cwd(), "data", "attachments", relativePath);
+}
+
 async function uploadedVpnProfile(formData: FormData): Promise<string | undefined> {
   const value = formData.get("vpnProfile");
   if (!(value instanceof File) || value.size === 0) return undefined;
@@ -376,11 +383,7 @@ export async function deleteProjectAction(formData: FormData): Promise<void> {
   if (!current) throw new Error("PROJECT_NOT_FOUND");
   if (input.confirmation !== current.slug) throw new Error("CONFIRMATION_MISMATCH");
   await application().deleteProject(actor(user), input.projectId);
-  const attachmentsRoot = path.resolve(
-    /* turbopackIgnore: true */
-    process.env.PUSHDOCS_ATTACHMENTS_DIR ?? "./data/attachments",
-  );
-  await rm(path.join(attachmentsRoot, input.projectId), { force: true, recursive: true });
+  await rm(attachmentStoragePath(input.projectId), { force: true, recursive: true });
   revalidatePath("/projects");
   redirect("/projects");
 }
@@ -505,11 +508,7 @@ export async function uploadAttachmentAction(formData: FormData): Promise<void> 
     .slice(0, 80);
   const repositoryPath = `static/img/${sha256.slice(0, 10)}-${safeName || "asset"}${extension}`;
   const storageKey = `${projectId}/${randomBytes(16).toString("hex")}${extension}`;
-  const attachmentsRoot = path.resolve(
-    /* turbopackIgnore: true */
-    process.env.PUSHDOCS_ATTACHMENTS_DIR ?? "./data/attachments",
-  );
-  const destination = path.join(attachmentsRoot, storageKey);
+  const destination = attachmentStoragePath(storageKey);
   const temporary = `${destination}.uploading`;
   await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
   await writeFile(temporary, contents, { flag: "wx", mode: 0o600 });

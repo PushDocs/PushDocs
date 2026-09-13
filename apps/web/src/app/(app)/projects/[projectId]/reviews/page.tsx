@@ -12,7 +12,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { GitOperation } from "@/components/git-operation";
 import { externalPreviewUrl } from "@/lib/external-preview";
-import { actor, application, repository, requireUser } from "@/lib/server";
+import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "PR и MR" };
 
@@ -23,15 +23,11 @@ export default async function ReviewsPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ review?: string; branch?: string; q?: string; state?: string }>;
 }) {
-  const user = await requireUser();
-  const { projectId } = await params;
-  const project = (await application().listProjects(actor(user))).find(
-    (item) => item.id === projectId,
-  );
+  const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
+  const store = repository();
+  const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  await repository().requireProjectAccess(user.id, projectId);
-  const allReviews = await repository().listChangeRequests(projectId);
-  const query = await searchParams;
+  const allReviews = await store.listChangeRequests(projectId);
   const needle = query.q?.trim().toLocaleLowerCase() ?? "";
   const filterState = ["open", "merged", "closed"].includes(query.state ?? "")
     ? query.state
@@ -48,7 +44,7 @@ export default async function ReviewsPage({
     reviews.find((review) => review.source_branch === query.branch && review.state === "open") ??
     reviews[0];
   const checks = selected
-    ? (await repository().listChecks(selected.id)).map((check) => ({
+    ? (await store.listChecks(selected.id)).map((check) => ({
         conclusion: check.conclusion,
         durationMs: check.duration_ms,
         id: check.id,
@@ -162,7 +158,6 @@ export default async function ReviewsPage({
                 <Link
                   className="pd-button pd-button--primary"
                   href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: selected.source_branch })}`}
-                  prefetch={false}
                 >
                   <GitBranch aria-hidden size={15} />
                   Переключиться на ветку

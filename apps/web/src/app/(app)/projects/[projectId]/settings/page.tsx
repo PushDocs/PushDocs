@@ -4,7 +4,7 @@ import { ComponentCatalog } from "@/components/component-catalog";
 import { componentExamples } from "@/components/component-examples";
 import { CriticalForm } from "@/components/critical-form";
 import { SettingsNavigation } from "@/components/settings-navigation";
-import { actor, application, repository, requireUser } from "@/lib/server";
+import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Настройки проекта" };
 
@@ -13,19 +13,19 @@ export default async function ProjectSettingsPage({
 }: {
   params: Promise<{ projectId: string }>;
 }) {
-  const user = await requireUser();
-  const { projectId } = await params;
-  const project = (await application().listProjects(actor(user))).find(
-    (item) => item.id === projectId,
-  );
+  const [user, { projectId }] = await Promise.all([requireUser(), params]);
+  const store = repository();
+  const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const access = await repository().requireProjectAccess(user.id, projectId);
-  const settings = await repository().getProjectSettings(projectId);
+  const access = { role: project.role };
+  const [settings, components, branches] = await Promise.all([
+    store.getProjectSettings(projectId),
+    store.listProjectComponents(projectId),
+    store.listBranches(projectId),
+  ]);
   if (!settings) return <div className="not-found-panel">Проект не найден.</div>;
-  const components = await repository().listProjectComponents(projectId);
-  const branches = await repository().listBranches(projectId);
   const state = branches.some((item) => item.full_ref === project.defaultBranch)
-    ? await repository().listWorkingFiles(projectId, project.defaultBranch)
+    ? await store.listWorkingFiles(projectId, project.defaultBranch)
     : undefined;
   const examples = componentExamples(
     components,
@@ -57,7 +57,13 @@ export default async function ProjectSettingsPage({
           <LockKeyhole aria-hidden />
           <div>
             <h2>Git-подключение</h2>
-            <p>{project.providerLabel}</p>
+            <p>
+              {project.providerLabel} ·{" "}
+              {settings.provider_vpn_slot
+                ? `через VPN, слот ${settings.provider_vpn_slot}`
+                : "напрямую"}
+            </p>
+            <small>{settings.provider_base_url}</small>
           </div>
         </article>
       </section>

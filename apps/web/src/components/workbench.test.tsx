@@ -424,6 +424,33 @@ it("keeps MDX bytes on open and exposes technical files without filters", async 
   expect(screen.queryByText("Фильтры документов")).toBeNull();
   expect(screen.queryByLabelText("Служебные файлы")).toBeNull();
 });
+
+it("loads the selected file body on demand without reloading the whole workbench", async () => {
+  if (!state.files[1]) throw new Error("Missing fixture");
+  state.files[1] = { ...state.files[1], content: "", baseContent: "", loaded: false };
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("path=docs%2Fb.md"))
+      return Response.json({
+        content: "# Loaded on demand",
+        file: {
+          ...state.files[1],
+          content: "# Loaded on demand",
+          baseContent: "# Loaded on demand",
+          loaded: true,
+        },
+      });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  mount();
+  await click("b.md");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Loaded on demand");
+  expect(
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/workbench?")),
+  ).toHaveLength(1);
+});
+
 it("autosaves once with optimistic revision and preserves component source", async () => {
   mount();
   fireEvent.change(screen.getByLabelText("Исходник документа"), {
@@ -695,25 +722,25 @@ it("refreshes a clean editor on events but retains unsaved typing", async () => 
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "локальная правка");
   expect(screen.getByText(/В ветке появились изменения/)).toBeTruthy();
 });
-it("polls safely and displays offline state", async () => {
-  mount();
-  await tick(15000);
-  expect(
-    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/workbench?")),
-  ).toHaveLength(1);
+it("avoids full workbench polling and reports a failed background status refresh", async () => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   const original = vi.mocked(fetch).getMockImplementation();
   let failNext = true;
   vi.mocked(fetch).mockImplementation(async (url, options) => {
-    if (failNext && String(url).includes("/workbench?")) {
+    if (failNext && String(url).includes("/file-statuses?")) {
       failNext = false;
       throw new Error("offline");
     }
     if (!original) throw new Error("Missing fixture");
     return original(url, options);
   });
-  await tick(15000);
-  expect(screen.getByText(/Нет связи с сервером/)).toBeTruthy();
-  await click("Закрыть");
+  mount();
+  await act(async () => {});
+  expect(screen.getByLabelText(/Не удалось получить изменения из Git/)).toBeTruthy();
+  await tick(30_000);
+  expect(
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/workbench?")),
+  ).toHaveLength(0);
   await act(async () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0]!);
   });
@@ -735,10 +762,17 @@ it("keeps typing entered while an earlier save is in flight", async () => {
   });
   fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "вторая" } });
   await act(async () => {
-    release(Response.json({ saved: true }));
+    if (!state.files[0]) throw new Error("Missing fixture");
+    state.files[0].content = "первая";
+    state.files[0].status = "modify";
+    state.revision = 1;
+    release(Response.json({ saved: true, changeSetId: "change", revision: 1 }));
   });
   expect(mocks.push).not.toHaveBeenCalled();
   await tick();
+  expect(requests).toEqual([
+    expect.objectContaining({ files: [{ path: "docs/a.mdx", content: "вторая" }] }),
+  ]);
   expect(state.files[0]?.content).toBe("вторая");
 });
 

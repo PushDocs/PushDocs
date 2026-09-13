@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QuickOpen, searchFiles } from "./quick-open";
 
@@ -51,4 +51,66 @@ it("opens the keyboard-selected search result at its matching line", () => {
   fireEvent.keyDown(input, { key: "Enter" });
   expect(open).toHaveBeenCalledTimes(1);
   expect(screen.getByText("Совпадений в статьях не найдено.")).toBeTruthy();
+});
+
+it("searches unloaded article bodies on the server and opens the returned line", async () => {
+  vi.useFakeTimers();
+  try {
+    const open = vi.fn();
+    const remote = vi.fn().mockResolvedValue([
+      {
+        path: "docs/archive.md",
+        title: "Архив",
+        line: 27,
+        excerpt: "искомая фраза",
+      },
+    ]);
+    render(
+      <QuickOpen
+        paths={paths}
+        files={files.map((file) => ({ ...file, content: "", loaded: false }))}
+        onOpen={open}
+        onSearchContent={remote}
+        initialContent
+      />,
+    );
+    const input = screen.getByLabelText("Поиск файлов");
+    fireEvent.change(input, { target: { value: "искомая" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(remote).toHaveBeenCalledWith("искомая", expect.any(AbortSignal));
+    expect(screen.getByText("искомая фраза")).toBeTruthy();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(open).toHaveBeenCalledWith("docs/archive.md", 27);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("shows a server-search error instead of an empty result state", async () => {
+  vi.useFakeTimers();
+  try {
+    render(
+      <QuickOpen
+        paths={paths}
+        files={files.map((file) => ({ ...file, content: "", loaded: false }))}
+        onOpen={vi.fn()}
+        onSearchContent={vi.fn().mockRejectedValue(new Error("offline"))}
+        initialContent
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), {
+      target: { value: "искомая" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Не удалось выполнить поиск. Повторите попытку.",
+    );
+    expect(screen.queryByText("Совпадений в статьях не найдено.")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });

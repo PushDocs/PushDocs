@@ -6,7 +6,7 @@ import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
 import { ProjectContext } from "@/components/project-context";
 import { SubmitChanges } from "@/components/submit-changes";
-import { actor, application, repository, requireUser } from "@/lib/server";
+import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Изменения" };
 
@@ -29,30 +29,24 @@ export default async function ChangesPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ branch?: string }>;
 }) {
-  const user = await requireUser();
-  const { projectId } = await params;
-  const project = (await application().listProjects(actor(user))).find(
-    (item) => item.id === projectId,
-  );
+  const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
+  const store = repository();
+  const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const access = await repository().requireProjectAccess(user.id, projectId, "project:read");
-  const branch = (await searchParams).branch ?? project.defaultBranch;
-  const drafts = await repository().listDraftFiles(projectId, branch);
-  const working = await repository().listWorkingFiles(projectId, branch);
+  const access = { role: project.role };
+  const branch = query.branch ?? project.defaultBranch;
+  const [drafts, working, attachments, conflicts, submission, review] = await Promise.all([
+    store.listDraftFiles(projectId, branch),
+    store.listChangedWorkingFiles(projectId, branch),
+    store.listAttachmentsForBranch(projectId, branch),
+    store.listConflicts(projectId, branch),
+    store.getSubmissionStatus(projectId, branch),
+    store.findOpenChangeRequestByBranch(projectId, branch),
+  ]);
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
-  const attachments = (await repository().listAttachments(projectId)).filter(
-    (attachment) =>
-      attachment.branch === branch &&
-      ["open", "conflicted", "submitting"].includes(attachment.change_set_status),
-  );
-  const conflicts = await repository().listConflicts(projectId, branch);
   const changeSetId = drafts[0]?.change_set_id ?? attachments[0]?.change_set_id;
   const changeSet = drafts[0];
   const changeSetStatus = changeSet?.status ?? attachments[0]?.change_set_status;
-  const submission = await repository().getSubmissionStatus(projectId, branch);
-  const review = (await repository().listChangeRequests(projectId)).find(
-    (item) => item.source_branch === branch && item.state === "open",
-  );
   const fileCount = new Set([
     ...drafts.map((file) => file.path),
     ...attachments.map((file) => file.repository_path),

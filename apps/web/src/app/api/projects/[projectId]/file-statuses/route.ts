@@ -1,5 +1,6 @@
 import type { ProviderFileStatus } from "@pushdocs/providers";
-import { apiError, workbenchContext } from "@/lib/workbench";
+import { providerForConnection } from "@/lib/provider";
+import { apiError, localWorkbenchContext } from "@/lib/workbench";
 
 // Cache comparisons only. Drafts and attachment changes are read on every request.
 const comparisons = new Map<string, { expires: number; files: ProviderFileStatus[] }>();
@@ -7,7 +8,7 @@ export async function GET(request: Request, context: { params: Promise<{ project
   try {
     const { projectId } = await context.params;
     const branch = new URL(request.url).searchParams.get("branch") ?? "";
-    const { state, target, provider, store } = await workbenchContext(projectId, branch);
+    const { state, target, store } = await localWorkbenchContext(projectId, branch);
     const base = target.default_branch;
     const statuses: Record<string, string> = Object.create(null);
     if (branch !== base) {
@@ -19,6 +20,7 @@ export async function GET(request: Request, context: { params: Promise<{ project
       ]);
       let comparison = comparisons.get(key);
       if (!comparison || comparison.expires <= Date.now()) {
+        const provider = await providerForConnection(target);
         if (!provider.compareFiles) throw new Error("Сравнение веток недоступно");
         comparison = {
           files: await provider.compareFiles(
@@ -26,7 +28,7 @@ export async function GET(request: Request, context: { params: Promise<{ project
             base,
             state.branch.head_commit_sha,
           ),
-          expires: Date.now() + 30_000,
+          expires: Date.now() + 120_000,
         };
         if (comparisons.size >= 100) comparisons.clear();
         comparisons.set(key, comparison);
@@ -36,14 +38,12 @@ export async function GET(request: Request, context: { params: Promise<{ project
         if (file.path.startsWith(prefix)) statuses[file.path.slice(prefix.length)] = file.status;
     }
     if (state.changeSet) {
-      for (const file of await store.listAttachments(projectId)) {
-        if (file.change_set_id === state.changeSet.id)
-          statuses[file.repository_path] =
-            statuses[file.repository_path] === "add" ||
-            !state.branch.repository_paths.includes(file.repository_path)
-              ? "add"
-              : "modify";
-      }
+      for (const file of await store.listAttachmentsForChangeSet(projectId, state.changeSet.id))
+        statuses[file.repository_path] =
+          statuses[file.repository_path] === "add" ||
+          !state.branch.repository_paths.includes(file.repository_path)
+            ? "add"
+            : "modify";
     }
     return Response.json(
       { statuses, base, sha: state.branch.head_commit_sha },

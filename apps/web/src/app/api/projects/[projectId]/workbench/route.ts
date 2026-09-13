@@ -3,7 +3,13 @@ import { parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
 import { z } from "zod";
 import { providerForConnection } from "@/lib/provider";
 import { readJsonBody } from "@/lib/request-body";
-import { apiError, assertEditable, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
+import {
+  apiError,
+  assertEditable,
+  assertSameOrigin,
+  localWorkbenchContext,
+  localWorkbenchIndexContext,
+} from "@/lib/workbench";
 
 type Context = { params: Promise<{ projectId: string }> };
 const fileSchema = z.object({
@@ -46,14 +52,44 @@ const commandSchema = z.discriminatedUnion("action", [
 export async function GET(request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
-    const branch = new URL(request.url).searchParams.get("branch") ?? "";
-    const { state, config, store, access, target, user } = await localWorkbenchContext(
+    const query = new URL(request.url).searchParams;
+    const branch = query.get("branch") ?? "";
+    if (query.has("search")) {
+      const { state } = await localWorkbenchContext(projectId, branch);
+      const needle = query.get("search")?.trim().toLocaleLowerCase() ?? "";
+      if (!needle) return Response.json({ results: [] });
+      const results = state.files
+        .filter((file) => /\.mdx?$/i.test(file.path) && file.status !== "delete")
+        .flatMap((file) => {
+          const index = file.content.toLocaleLowerCase().indexOf(needle);
+          if (index < 0) return [];
+          return [
+            {
+              path: file.path,
+              title: file.title,
+              line: file.content.slice(0, index).split("\n").length,
+              excerpt: file.content.slice(Math.max(0, index - 40), index + 140).replace(/\n/g, " "),
+            },
+          ];
+        })
+        .slice(0, 100);
+      return Response.json({ results }, { headers: { "Cache-Control": "private, no-store" } });
+    }
+    const { state, config, store, access, target, user } = await localWorkbenchIndexContext(
       projectId,
       branch,
     );
-    const query = new URL(request.url).searchParams;
     if (query.has("path")) {
       const path = safePath(query.get("path") ?? "");
+      const local =
+        query.get("download") === "1"
+          ? undefined
+          : await store.getWorkingFile(projectId, branch, path);
+      if (local && local.status !== "delete")
+        return Response.json(
+          { file: { ...local, loaded: true }, content: local.content },
+          { headers: { "Cache-Control": "private, no-store" } },
+        );
       if (!state.branch.repository_paths.includes(path)) throw new Error("Файл не найден");
       const provider = await providerForConnection(target);
       const bytes = await provider.readBinary(
@@ -81,22 +117,30 @@ export async function GET(request: Request, context: Context) {
       }
       return Response.json({ content }, { headers: { "Cache-Control": "no-store" } });
     }
+    const selected = query.get("selected");
+    const [selectedFile, uploads, branches] = await Promise.all([
+      selected ? store.getWorkingFile(projectId, branch, selected) : Promise.resolve(undefined),
+      state.changeSet
+        ? store
+            .listAttachmentsForChangeSet(projectId, state.changeSet.id)
+            .then((files) => files.map((file) => ({ path: file.repository_path })))
+        : Promise.resolve([]),
+      store.listBranches(projectId),
+    ]);
     return Response.json(
       {
         ownerId: user.id,
-        files: state.files,
-        uploads: state.changeSet
-          ? (await store.listAttachments(projectId))
-              .filter((file) => file.change_set_id === state.changeSet?.id)
-              .map((file) => ({ path: file.repository_path }))
-          : [],
+        files: state.files.map((file) =>
+          file.path === selected && selectedFile ? selectedFile : file,
+        ),
+        uploads,
         revision: state.changeSet?.revision ?? 0,
         changeSetId: state.changeSet?.id,
         status: state.changeSet?.status ?? "open",
         sha: state.branch.head_commit_sha,
         repositoryPaths: state.branch.repository_paths,
         config,
-        branches: await store.listBranches(projectId),
+        branches,
         role: access.role,
       },
       { headers: { "Cache-Control": "no-store" } },
@@ -152,14 +196,14 @@ export async function POST(request: Request, context: Context) {
         )
       )
         throw new Error("Этот путь уже занят");
-      await store.stageFiles({
+      const saved = await store.stageFiles({
         projectId,
         branch: command.branch,
         userId: user.id,
         expectedRevision: command.expectedRevision,
         files: [{ path: `${folder}/.gitkeep`, content: "", createOnly: true }],
       });
-      return Response.json({ saved: true });
+      return Response.json({ saved: true, ...saved });
     }
     const files =
       command.action === "template"
@@ -186,14 +230,14 @@ export async function POST(request: Request, context: Context) {
       if (command.planDigest !== planDigest)
         throw new Error("План изменился. Просмотрите файлы ещё раз перед применением.");
     }
-    await store.stageFiles({
+    const saved = await store.stageFiles({
       projectId,
       branch: command.branch,
       userId: user.id,
       expectedRevision: command.expectedRevision,
       files,
     });
-    return Response.json({ saved: true });
+    return Response.json({ saved: true, ...saved });
   } catch (error) {
     return apiError(error);
   }

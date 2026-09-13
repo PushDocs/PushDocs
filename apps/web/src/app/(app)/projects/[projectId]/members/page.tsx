@@ -5,7 +5,7 @@ import { inviteMemberAction } from "@/app/actions";
 import { CriticalForm } from "@/components/critical-form";
 import { CopyInvitation, MemberActions } from "@/components/member-actions";
 import { SettingsNavigation } from "@/components/settings-navigation";
-import { actor, application, repository, requireUser } from "@/lib/server";
+import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Участники" };
 
@@ -16,16 +16,16 @@ export default async function MembersPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ invitation?: string }>;
 }) {
-  const user = await requireUser();
-  const { projectId } = await params;
-  const project = (await application().listProjects(actor(user))).find(
-    (item) => item.id === projectId,
-  );
+  const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
+  const store = repository();
+  const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const access = await repository().requireProjectAccess(user.id, projectId);
-  const members = await repository().listMembers(projectId);
-  const invitations = access.role === "admin" ? await repository().listInvitations(projectId) : [];
-  const invitationToken = (await searchParams).invitation;
+  const access = { role: project.role };
+  const [members, invitations] = await Promise.all([
+    store.listMembers(projectId),
+    access.role === "admin" ? store.listInvitations(projectId) : Promise.resolve([]),
+  ]);
+  const invitationToken = query.invitation;
   return (
     <div className="page">
       <header className="page-header">

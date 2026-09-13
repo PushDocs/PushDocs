@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   checks: vi.fn().mockResolvedValue([]),
-  access: vi.fn().mockResolvedValue({ role: "editor" }),
+  project: vi.fn().mockResolvedValue({ id: "project", provider: "gitlab", role: "editor" }),
   reviews: [
     {
       id: "first",
@@ -30,9 +30,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
   actor: (user: unknown) => user,
-  application: () => ({ listProjects: async () => [{ id: "project", provider: "gitlab" }] }),
   repository: () => ({
-    requireProjectAccess: mocks.access,
+    getProjectForUser: mocks.project,
     listChangeRequests: async () => mocks.reviews,
     listChecks: mocks.checks,
   }),
@@ -89,7 +88,7 @@ it("opens the selected review source branch, including URL special characters", 
   expect(html).toContain('href="/projects/project/documents?branch=docs%2Ffix+%231"');
   expect(html).toContain("Переключиться на ветку");
   expect(html).not.toContain("documents?branch=stable");
-  expect(mocks.access).toHaveBeenCalledWith("user", "project");
+  expect(mocks.project).toHaveBeenCalledWith("user", "project");
   expect(html).toContain("Открыть MR в GitLab");
   expect(html).not.toContain("Перейти к слиянию");
   expect(html).not.toContain("Готовность к слиянию");
@@ -100,7 +99,7 @@ it("opens the selected review source branch, including URL special characters", 
   expect(html).not.toContain("disabled");
 });
 it("provides an explicit branch switch for readers too", async () => {
-  mocks.access.mockResolvedValueOnce({ role: "reader" });
+  mocks.project.mockResolvedValueOnce({ id: "project", provider: "gitlab", role: "reader" });
   const html = renderToStaticMarkup(
     await ReviewsPage({
       params: Promise.resolve({ projectId: "project" }),

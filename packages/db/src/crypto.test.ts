@@ -42,7 +42,10 @@ describe("connection secret encryption", () => {
   it("rejects ciphertext changed after encryption", () => {
     useRandomKey();
     const encrypted = encryptSecret("secret");
-    const changed = `${encrypted.slice(0, -2)}AA`;
+    const parts = encrypted.split(".");
+    const ciphertext = parts[2] ?? "";
+    parts[2] = `${ciphertext.startsWith("A") ? "B" : "A"}${ciphertext.slice(1)}`;
+    const changed = parts.join(".");
     expect(() => decryptSecret(changed)).toThrow();
   });
 

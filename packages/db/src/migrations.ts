@@ -373,6 +373,34 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
                 where expires_at > created_at + interval '24 hours'`.execute(database);
             },
           },
+          "012-read-path-indexes": {
+            async up(database) {
+              await sql`
+                create index project_memberships_user_project_idx
+                  on project_memberships(user_id, project_id);
+                create index branch_contexts_project_ref_generation_idx
+                  on branch_contexts(project_id, full_ref, generation desc);
+                create index change_sets_project_branch_created_idx
+                  on change_sets(project_id, branch_context_id, created_at desc);
+                create index attachments_change_set_created_idx
+                  on attachments(change_set_id, created_at desc);
+                create index change_requests_project_state_updated_idx
+                  on change_requests(project_id, state, updated_at desc);
+                create index discussions_project_branch_path_idx
+                  on discussions(project_id, branch_context_id, document_path);
+              `.execute(database);
+            },
+            async down(database) {
+              await sql`
+                drop index if exists discussions_project_branch_path_idx;
+                drop index if exists change_requests_project_state_updated_idx;
+                drop index if exists attachments_change_set_created_idx;
+                drop index if exists change_sets_project_branch_created_idx;
+                drop index if exists branch_contexts_project_ref_generation_idx;
+                drop index if exists project_memberships_user_project_idx;
+              `.execute(database);
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

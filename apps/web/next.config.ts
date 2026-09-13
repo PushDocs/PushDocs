@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
+  outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),
   poweredByHeader: false,
   async rewrites() {
     return process.env.PUSHDOCS_REALTIME_ORIGIN

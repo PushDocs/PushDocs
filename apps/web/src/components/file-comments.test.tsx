@@ -23,16 +23,23 @@ async function mount() {
     render(<FileComments projectId="project" branch="docs/new" path="docs/a.md" />);
   });
 }
-it("loads and polls comments in the chosen branch", async () => {
+it("loads comments and refreshes them after a matching realtime event", async () => {
   await mount();
   expect(screen.getByText("Замечание")).toBeTruthy();
   expect(fetch).toHaveBeenCalledWith(
     expect.stringContaining("branch=docs%2Fnew&path=docs%2Fa.md"),
     expect.any(Object),
   );
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(10000);
-  });
+  await act(async () =>
+    window.dispatchEvent(
+      new CustomEvent("pushdocs:refresh", {
+        detail: {
+          projectId: "project",
+          payload: { branch: "docs/new", documentPath: "docs/a.md" },
+        },
+      }),
+    ),
+  );
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 it("posts a comment and clears input only after success", async () => {

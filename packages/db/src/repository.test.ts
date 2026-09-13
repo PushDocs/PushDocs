@@ -201,6 +201,74 @@ describe("project and connection administration", () => {
 });
 
 describe("editorial file operations", () => {
+  it("lists file metadata first and loads only the selected or changed contents", async () => {
+    const fixture = await synchronizedProject();
+    await repository.replaceImportedDocuments(fixture.projectId, "main", "head-2", [
+      {
+        content: "# Intro\n",
+        contentHash: "hash-intro",
+        locale: "default",
+        path: "docs/intro.md",
+        title: "Intro",
+        version: "current",
+      },
+      {
+        content: "# Unchanged\n",
+        contentHash: "hash-unchanged",
+        locale: "default",
+        path: "docs/unchanged.md",
+        title: "Unchanged",
+        version: "current",
+      },
+    ]);
+    const saved = await repository.stageFiles({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: "# Changed\n" }],
+    });
+    expect(saved).toEqual({ changeSetId: expect.any(String), revision: 1 });
+
+    const index = await repository.listWorkingFileIndex(fixture.projectId, "main");
+    expect(index.files).toEqual([
+      expect.objectContaining({
+        path: "docs/intro.md",
+        content: "",
+        baseContent: "",
+        loaded: false,
+        status: "modify",
+      }),
+      expect.objectContaining({
+        path: "docs/unchanged.md",
+        content: "",
+        baseContent: "",
+        loaded: false,
+        status: "clean",
+      }),
+    ]);
+    await expect(
+      repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"),
+    ).resolves.toMatchObject({
+      content: "# Changed\n",
+      baseContent: "# Intro\n",
+      loaded: true,
+      status: "modify",
+    });
+    await expect(
+      repository.listChangedWorkingFiles(fixture.projectId, "main"),
+    ).resolves.toMatchObject({
+      files: [
+        {
+          path: "docs/intro.md",
+          content: "# Changed\n",
+          baseContent: "# Intro\n",
+          status: "modify",
+        },
+      ],
+    });
+  });
+
   it("refreshes branch protection without advancing the cached working tree", async () => {
     const fixture = await synchronizedProject();
     await repository.ensureBranches(fixture.projectId, [
@@ -782,6 +850,17 @@ describe("connections and projects", () => {
         syncStatus: "current",
       }),
     ]);
+    await expect(
+      repository.getProjectForUser(fixture.operatorId, fixture.projectId),
+    ).resolves.toMatchObject({
+      id: fixture.projectId,
+      openChangeRequests: 1,
+      provider: "gitlab",
+      role: "admin",
+    });
+    await expect(
+      repository.getProjectForUser(randomUUID(), fixture.projectId),
+    ).resolves.toBeUndefined();
     await repository.markProjectAttention(fixture.projectId);
     await expect(repository.listProjects(fixture.operatorId)).resolves.toEqual([
       expect.objectContaining({ syncStatus: "attention" }),

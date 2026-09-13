@@ -16,7 +16,7 @@ import {
   RefreshCw,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { changedDirectories, fileStatusLabel } from "./file-status";
 
@@ -165,6 +165,7 @@ export function FileExplorer({
   }, [menu]);
   const [focused, setFocused] = useState(selected);
   const container = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 0 });
   useEffect(() => {
     setExpanded((current) => new Set([...current, ...parents(selected)]));
     setFocused(selected);
@@ -182,7 +183,34 @@ export function FileExplorer({
     }
   }
   flatten(tree, 1);
+  const rowHeight = 27;
+  const virtual = rows.length > 200;
+  const viewportHeight = viewport.height || 600;
+  const visibleStart = virtual
+    ? Math.max(0, Math.floor(Math.max(0, viewport.top - rowHeight) / rowHeight) - 8)
+    : 0;
+  const visibleEnd = virtual
+    ? Math.min(rows.length, visibleStart + Math.ceil(viewportHeight / rowHeight) + 16)
+    : rows.length;
+  const visibleRows = rows.slice(visibleStart, visibleEnd);
   const focusNode = rows.find((node) => node.path === focused);
+  const selectedIndex = rows.findIndex((node) => node.path === selected);
+  useLayoutEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    const height = element.clientHeight || 600;
+    let top = element.scrollTop;
+    if (rows.length > 200) {
+      const selectedTop = selectedIndex * rowHeight;
+      if (selectedIndex >= 0 && (selectedTop < top || selectedTop + rowHeight > top + height)) {
+        top = Math.max(0, selectedTop - height / 2);
+        element.scrollTop = top;
+      }
+    }
+    setViewport((current) =>
+      current.top === top && current.height === height ? current : { top, height },
+    );
+  }, [rows.length, selectedIndex]);
   const directory = isInternalPath(focused)
     ? ""
     : focusNode?.directory
@@ -201,11 +229,19 @@ export function FileExplorer({
   function focus(path: string | undefined) {
     if (!path) return;
     setFocused(path);
+    const index = rows.findIndex((node) => node.path === path);
+    if (virtual && index >= 0 && container.current) {
+      const nextTop = Math.max(0, index * rowHeight - viewportHeight / 2);
+      container.current.scrollTop = nextTop;
+      setViewport({ top: nextTop, height: viewportHeight });
+    }
     requestAnimationFrame(() => {
-      const button = [
-        ...(container.current?.querySelectorAll<HTMLButtonElement>("[role=treeitem]") ?? []),
-      ].find((item) => item.dataset.path === path);
-      button?.focus();
+      requestAnimationFrame(() => {
+        const button = [
+          ...(container.current?.querySelectorAll<HTMLButtonElement>("[role=treeitem]") ?? []),
+        ].find((item) => item.dataset.path === path);
+        button?.focus();
+      });
     });
   }
   return (
@@ -397,6 +433,12 @@ export function FileExplorer({
             onUpload(files, destination);
           }
         }}
+        onScroll={(event) =>
+          setViewport({
+            top: event.currentTarget.scrollTop,
+            height: event.currentTarget.clientHeight,
+          })
+        }
       >
         <button
           className="wb-explorer-root"
@@ -407,99 +449,120 @@ export function FileExplorer({
         >
           <FolderOpen size={15} /> /
         </button>
-        {rows.map((node, index) => (
-          <button
-            key={node.path}
-            type="button"
-            role="treeitem"
-            data-path={node.path}
-            data-upload-directory={
-              node.directory ? node.path : node.path.split("/").slice(0, -1).join("/")
-            }
-            data-drop-target={(node.directory && node.path === dropDirectory) || undefined}
-            data-status={
-              node.directory
-                ? directories.has(node.path)
-                  ? "modify"
-                  : undefined
-                : statuses.get(node.path)
-            }
-            aria-description={
-              node.directory && directories.has(node.path)
-                ? "Есть изменения внутри"
-                : fileStatusLabel[statuses.get(node.path) ?? ""]
-            }
-            aria-label={node.name}
-            aria-level={node.depth}
-            aria-expanded={node.directory ? expanded.has(node.path) : undefined}
-            aria-selected={node.path === focused}
-            tabIndex={node.path === focused || (!focusNode && index === 0) ? 0 : -1}
-            className={`wb-explorer-row${node.path === selected && !node.directory ? " active" : ""}${node.path === focused ? " focused" : ""}${statuses.get(node.path) === "delete" ? " deleted" : ""}`}
-            style={{ paddingLeft: 8 + (node.depth - 1) * 16 }}
-            title={`${node.path}${node.directory && directories.has(node.path) ? " · Есть изменения внутри" : fileStatusLabel[statuses.get(node.path) ?? ""] ? ` · ${fileStatusLabel[statuses.get(node.path) ?? ""]}` : ""}`}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setMenu({
-                path: node.path,
-                directory: node.directory,
-                x: Math.min(event.clientX, window.innerWidth - 210),
-                y: Math.min(event.clientY, window.innerHeight - 160),
-              });
-            }}
-            onClick={() => {
-              setFocused(node.path);
-              if (node.directory) toggle(node.path, !expanded.has(node.path));
-              else onOpen(node.path);
-            }}
-            onKeyDown={(event) => {
-              const key = event.key;
-              if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(key))
-                return;
-              event.preventDefault();
-              if (key === "ArrowDown") focus(rows[Math.min(index + 1, rows.length - 1)]?.path);
-              if (key === "ArrowUp") focus(rows[Math.max(index - 1, 0)]?.path);
-              if (key === "Home") focus(rows[0]?.path);
-              if (key === "End") focus(rows.at(-1)?.path);
-              if (key === "ArrowRight" && node.directory) {
-                if (!expanded.has(node.path)) toggle(node.path, true);
-                else if (rows[index + 1]?.depth === node.depth + 1) focus(rows[index + 1]?.path);
+        {virtual && visibleStart > 0 ? (
+          <div
+            aria-hidden
+            className="wb-explorer-spacer"
+            style={{ height: visibleStart * rowHeight }}
+          />
+        ) : null}
+        {visibleRows.map((node, visibleIndex) => {
+          const index = visibleStart + visibleIndex;
+          return (
+            <button
+              key={node.path}
+              type="button"
+              role="treeitem"
+              data-path={node.path}
+              data-upload-directory={
+                node.directory ? node.path : node.path.split("/").slice(0, -1).join("/")
               }
-              if (key === "ArrowLeft") {
-                if (node.directory && expanded.has(node.path)) toggle(node.path, false);
-                else {
-                  const parent = parents(node.path).at(-1);
-                  if (parent) focus(parent);
+              data-drop-target={(node.directory && node.path === dropDirectory) || undefined}
+              data-status={
+                node.directory
+                  ? directories.has(node.path)
+                    ? "modify"
+                    : undefined
+                  : statuses.get(node.path)
+              }
+              aria-description={
+                node.directory && directories.has(node.path)
+                  ? "Есть изменения внутри"
+                  : fileStatusLabel[statuses.get(node.path) ?? ""]
+              }
+              aria-label={node.name}
+              aria-level={node.depth}
+              aria-posinset={index + 1}
+              aria-setsize={rows.length}
+              aria-expanded={node.directory ? expanded.has(node.path) : undefined}
+              aria-selected={node.path === focused}
+              tabIndex={node.path === focused || (!focusNode && index === 0) ? 0 : -1}
+              className={`wb-explorer-row${node.path === selected && !node.directory ? " active" : ""}${node.path === focused ? " focused" : ""}${statuses.get(node.path) === "delete" ? " deleted" : ""}`}
+              style={{ paddingLeft: 8 + (node.depth - 1) * 16 }}
+              title={`${node.path}${node.directory && directories.has(node.path) ? " · Есть изменения внутри" : fileStatusLabel[statuses.get(node.path) ?? ""] ? ` · ${fileStatusLabel[statuses.get(node.path) ?? ""]}` : ""}`}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenu({
+                  path: node.path,
+                  directory: node.directory,
+                  x: Math.min(event.clientX, window.innerWidth - 210),
+                  y: Math.min(event.clientY, window.innerHeight - 160),
+                });
+              }}
+              onClick={() => {
+                setFocused(node.path);
+                if (node.directory) toggle(node.path, !expanded.has(node.path));
+                else onOpen(node.path);
+              }}
+              onKeyDown={(event) => {
+                const key = event.key;
+                if (
+                  !["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(key)
+                )
+                  return;
+                event.preventDefault();
+                if (key === "ArrowDown") focus(rows[Math.min(index + 1, rows.length - 1)]?.path);
+                if (key === "ArrowUp") focus(rows[Math.max(index - 1, 0)]?.path);
+                if (key === "Home") focus(rows[0]?.path);
+                if (key === "End") focus(rows.at(-1)?.path);
+                if (key === "ArrowRight" && node.directory) {
+                  if (!expanded.has(node.path)) toggle(node.path, true);
+                  else if (rows[index + 1]?.depth === node.depth + 1) focus(rows[index + 1]?.path);
                 }
-              }
-            }}
-          >
-            {node.directory ? (
-              <>
-                {expanded.has(node.path) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                {expanded.has(node.path) ? <FolderOpen size={15} /> : <Folder size={15} />}
-              </>
-            ) : (
-              <>
-                <span className="wb-explorer-indent" />
-                <ExplorerFileIcon path={node.path} />
-              </>
-            )}
-            <span className="wb-explorer-name">{node.name}</span>
-            {node.directory && directories.has(node.path) ? (
-              <span className="wb-explorer-status" aria-hidden="true">
-                ●
-              </span>
-            ) : fileStatusLabel[statuses.get(node.path) ?? ""] ? (
-              <span className="wb-explorer-status" aria-hidden="true">
-                {statuses.get(node.path) === "add"
-                  ? "A"
-                  : statuses.get(node.path) === "delete"
-                    ? "D"
-                    : "M"}
-              </span>
-            ) : null}
-          </button>
-        ))}
+                if (key === "ArrowLeft") {
+                  if (node.directory && expanded.has(node.path)) toggle(node.path, false);
+                  else {
+                    const parent = parents(node.path).at(-1);
+                    if (parent) focus(parent);
+                  }
+                }
+              }}
+            >
+              {node.directory ? (
+                <>
+                  {expanded.has(node.path) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  {expanded.has(node.path) ? <FolderOpen size={15} /> : <Folder size={15} />}
+                </>
+              ) : (
+                <>
+                  <span className="wb-explorer-indent" />
+                  <ExplorerFileIcon path={node.path} />
+                </>
+              )}
+              <span className="wb-explorer-name">{node.name}</span>
+              {node.directory && directories.has(node.path) ? (
+                <span className="wb-explorer-status" aria-hidden="true">
+                  ●
+                </span>
+              ) : fileStatusLabel[statuses.get(node.path) ?? ""] ? (
+                <span className="wb-explorer-status" aria-hidden="true">
+                  {statuses.get(node.path) === "add"
+                    ? "A"
+                    : statuses.get(node.path) === "delete"
+                      ? "D"
+                      : "M"}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+        {virtual && visibleEnd < rows.length ? (
+          <div
+            aria-hidden
+            className="wb-explorer-spacer"
+            style={{ height: (rows.length - visibleEnd) * rowHeight }}
+          />
+        ) : null}
         {!tree.length ? <p className="wb-empty">Нет файлов</p> : null}
       </div>
       {dropDirectory !== undefined || uploadProgress || dropMessage ? (

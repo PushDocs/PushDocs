@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+export interface FileSearchResult {
+  path: string;
+  title?: string;
+  line?: number;
+  excerpt: string;
+}
+
 export function searchFiles(
   paths: string[],
   files: Array<{ path: string; title: string; content: string; status: string }>,
@@ -39,21 +46,69 @@ export function QuickOpen({
   files,
   onOpen,
   initialContent = false,
+  onSearchContent,
 }: {
   paths: string[];
-  files: Array<{ path: string; title: string; content: string; status: string }>;
+  files: Array<{
+    path: string;
+    title: string;
+    content: string;
+    status: string;
+    loaded?: boolean;
+  }>;
   onOpen: (path: string, line?: number) => void;
   initialContent?: boolean;
+  onSearchContent?: (query: string, signal: AbortSignal) => Promise<FileSearchResult[]>;
 }) {
   const [query, setQuery] = useState("");
   const [content, setContent] = useState(initialContent);
   const [selected, setSelected] = useState(0);
   const resultId = useId();
   const list = useRef<HTMLDivElement>(null);
-  const results = useMemo(
+  const localResults = useMemo(
     () => searchFiles(paths, files, query, content),
     [paths, files, query, content],
   );
+  const hasUnloadedArticles = files.some(
+    (file) => file.loaded === false && /\.mdx?$/i.test(file.path) && file.status !== "delete",
+  );
+  const [remoteResults, setRemoteResults] = useState<FileSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  useEffect(() => {
+    if (!content || !query.trim() || !hasUnloadedArticles || !onSearchContent) {
+      setRemoteResults([]);
+      setSearching(false);
+      setSearchError("");
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setSearching(true);
+      setSearchError("");
+      void onSearchContent(query, controller.signal)
+        .then((results) => {
+          if (!controller.signal.aborted) {
+            setRemoteResults(results);
+            setSearchError("");
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setRemoteResults([]);
+            setSearchError("Не удалось выполнить поиск. Повторите попытку.");
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSearching(false);
+        });
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [content, query, hasUnloadedArticles, onSearchContent]);
+  const results = content && hasUnloadedArticles ? remoteResults : localResults;
   useEffect(() => {
     list.current
       ?.querySelector(`[data-index="${selected}"]`)
@@ -144,7 +199,9 @@ export function QuickOpen({
             {result.excerpt ? <span>{result.excerpt}</span> : null}
           </button>
         ))}
-        {!results.length ? (
+        {searching ? <p role="status">Ищем по тексту статей…</p> : null}
+        {searchError ? <p role="alert">{searchError}</p> : null}
+        {!searching && !searchError && !results.length ? (
           <p>
             {content && !query.trim()
               ? "Введите текст для поиска в статьях."

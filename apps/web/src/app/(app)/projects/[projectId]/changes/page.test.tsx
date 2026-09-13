@@ -2,19 +2,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 
 const repository = vi.hoisted(() => ({
-  requireProjectAccess: vi.fn().mockResolvedValue({ role: "editor" }),
+  getProjectForUser: vi.fn().mockResolvedValue({
+    id: "project",
+    defaultBranch: "stable",
+    provider: "gitlab",
+    role: "editor",
+  }),
   listDraftFiles: vi
     .fn()
     .mockResolvedValue([
       { path: "docs/a.md", operation: "modify", status: "open", change_set_id: "set" },
     ]),
-  listWorkingFiles: vi.fn().mockResolvedValue({
+  listChangedWorkingFiles: vi.fn().mockResolvedValue({
     branch: { repository_paths: ["docs/a.md", "static/existing.png"] },
     files: [
       { path: "docs/a.md", baseContent: "Before server draft", content: "After server draft" },
     ],
   }),
-  listAttachments: vi.fn().mockResolvedValue([
+  listAttachmentsForBranch: vi.fn().mockResolvedValue([
     {
       repository_path: "static/existing.png",
       branch: "fix",
@@ -27,25 +32,16 @@ const repository = vi.hoisted(() => ({
       change_set_status: "open",
       change_set_id: "set",
     },
-    {
-      repository_path: "static/other.png",
-      branch: "other",
-      change_set_status: "open",
-      change_set_id: "other-set",
-    },
   ]),
   listConflicts: vi.fn().mockResolvedValue([]),
   getSubmissionStatus: vi.fn().mockResolvedValue(null),
-  listChangeRequests: vi
+  findOpenChangeRequestByBranch: vi
     .fn()
-    .mockResolvedValue([{ id: "mr", source_branch: "fix", state: "open", title: "Update docs" }]),
+    .mockResolvedValue({ id: "mr", source_branch: "fix", state: "open", title: "Update docs" }),
 }));
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
   actor: (value: unknown) => value,
-  application: () => ({
-    listProjects: async () => [{ id: "project", defaultBranch: "stable", provider: "gitlab" }],
-  }),
   repository: () => repository,
 }));
 vi.mock("@/app/actions", () => ({
@@ -66,7 +62,7 @@ it("uses the selected branch's actual before/after content and distinguishes rep
       searchParams: Promise.resolve({ branch: "fix" }),
     }),
   );
-  expect(repository.listWorkingFiles).toHaveBeenCalledWith("project", "fix");
+  expect(repository.listChangedWorkingFiles).toHaveBeenCalledWith("project", "fix");
   expect(html).toContain("Before server draft");
   expect(html).toContain("After server draft");
   expect(html).toContain('aria-label="static/existing.png M"');
