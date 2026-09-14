@@ -12,6 +12,7 @@ import { SettingsNavigation } from "./settings-navigation";
 
 export async function ConnectionSettings({ projectId }: { projectId?: string }) {
   const user = await requireOperator();
+  const vpnEnabled = process.env.PUSHDOCS_VPN_ENABLED === "1";
   if (projectId) await repository().requireProjectAccess(user.id, projectId);
   const connections = await repository().listConnections();
   const connectionRows = await Promise.all(
@@ -35,6 +36,9 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
         <SettingsNavigation active="connections" canManageConnections />
       )}
       {!projectId ? <SettingsProjectPicker projects={await settingsProjectChoices(user)} /> : null}
+      {!vpnEnabled ? (
+        <p className="settings-hint">VPN-шлюзы отключены для этой установки.</p>
+      ) : null}
       <section className="connections-layout">
         <div className="settings-list">
           <h2>Подключено</h2>
@@ -57,6 +61,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
                   vpnSlot: connection.vpn_slot,
                 }}
                 projectId={projectId}
+                vpnEnabled={vpnEnabled}
                 updateAction={saveConnectionSettingsAction}
                 deleteAction={deleteConnectionAction}
               />
@@ -92,15 +97,19 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
               Access token
               <input name="token" type="password" autoComplete="off" required />
             </label>
-            {/* biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input. */}
-            <label>
-              Профиль OpenVPN
-              <FilePicker
-                name="vpnProfile"
-                accept=".ovpn,application/x-openvpn-profile,text/plain"
-              />
-              <small>Необязательно.</small>
-            </label>
+            {vpnEnabled ? (
+              // biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input.
+              <label>
+                Профиль OpenVPN
+                <FilePicker
+                  name="vpnProfile"
+                  accept=".ovpn,application/x-openvpn-profile,text/plain"
+                />
+                <small>Необязательно.</small>
+              </label>
+            ) : (
+              <small>VPN-шлюзы отключены для этой установки.</small>
+            )}
             <button className="pd-button pd-button--primary" type="submit">
               Сохранить подключение
             </button>

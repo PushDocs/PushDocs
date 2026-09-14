@@ -6,15 +6,30 @@ cd "$(dirname "$0")/.."
 env_file=${PUSHDOCS_ENV_FILE:-.env}
 public_origin=""
 prepare_only=0
+vpn_mode=""
 
 usage() {
-  echo "Usage: ./scripts/install.sh https://docs.example.com [--prepare-only]" >&2
+  echo "Usage: ./scripts/install.sh https://docs.example.com [--prepare-only] [--enable-vpn|--disable-vpn]" >&2
 }
 
 for argument in "$@"; do
   case "$argument" in
     --prepare-only)
       prepare_only=1
+      ;;
+    --enable-vpn)
+      if [[ "$vpn_mode" == 0 ]]; then
+        usage
+        exit 2
+      fi
+      vpn_mode=1
+      ;;
+    --disable-vpn)
+      if [[ "$vpn_mode" == 1 ]]; then
+        usage
+        exit 2
+      fi
+      vpn_mode=0
       ;;
     http://*|https://*)
       if [[ -n "$public_origin" ]]; then
@@ -44,6 +59,25 @@ require_setting() {
   fi
 }
 
+set_setting() {
+  local key=$1
+  local value=$2
+  local temporary
+  temporary=$(mktemp "${env_file}.tmp.XXXXXX")
+  awk -v key="$key" -v value="$value" '
+    BEGIN { found = 0 }
+    index($0, key "=") == 1 {
+      if (!found) print key "=" value
+      found = 1
+      next
+    }
+    { print }
+    END { if (!found) print key "=" value }
+  ' "$env_file" > "$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$env_file"
+}
+
 if [[ -e "$env_file" && ! -f "$env_file" ]]; then
   echo "$env_file exists but is not a regular file" >&2
   exit 1
@@ -62,6 +96,11 @@ if [[ -f "$env_file" ]]; then
     umask 077
     printf 'PUSHDOCS_VPN_GATEWAY_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$env_file"
     echo "Added the VPN gateway secret to the existing $env_file."
+  fi
+  if [[ -n "$vpn_mode" ]]; then
+    set_setting PUSHDOCS_VPN_ENABLED "$vpn_mode"
+  elif ! grep -q '^PUSHDOCS_VPN_ENABLED=' "$env_file"; then
+    set_setting PUSHDOCS_VPN_ENABLED 0
   fi
   chmod 600 "$env_file"
   echo "Using the existing $env_file. Secrets were not changed."
@@ -127,11 +166,13 @@ else
   session_pepper=$(openssl rand -hex 32)
   encryption_key=$(openssl rand -base64 32)
   vpn_gateway_token=$(openssl rand -hex 32)
+  vpn_enabled=${vpn_mode:-0}
   {
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'PUSHDOCS_PUBLIC_ORIGIN=%s\n' "$public_origin"
     printf 'PUSHDOCS_SESSION_PEPPER=%s\n' "$session_pepper"
     printf 'PUSHDOCS_ENCRYPTION_KEY=%s\n' "$encryption_key"
+    printf 'PUSHDOCS_VPN_ENABLED=%s\n' "$vpn_enabled"
     printf 'PUSHDOCS_VPN_GATEWAY_TOKEN=%s\n' "$vpn_gateway_token"
     printf 'PUSHDOCS_ADDRESS=%s\n' "$caddy_address"
     printf 'PUSHDOCS_HTTP_PORT=%s\n' "$http_port"
@@ -148,5 +189,12 @@ if [[ "$prepare_only" == 1 ]]; then
 fi
 
 require_command docker
-docker compose --env-file "$env_file" up --build --detach --wait
+compose=(docker compose --env-file "$env_file")
+if grep -qx 'PUSHDOCS_VPN_ENABLED=1' "$env_file"; then
+  compose+=(--profile vpn)
+else
+  docker compose --env-file "$env_file" --profile vpn stop \
+    vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4 >/dev/null 2>&1 || true
+fi
+"${compose[@]}" up --build --detach --wait
 echo "PushDocs is ready. Open the configured public origin to create the first operator."

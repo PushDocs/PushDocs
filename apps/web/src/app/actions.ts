@@ -57,6 +57,7 @@ function attachmentStoragePath(relativePath: string) {
 async function uploadedVpnProfile(formData: FormData): Promise<string | undefined> {
   const value = formData.get("vpnProfile");
   if (!(value instanceof File) || value.size === 0) return undefined;
+  if (process.env.PUSHDOCS_VPN_ENABLED !== "1") throw new Error("VPN_DISABLED");
   if (value.size > vpnProfileLimit || !value.name.toLowerCase().endsWith(".ovpn"))
     throw new Error("VPN_PROFILE_INVALID_FILE");
   return validateVpnProfile(await value.text());
@@ -296,6 +297,8 @@ function connectionSettingsError(error: unknown): string {
       return "Выберите корректный файл OpenVPN в формате .ovpn.";
     case "VPN_PROFILE_CHANGE_CONFLICT":
       return "Нельзя одновременно заменить и отключить VPN-профиль.";
+    case "VPN_DISABLED":
+      return "VPN отключён для этой установки. Включите его на сервере перед загрузкой профиля.";
     default:
       return "Не удалось сохранить настройки. Проверьте данные и повторите попытку.";
   }

@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   operator: vi.fn().mockResolvedValue({ id: "operator" }),
@@ -26,6 +26,10 @@ vi.mock("@/lib/settings-project", () => ({ settingsProjectChoices: async () => [
 
 import { ConnectionSettings } from "./connection-settings";
 
+beforeEach(() => {
+  process.env.PUSHDOCS_VPN_ENABLED = "1";
+});
+
 it("retains the project settings navigation and form context", async () => {
   const html = renderToStaticMarkup(await ConnectionSettings({ projectId: "project" }));
   expect(mocks.access).toHaveBeenCalledWith("operator", "project");
@@ -42,6 +46,13 @@ it("supports installation setup without a project", async () => {
   expect(mocks.access).not.toHaveBeenCalled();
   expect(html).toContain("Создать подключение");
   expect(html).not.toContain('name="projectId"');
+});
+
+it("explains when VPN support is disabled", async () => {
+  process.env.PUSHDOCS_VPN_ENABLED = "0";
+  const html = renderToStaticMarkup(await ConnectionSettings({}));
+  expect(html).toContain("VPN-шлюзы отключены для этой установки");
+  expect(html).not.toContain('name="vpnProfile"');
 });
 
 it("renders an edit action for an unused connection", async () => {

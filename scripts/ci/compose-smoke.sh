@@ -42,6 +42,10 @@ trap 'exit 143' TERM
 
 compose config --quiet
 compose up --no-build --wait --wait-timeout 180
+if compose ps --services --status running | grep -q '^vpn-gateway-'; then
+  echo "VPN gateways started in a direct-only installation" >&2
+  exit 1
+fi
 health_response=""
 for _ in {1..30}; do
   if health_response=$(curl --fail --silent "$PUSHDOCS_E2E_BASE_URL/api/health" 2>/dev/null); then

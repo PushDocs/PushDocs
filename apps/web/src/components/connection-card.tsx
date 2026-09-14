@@ -36,10 +36,12 @@ function projectsLabel(count: number): string {
 export function ConnectionCard({
   connection,
   projectId,
+  vpnEnabled = false,
   updateAction,
 }: {
   connection: ConnectionItem;
   projectId?: string;
+  vpnEnabled?: boolean;
   updateAction: (formData: FormData) => Promise<SaveResult>;
   deleteAction: (formData: FormData) => Promise<void>;
 }) {
@@ -59,7 +61,8 @@ export function ConnectionCard({
           <small>{projectsLabel(connection.projectCount)}</small>
           {connection.vpnSlot ? (
             <small className="connection-vpn-status">
-              <ShieldCheck aria-hidden size={14} /> VPN настроен
+              <ShieldCheck aria-hidden size={14} />
+              {vpnEnabled ? "VPN настроен" : "VPN-профиль сохранён, шлюзы отключены"}
             </small>
           ) : null}
         </span>
@@ -156,7 +159,7 @@ export function ConnectionCard({
                 placeholder="Оставьте пустым, чтобы сохранить текущий"
               />
             </label>
-            {connection.kind === "gitlab" ? (
+            {connection.kind === "gitlab" && vpnEnabled ? (
               // biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input.
               <label>
                 {connection.vpnSlot ? "Заменить профиль OpenVPN" : "Профиль OpenVPN"}

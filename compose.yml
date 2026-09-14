@@ -10,6 +10,7 @@ x-app: &app
     PUSHDOCS_ATTACHMENTS_DIR: /data/attachments
     PUSHDOCS_ENCRYPTION_KEY: ${PUSHDOCS_ENCRYPTION_KEY:?Run ./scripts/install.sh first}
     PUSHDOCS_SESSION_PEPPER: ${PUSHDOCS_SESSION_PEPPER:?Run ./scripts/install.sh first}
+    PUSHDOCS_VPN_ENABLED: ${PUSHDOCS_VPN_ENABLED:-0}
     PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
   restart: unless-stopped
   read_only: true
@@ -93,6 +94,7 @@ services:
       - vpn-control
 
   vpn-gateway-1: &vpn-gateway
+    profiles: ["vpn"]
     build:
       context: .
       dockerfile: Dockerfile

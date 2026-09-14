@@ -130,6 +130,7 @@ function encodedRequest(input: string | URL, init?: RequestInit): string {
 
 export async function prepareVpnAccess(connection: VpnConnection): Promise<VpnAccess> {
   if (!connection.profile) return { fetch: (input, init) => fetch(input, init) };
+  if (process.env.PUSHDOCS_VPN_ENABLED !== "1") throw new Error("VPN_DISABLED");
   if (!connection.slot) throw new Error("VPN_SLOT_MISSING");
   if (new URL(connection.allowedOrigin).protocol !== "https:")
     throw new Error("VPN_REQUIRES_HTTPS_PROVIDER");

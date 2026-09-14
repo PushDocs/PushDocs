@@ -214,6 +214,7 @@ jobs:
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
           SSH_USER: ${{ vars.SSH_USER }}
+          VPN_ENABLED: ${{ vars.PUSHDOCS_VPN_ENABLED }}
         run: |
           [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "SSH_HOST is missing or invalid" >&2; exit 1; }
           [[ "$SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "SSH_USER is missing or invalid" >&2; exit 1; }
@@ -248,6 +249,11 @@ jobs:
               exit 1
             }
           fi
+          VPN_ENABLED=${VPN_ENABLED:-0}
+          [[ "$VPN_ENABLED" == 0 || "$VPN_ENABLED" == 1 ]] || {
+            echo "PUSHDOCS_VPN_ENABLED must be 0 or 1" >&2
+            exit 1
+          }
 
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/pushdocs"
@@ -271,4 +277,4 @@ jobs:
           target="$SSH_USER@$SSH_HOST"
           scp "${options[@]}" "$archive" "$target:pushdocs-deploy.tar.gz"
           ssh "${options[@]}" "$target" \
-            "set -e; install -d -m 700 pushdocs; tar -xzf pushdocs-deploy.tar.gz -C pushdocs; rm pushdocs-deploy.tar.gz; cd pushdocs; chmod 700 scripts/install.sh scripts/deploy.sh; ./scripts/deploy.sh '$APPLICATION_IMAGE' '$PUBLIC_ORIGIN' '$PREVIEW_URL' '$RUN_NUMBER' '$COMMIT_SHA'"
+            "set -e; install -d -m 700 pushdocs; tar -xzf pushdocs-deploy.tar.gz -C pushdocs; rm pushdocs-deploy.tar.gz; cd pushdocs; chmod 700 scripts/install.sh scripts/deploy.sh; ./scripts/deploy.sh '$APPLICATION_IMAGE' '$PUBLIC_ORIGIN' '$PREVIEW_URL' '$RUN_NUMBER' '$COMMIT_SHA' '$VPN_ENABLED'"

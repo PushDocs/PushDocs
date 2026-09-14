@@ -38,9 +38,11 @@ postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$environment_file")
 session_pepper=$(sed -n 's/^PUSHDOCS_SESSION_PEPPER=//p' "$environment_file")
 encryption_key=$(sed -n 's/^PUSHDOCS_ENCRYPTION_KEY=//p' "$environment_file")
 vpn_gateway_token=$(sed -n 's/^PUSHDOCS_VPN_GATEWAY_TOKEN=//p' "$environment_file")
+vpn_enabled=$(sed -n 's/^PUSHDOCS_VPN_ENABLED=//p' "$environment_file")
 [[ ${#postgres_password} == 64 ]]
 [[ ${#session_pepper} == 64 ]]
 [[ ${#vpn_gateway_token} == 64 ]]
+[[ "$vpn_enabled" == 0 ]]
 decoded_key_length=$(printf '%s' "$encryption_key" | openssl base64 -d -A | wc -c | tr -d ' ')
 [[ "$decoded_key_length" == 32 ]]
 
@@ -49,6 +51,10 @@ grep -q '^PUSHDOCS_ADDRESS=docs.example.com$' "$environment_file"
 grep -q '^PUSHDOCS_HTTP_PORT=80$' "$environment_file"
 grep -q '^PUSHDOCS_HTTPS_PORT=443$' "$environment_file"
 docker compose --env-file "$environment_file" config --quiet
+
+PUSHDOCS_ENV_FILE="$environment_file" ./scripts/install.sh --prepare-only --enable-vpn
+grep -q '^PUSHDOCS_VPN_ENABLED=1$' "$environment_file"
+docker compose --env-file "$environment_file" --profile vpn config --quiet
 
 invalid_file="$temporary_directory/invalid.env"
 if PUSHDOCS_ENV_FILE="$invalid_file" ./scripts/install.sh \

@@ -29,6 +29,7 @@ key
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.PUSHDOCS_VPN_ENABLED;
   delete process.env.PUSHDOCS_VPN_GATEWAY_TOKEN;
 });
 
@@ -65,6 +66,7 @@ describe("VPN profiles", () => {
   });
 
   it("configures a slot and relays provider requests", async () => {
+    process.env.PUSHDOCS_VPN_ENABLED = "1";
     process.env.PUSHDOCS_VPN_GATEWAY_TOKEN = "gateway-secret";
     const request = vi
       .fn()
@@ -83,5 +85,16 @@ describe("VPN profiles", () => {
     expect(request.mock.calls[0]?.[0]).toBe("http://vpn-gateway-2:8080/configure");
     expect(request.mock.calls[1]?.[0]).toBe("http://vpn-gateway-2:8080/fetch");
     expect(access.gitProxyUrl).toBe("http://pushdocs:gateway-secret@vpn-gateway-2:8080");
+  });
+
+  it("rejects VPN profiles when the installation feature is disabled", async () => {
+    await expect(
+      prepareVpnAccess({
+        allowedOrigin: "https://gitlab.test",
+        connectionId: "connection",
+        profile,
+        slot: 2,
+      }),
+    ).rejects.toThrow("VPN_DISABLED");
   });
 });

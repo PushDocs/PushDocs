@@ -8,6 +8,7 @@ public_origin=${2:-}
 preview_url=${3:-}
 run_number=${4:-}
 revision=${5:-}
+vpn_enabled=${6:-0}
 backup_root=${PUSHDOCS_BACKUP_DIR:-$HOME/pushdocs-backups}
 secret_backup_root=${PUSHDOCS_SECRET_BACKUP_DIR:-$HOME/pushdocs-secret-backups}
 
@@ -34,6 +35,10 @@ fi
 
 if [[ ! "$run_number" =~ ^[0-9]+$ || ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Expected a GitHub Actions run number and full commit SHA." >&2
+  exit 2
+fi
+if [[ "$vpn_enabled" != 0 && "$vpn_enabled" != 1 ]]; then
+  echo "Expected VPN enablement to be 0 or 1." >&2
   exit 2
 fi
 
@@ -116,13 +121,19 @@ set_setting PUSHDOCS_HTTP_PORT 80
 set_setting PUSHDOCS_HTTPS_PORT 443
 set_setting PUSHDOCS_IMAGE "$image"
 set_setting PUSHDOCS_PREVIEW_URL "$preview_url"
+set_setting PUSHDOCS_VPN_ENABLED "$vpn_enabled"
 
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
 "${compose[@]}" up --detach --no-build --wait --wait-timeout 180 postgres
 "${compose[@]}" up --no-build --no-deps migrate
-"${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 \
-  vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
+if [[ "$vpn_enabled" == 1 ]]; then
+  "${compose[@]}" --profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 \
+    vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
+else
+  "${compose[@]}" --profile vpn stop \
+    vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
+fi
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 caddy
 

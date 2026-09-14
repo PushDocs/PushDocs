@@ -108,6 +108,7 @@ it("shows VPN controls only inside the selected connection dialog", () => {
   render(
     <ConnectionCard
       connection={{ ...connection, vpnSlot: 2 }}
+      vpnEnabled
       updateAction={vi.fn().mockResolvedValue({ ok: true, message: "saved" })}
       deleteAction={vi.fn().mockResolvedValue(undefined)}
     />,

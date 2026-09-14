@@ -31,6 +31,7 @@ printf '%s\n' \
   'PUSHDOCS_PUBLIC_ORIGIN=https://old.example.com' \
   'PUSHDOCS_SESSION_PEPPER=existing-session-pepper' \
   'PUSHDOCS_ENCRYPTION_KEY=existing-encryption-key' \
+  'PUSHDOCS_VPN_ENABLED=0' \
   > "$deployment_root/.env"
 chmod 600 "$deployment_root/.env"
 
@@ -79,22 +80,36 @@ chmod 700 "$mock_bin/docker" "$mock_bin/openssl" "$mock_bin/curl" "$mock_bin/flo
 
 image="ghcr.io/pushdocs/pushdocs@sha256:$(printf '%064d' 1)"
 revision=$(printf '%040d' 2)
-PATH="$mock_bin:$PATH" \
-  BASH_ENV="$mock_bin/bash-env" \
-  PUSHDOCS_DOCKER_LOG="$docker_log" \
-  PUSHDOCS_BACKUP_DIR="$temporary_directory/backups" \
-  PUSHDOCS_SECRET_BACKUP_DIR="$temporary_directory/secret-backups" \
-  "$deployment_root/scripts/deploy.sh" \
-    "$image" https://docs.example.com '' 42 "$revision"
+export PATH="$mock_bin:$PATH"
+export BASH_ENV="$mock_bin/bash-env"
+export PUSHDOCS_DOCKER_LOG="$docker_log"
+export PUSHDOCS_BACKUP_DIR="$temporary_directory/backups"
+export PUSHDOCS_SECRET_BACKUP_DIR="$temporary_directory/secret-backups"
+"$deployment_root/scripts/deploy.sh" \
+  "$image" https://docs.example.com '' 42 "$revision" 0
 
 grep -qx 'POSTGRES_PASSWORD=existing-postgres-password' "$deployment_root/.env"
 grep -qx 'PUSHDOCS_SESSION_PEPPER=existing-session-pepper' "$deployment_root/.env"
 grep -qx 'PUSHDOCS_ENCRYPTION_KEY=existing-encryption-key' "$deployment_root/.env"
 grep -qx 'PUSHDOCS_VPN_GATEWAY_TOKEN=0000000000000000000000000000000000000000000000000000000000000000' "$deployment_root/.env"
 [[ $(grep -c '^PUSHDOCS_VPN_GATEWAY_TOKEN=' "$deployment_root/.env") == 1 ]]
+grep -qx 'PUSHDOCS_VPN_ENABLED=0' "$deployment_root/.env"
 
 grep -Fq 'up --no-build --no-deps migrate' "$docker_log"
-grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
+grep -Fq -- '--profile vpn stop vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
+! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
+grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
+
+migration_line=$(grep -n -F 'up --no-build --no-deps migrate' "$docker_log" | cut -d: -f1)
+application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
+(( migration_line < application_line ))
+
+: > "$docker_log"
+"$deployment_root/scripts/deploy.sh" \
+  "$image" https://docs.example.com '' 43 "$revision" 1
+
+grep -qx 'PUSHDOCS_VPN_ENABLED=1' "$deployment_root/.env"
+grep -Fq -- '--profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
 grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
 
 migration_line=$(grep -n -F 'up --no-build --no-deps migrate' "$docker_log" | cut -d: -f1)
@@ -102,4 +117,4 @@ gateway_line=$(grep -n -F 'vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway
 application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
 (( migration_line < gateway_line && gateway_line < application_line ))
 
-echo 'PASS: production deploy upgrades existing secrets and starts VPN gateways automatically'
+echo 'PASS: production deploy starts VPN gateways only when explicitly enabled'

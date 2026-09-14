@@ -208,6 +208,7 @@ key
 
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.PUSHDOCS_VPN_ENABLED = "1";
   mocks.optionalUser.mockResolvedValue(null);
   mocks.requireOperator.mockResolvedValue(mocks.user);
   mocks.requireUser.mockResolvedValue(mocks.user);
@@ -610,6 +611,22 @@ describe("two-factor actions", () => {
 });
 
 describe("installation actions", () => {
+  it("rejects VPN uploads when the installation feature is disabled", async () => {
+    process.env.PUSHDOCS_VPN_ENABLED = "0";
+    await expect(
+      createConnectionAction(
+        form({
+          baseUrl: "https://gitlab.internal.test",
+          kind: "gitlab",
+          name: "Corporate GitLab",
+          token: "plain-token",
+          vpnProfile: new File([vpnProfile], "client.ovpn"),
+        }),
+      ),
+    ).rejects.toThrow("VPN_DISABLED");
+    expect(mocks.app.createConnection).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid VPN uploads and incompatible providers", async () => {
     const values = {
       baseUrl: "https://gitlab.test",
