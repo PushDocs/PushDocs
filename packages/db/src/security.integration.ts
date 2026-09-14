@@ -60,13 +60,23 @@ try {
   await repo.createSession(owner.id, "old-owner-session", new Date(Date.now() + 60_000));
   await repo.createSession(reader.id, "old-reader-session", new Date(Date.now() + 60_000));
 
-  // Recreate the pre-upgrade schema only in the randomly named disposable database.
+  // Recreate the schema immediately before 011-two-factor only in the disposable database.
+  // Later migrations must be rolled back too, otherwise Kysely rejects the broken history.
+  await sql`
+    drop index if exists discussions_project_branch_path_idx;
+    drop index if exists change_requests_project_state_updated_idx;
+    drop index if exists attachments_change_set_created_idx;
+    drop index if exists change_sets_project_branch_created_idx;
+    drop index if exists branch_contexts_project_ref_generation_idx;
+    drop index if exists project_memberships_user_project_idx;
+  `.execute(db);
   await sql`alter table users drop column totp_secret, drop column totp_pending_secret,
     drop column totp_pending_expires_at, drop column totp_last_counter, drop column auth_attempts,
     drop column auth_window_at, drop column legacy_password_login`.execute(db);
   await sql`alter table sessions drop column purpose, drop column mfa_verified`.execute(db);
   await sql`update project_invitations set expires_at = created_at + interval '7 days'`.execute(db);
-  await sql`delete from kysely_migration where name = '011-two-factor'`.execute(db);
+  await sql`delete from kysely_migration
+    where name in ('011-two-factor', '012-read-path-indexes')`.execute(db);
   await migrateToLatest(db);
   assert.ok(await repo.findUserBySessionHash("old-owner-session"));
   assert.equal(await repo.findUserBySessionHash("old-reader-session"), undefined);
