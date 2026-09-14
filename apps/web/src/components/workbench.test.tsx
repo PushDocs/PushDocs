@@ -394,12 +394,13 @@ it("persists reordered tabs without saving or changing the active document", asy
   ).toContain("b.md");
   expect(screen.getByRole("tab", { name: "b.md" }).getAttribute("aria-selected")).toBe("true");
 });
-it("searches branch names and identifies protected branches", async () => {
+it("searches branch names without exposing provider protection metadata", async () => {
   state.branches[0] = { full_ref: "main", is_protected: true };
   mount();
   fireEvent.click(screen.getByRole("combobox", { name: "Текущая ветка" }));
   expect(screen.getByLabelText("Поиск по веткам").closest(".pd-combobox-popup")).toBeTruthy();
-  expect(screen.getByRole("option", { name: "main · защищена" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "main" })).toBeTruthy();
+  expect(screen.queryByText(/защищена/i)).toBeNull();
   fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "docs/new" } });
   expect(screen.getByRole("option", { name: "docs/new" })).toBeTruthy();
   fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "missing" } });

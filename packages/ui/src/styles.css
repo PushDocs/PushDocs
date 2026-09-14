@@ -112,15 +112,19 @@
 
 .pd-select-item {
   align-items: center;
+  box-sizing: border-box;
   border-radius: 6px;
-  cursor: default;
+  cursor: pointer;
   display: grid;
   gap: 8px;
   grid-template-columns: 18px 1fr;
-  min-height: 34px;
-  padding: 0 8px;
+  min-height: 38px;
+  min-width: 0;
+  padding: 7px 10px;
+  width: 100%;
 }
 
+.pd-select-item:hover,
 .pd-select-item[data-highlighted] {
   background: var(--violet-wash);
   outline: none;
@@ -133,6 +137,14 @@
 
 .pd-select-check {
   color: var(--violet);
+}
+
+.pd-select-item > span:last-child {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pd-combobox-trigger {
@@ -158,9 +170,10 @@
 }
 
 .pd-combobox-popup {
+  box-sizing: border-box;
   overflow: hidden;
   padding: 0;
-  width: min(360px, calc(100vw - 32px));
+  width: min(max(var(--anchor-width), 320px), calc(100vw - 32px));
 }
 
 .pd-combobox-search {
@@ -173,13 +186,15 @@
   padding: 8px 10px;
 }
 
-.pd-combobox-search input {
+.pd-combobox-search input,
+.pd-combobox-search input:focus {
   background: transparent;
   border: 0;
+  border-radius: 0;
   box-shadow: none;
   color: var(--ink);
   font: inherit;
-  min-height: 34px;
+  min-height: 32px;
   min-width: 0;
   outline: none;
   padding: 0;

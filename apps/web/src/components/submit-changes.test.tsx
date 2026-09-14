@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 vi.mock("@/app/actions", () => ({ submitChangeSetAction: vi.fn() }));
@@ -15,22 +15,25 @@ const props = {
   disabled: false,
   submitting: false,
 };
-it("offers a new branch and MR for drafts on the default branch", () => {
-  render(<SubmitChanges {...props} />);
-  const branch = screen.getByLabelText("Рабочая ветка для изменений");
-  expect(branch.getAttribute("value")).toBe("docs/update-12345678");
-  expect(screen.getByText("stable").closest(".submit-route-target")).toBeTruthy();
-  fireEvent.change(branch, { target: { value: "docs/custom" } });
-  expect(screen.getByText("docs/custom")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("checkbox"));
-  expect(screen.queryByLabelText("Рабочая ветка для изменений")).toBeNull();
-  expect(screen.getByRole("button", { name: "Отправить в stable" })).toBeTruthy();
-});
-it("sends subsequent changes to the existing review without offering another branch", () => {
-  render(<SubmitChanges {...props} branch="docs/update" reviewTitle="Existing MR" />);
+it("always creates an MR and generates the working branch without extra controls", () => {
+  const { container } = render(<SubmitChanges {...props} />);
   expect(screen.queryByRole("checkbox")).toBeNull();
   expect(screen.queryByLabelText("Рабочая ветка для изменений")).toBeNull();
+  expect(screen.queryByText(/MR в ветку/i)).toBeNull();
+  expect(container.querySelector('input[name="createReview"]')?.getAttribute("value")).toBe("on");
+  expect(container.querySelector('input[name="newBranch"]')?.getAttribute("value")).toBe(
+    "docs/update-12345678",
+  );
+  expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();
+});
+it("sends subsequent changes to the existing review without offering another branch", () => {
+  const { container } = render(
+    <SubmitChanges {...props} branch="docs/update" reviewTitle="Existing MR" />,
+  );
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(screen.queryByLabelText("Рабочая ветка для изменений")).toBeNull();
+  expect(container.querySelector('input[name="createReview"]')?.getAttribute("value")).toBe("on");
+  expect(container.querySelector('input[name="newBranch"]')).toBeNull();
   expect(screen.getByRole("button", { name: "Отправить в PR / MR" })).toBeTruthy();
 });
 it("blocks duplicate submissions while a job is running", () => {

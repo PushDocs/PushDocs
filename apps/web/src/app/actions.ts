@@ -543,7 +543,7 @@ export async function submitChangeSetAction(formData: FormData): Promise<void> {
   const user = await requireUser();
   const input = submitChangeSetSchema.parse({
     ...Object.fromEntries(formData),
-    createReview: formData.get("createReview") === "on",
+    createReview: true,
     newBranch: String(formData.get("newBranch") ?? "").trim() || undefined,
   });
   await repository().requireProjectAccess(user.id, input.projectId, "branch:push");

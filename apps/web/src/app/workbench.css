@@ -894,6 +894,10 @@
   max-width: 300px;
   min-width: 210px;
 }
+.workbench button.wb-branch-picker {
+  justify-content: flex-start;
+  padding: 0 12px;
+}
 .workbench .wb-new-branch {
   border-color: color-mix(in srgb, var(--violet) 34%, var(--line));
   color: var(--violet-deep);

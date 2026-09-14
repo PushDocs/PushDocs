@@ -102,3 +102,22 @@ test("shared controls have styled states and copying reports its result", async 
   );
   await page.screenshot({ path: testInfo.outputPath("controls.png") });
 });
+
+test("branch picker keeps compact rows and shows a pointer hover state", async ({ page }) => {
+  await page.goto(`${baseURL}/?branches`);
+  const trigger = page.getByRole("combobox", { name: "Текущая ветка" });
+  await trigger.click();
+
+  const search = page.getByRole("combobox", { name: "Поиск по веткам" });
+  await expect(search).toBeFocused();
+  expect(await search.evaluate((element) => getComputedStyle(element).boxShadow)).toBe("none");
+  expect(await search.evaluate((element) => getComputedStyle(element).borderTopWidth)).toBe("0px");
+
+  const option = page.getByRole("option", { name: "feat/create-translate-script" });
+  const beforeHover = await option.evaluate((element) => getComputedStyle(element).backgroundColor);
+  await option.hover();
+  const afterHover = await option.evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(afterHover).not.toBe(beforeHover);
+  expect(await option.evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+  expect((await option.boundingBox())?.height).toBeLessThanOrEqual(40);
+});

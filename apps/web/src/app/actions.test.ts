@@ -1161,12 +1161,11 @@ describe("document and review actions", () => {
     expect(mocks.repo.enqueueBranchSyncIfStale).toHaveBeenCalledWith(projectId, "docs/update");
   });
 
-  it("queues a change set submission and parses the checkbox", async () => {
+  it("always queues review creation when submitting a change set", async () => {
     await submitChangeSetAction(
       form({
         branch: "docs/update",
         changeSetId,
-        createReview: "on",
         message: "Update docs",
         projectId,
       }),
@@ -1190,7 +1189,6 @@ describe("document and review actions", () => {
           changeSetId,
           branch: "stable",
           newBranch: "docs/new",
-          createReview: "on",
           message: "New article",
         }),
       ),

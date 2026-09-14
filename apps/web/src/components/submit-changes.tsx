@@ -1,6 +1,5 @@
 "use client";
 import { Send } from "lucide-react";
-import { useState } from "react";
 import { useFormStatus } from "react-dom";
 import { submitChangeSetAction } from "@/app/actions";
 
@@ -25,43 +24,19 @@ export function SubmitChanges({
   reviewLabel?: string;
   children?: React.ReactNode;
 }) {
-  const [createReview, setCreateReview] = useState(true);
   const needsBranch = branch === defaultBranch;
-  const [newBranch, setNewBranch] = useState(`docs/update-${changeSetId.slice(0, 8)}`);
+  const newBranch = needsBranch ? `docs/update-${changeSetId.slice(0, 8)}` : undefined;
   return (
     <form action={submitChangeSetAction} className="submit-panel">
-      <h2>
-        {reviewTitle
-          ? `Обновить ${reviewLabel}`
-          : needsBranch
-            ? "Отправить изменения"
-            : `Коммит и ${reviewLabel}`}
-      </h2>
+      <h2>{reviewTitle ? `Обновить ${reviewLabel}` : "Отправить изменения"}</h2>
       {reviewTitle ? <p>{reviewTitle}</p> : null}
-      <p className="submit-route">
-        <span className="submit-route-source">
-          <small>Рабочая ветка</small>
-          <code title={needsBranch && createReview ? newBranch : branch}>
-            {needsBranch && createReview ? newBranch : branch}
-          </code>
-        </span>
-        {createReview ? (
-          <>
-            <b aria-hidden>→</b>
-            <span className="submit-route-target">
-              <small>{reviewLabel} в ветку</small>
-              <code title={defaultBranch}>{defaultBranch}</code>
-            </span>
-          </>
-        ) : null}
-      </p>
       <input name="projectId" type="hidden" value={projectId} />
       <input name="changeSetId" type="hidden" value={changeSetId} />
       <input name="branch" type="hidden" value={branch} />
+      <input name="createReview" type="hidden" value="on" />
+      {newBranch ? <input name="newBranch" type="hidden" value={newBranch} /> : null}
       <label>
-        {createReview && !reviewTitle
-          ? `Название ${reviewLabel} и сообщение коммита`
-          : "Сообщение коммита"}
+        {!reviewTitle ? `Название ${reviewLabel} и сообщение коммита` : "Сообщение коммита"}
         <textarea
           name="message"
           placeholder="Что изменилось?"
@@ -71,42 +46,9 @@ export function SubmitChanges({
           disabled={submitting}
         />
       </label>
-      {reviewTitle ? (
-        <input type="hidden" name="createReview" value="on" />
-      ) : (
-        <label className="checkbox-field">
-          <input
-            name="createReview"
-            type="checkbox"
-            checked={createReview}
-            onChange={(event) => setCreateReview(event.target.checked)}
-            disabled={submitting}
-          />
-          После коммита создать {reviewLabel} в {defaultBranch}
-        </label>
-      )}
-      {needsBranch && createReview ? (
-        <label>
-          Рабочая ветка для изменений
-          <input
-            name="newBranch"
-            value={newBranch}
-            onChange={(event) => setNewBranch(event.target.value)}
-            required
-            maxLength={255}
-            disabled={submitting}
-          />
-        </label>
-      ) : null}
       <SendButton
         disabled={disabled}
-        label={
-          reviewTitle
-            ? `Отправить в ${reviewLabel}`
-            : createReview
-              ? `Отправить и создать ${reviewLabel}`
-              : `Отправить в ${branch}`
-        }
+        label={reviewTitle ? `Отправить в ${reviewLabel}` : `Отправить и создать ${reviewLabel}`}
         submitting={submitting}
       />
       {children}

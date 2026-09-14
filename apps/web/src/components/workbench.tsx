@@ -955,7 +955,7 @@ export function Workbench({
               label="Текущая ветка"
               leadingIcon={<GitBranch aria-hidden size={16} />}
               options={state.branches.map((item) => ({
-                label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
+                label: item.full_ref,
                 value: item.full_ref,
               }))}
               searchLabel="Поиск по веткам"

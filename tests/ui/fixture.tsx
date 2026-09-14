@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
 import { FilePicker } from "../../apps/web/src/components/file-picker";
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
-import { Select } from "../../packages/ui/src";
+import { SearchableSelect, Select } from "../../packages/ui/src";
 import "../../packages/ui/src/styles.css";
 import "../../apps/web/src/app/globals.css";
 import "../../apps/web/src/app/workbench.css";
@@ -55,6 +55,23 @@ function SettingsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("branches"))
+    return (
+      <main className="workbench" style={{ padding: 24 }}>
+        <SearchableSelect
+          className="wb-branch-picker"
+          label="Текущая ветка"
+          options={[
+            { value: "stable", label: "stable" },
+            { value: "feat/create-translate-script", label: "feat/create-translate-script" },
+            { value: "fix/how-to-use-tilda-data", label: "fix/how-to-use-tilda-data" },
+          ]}
+          searchLabel="Поиск по веткам"
+          searchPlaceholder="Найти ветку…"
+          value="stable"
+        />
+      </main>
+    );
   if (new URLSearchParams(window.location.search).has("controls"))
     return (
       <main className="page">
