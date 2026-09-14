@@ -28,7 +28,7 @@ test("operator setup, isolated sessions, login and logout", async ({ page, brows
     await page.goto("/projects");
     await expect(page).toHaveURL(/\/login$/);
     await page.goto("/two-factor");
-    await page.getByLabel("Код 2FA", { exact: true }).fill(totpCode(secret, Date.now()));
+    await page.getByLabel("Код из приложения", { exact: true }).fill(totpCode(secret, Date.now()));
     await page.getByRole("button", { name: "Включить 2FA", exact: true }).click();
     await expect(page).toHaveURL(/\/projects$/);
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
