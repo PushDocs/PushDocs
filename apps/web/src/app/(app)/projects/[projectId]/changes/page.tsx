@@ -1,4 +1,4 @@
-import { AlertTriangle, FileText, GitBranch } from "lucide-react";
+import { AlertTriangle, Check, FileText, GitBranch } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { resolveConflictAction, retryChangeSetSubmissionAction } from "@/app/actions";
@@ -20,6 +20,29 @@ function fileCountText(count: number): string {
         ? "файла"
         : "файлов";
   return `${count} ${word}`;
+}
+
+function BranchWorkflow({ stage, reviewLabel }: { stage: 1 | 2 | 3; reviewLabel: string }) {
+  const steps = ["Правки", "Коммит в ветку", reviewLabel];
+  return (
+    <ol className="branch-workflow" aria-label="Этапы работы с веткой">
+      {steps.map((label, index) => {
+        const position = (index + 1) as 1 | 2 | 3;
+        const complete = position < stage;
+        const active = position === stage;
+        return (
+          <li
+            className={complete ? "complete" : active ? "active" : undefined}
+            aria-current={active ? "step" : undefined}
+            key={label}
+          >
+            <span>{complete ? <Check aria-hidden size={13} /> : position}</span>
+            {label}
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export default async function ChangesPage({
@@ -55,6 +78,14 @@ export default async function ChangesPage({
   const workingByPath = new Map(working.files.map((file) => [file.path, file]));
   const repositoryPaths = new Set(working.branch.repository_paths);
   const attachmentPaths = new Set(attachments.map((file) => file.repository_path));
+  const workflowStage: 1 | 2 | 3 =
+    fileCount > 0
+      ? 1
+      : submission?.status === "queued" || submission?.status === "running"
+        ? 2
+        : review || (branch !== project.defaultBranch && submission?.status === "done")
+          ? 3
+          : 1;
 
   return (
     <div className="page changes-page">
@@ -77,6 +108,8 @@ export default async function ChangesPage({
           {branch}
         </span>
       </header>
+
+      <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
 
       <div className="branch-git-actions">
         <GitOperation

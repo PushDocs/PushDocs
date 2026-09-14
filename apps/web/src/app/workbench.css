@@ -383,6 +383,19 @@
   }
 }
 @media (max-width: 760px) {
+  .wb-branch-tools {
+    width: 100%;
+  }
+  .wb-branch-picker {
+    flex: 1;
+    min-width: 0;
+  }
+  .wb-branch-picker > summary {
+    max-width: none;
+  }
+  .wb-new-branch {
+    flex-shrink: 0;
+  }
   .wb-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -848,6 +861,11 @@
 .wb-disclosure {
   position: relative;
 }
+.wb-branch-tools {
+  align-items: stretch;
+  display: flex;
+  gap: 6px;
+}
 .wb-disclosure > summary {
   color: var(--ink);
 }
@@ -880,12 +898,60 @@
 }
 .wb-branch-picker > summary {
   border: 1px solid var(--line);
-  max-width: 230px;
+  max-width: 260px;
 }
 .wb-branch-picker > summary span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.wb-branch-picker > summary small {
+  border-left: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  padding-left: 7px;
+  text-transform: uppercase;
+}
+.workbench .wb-new-branch {
+  border-color: color-mix(in srgb, var(--violet) 34%, var(--line));
+  color: var(--violet-deep);
+  white-space: nowrap;
+}
+.wb-branch-origin {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  padding: 12px;
+}
+.wb-branch-origin > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.wb-branch-origin small {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.wb-branch-origin code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-branch-origin p {
+  color: var(--ink-muted);
+  font-size: 11px;
+  grid-column: 1 / -1;
+  line-height: 1.5;
+  margin: 0;
 }
 .workbench .wb-actions a.wb-primary {
   color: white;
@@ -1078,6 +1144,9 @@
     left: 12px;
     right: 12px;
     width: auto;
+  }
+  .wb-branch-origin {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   }
 }
 

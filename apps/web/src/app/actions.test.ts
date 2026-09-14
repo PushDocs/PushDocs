@@ -1188,9 +1188,13 @@ describe("document and review actions", () => {
       expect.objectContaining({ newBranch: "docs/new", createReview: true }),
     );
   });
-  it("checks push permission before creating a review and read permission before pulling", async () => {
+  it("checks review permission before creating a review and read permission before pulling", async () => {
     await startGitOperationAction({ projectId, branch: "docs/update", title: "Review" });
-    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith(
+      "user",
+      projectId,
+      "change-request:create",
+    );
     expect(mocks.repo.enqueueReviewCreation).toHaveBeenCalledWith(
       projectId,
       "docs/update",

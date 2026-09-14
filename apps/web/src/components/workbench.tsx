@@ -14,6 +14,7 @@ import {
   Heading2,
   MessageSquare,
   MoreHorizontal,
+  Plus,
   Puzzle,
   RefreshCw,
   Save,
@@ -89,6 +90,7 @@ export function Workbench({
   projectId,
   projectName,
   branch,
+  defaultBranch = branch,
   initial,
   initialPath,
   initialPanel,
@@ -96,6 +98,7 @@ export function Workbench({
 }: {
   projectId: string;
   projectName: string;
+  defaultBranch?: string;
   branch: string;
   initial: WorkbenchState;
   initialPath?: string;
@@ -811,13 +814,34 @@ export function Workbench({
       /* v8 ignore next -- the branch dialog retains input after the same tested save failure path. */
       if (!(await save())) return;
       setBusy(true);
+      setNotice(`Создаём ветку ${path} от ${branch}…`);
       try {
         const result = await command({ action: "branch", name: path, sha: stateRef.current.sha });
+        const deadline = Date.now() + 300_000;
+        while (Date.now() < deadline) {
+          let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
+          try {
+            job = await gitOperationStatusAction(projectId, result.jobId);
+          } catch {
+            setNotice("Нет связи с сервером. Проверяем создание ветки…");
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            continue;
+          }
+          if (job.status === "failed")
+            throw new Error(job.last_error || "Не удалось создать ветку. Повторите попытку.");
+          if (job.status === "done") break;
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        /* v8 ignore next 2 -- the five-minute production deadline is not advanced in UI unit tests. */
+        if (Date.now() >= deadline)
+          throw new Error("Создание ветки ещё выполняется. Обновите страницу позже.");
+        setNotice(`Ветка ${result.name} создана. Открываем документы…`);
         router.push(`?branch=${encodeURIComponent(result.name)}`);
         router.refresh();
         setDialog(null);
       } catch (cause) {
-        setError(String(cause));
+        setNotice("");
+        setError(cause instanceof Error ? cause.message : "Не удалось создать ветку");
       } finally {
         setBusy(false);
       }
@@ -889,56 +913,60 @@ export function Workbench({
           <h1>Документы</h1>
         </div>
         <div className="wb-actions">
-          <details className="wb-disclosure wb-branch-picker">
-            <summary>
-              <GitBranch size={16} />
-              <span>{branch}</span>
-              <ChevronDown size={14} />
-            </summary>
-            <div className="wb-popover">
-              <strong>Рабочая ветка</strong>
-              <input
-                className="wb-branch-search"
-                aria-label="Поиск веток"
-                placeholder="Найти ветку…"
-                type="search"
-                value={branchQuery}
-                onChange={(event) => setBranchQuery(event.target.value)}
-              />
-              <Select
-                label="Ветка"
-                options={state.branches
-                  .filter(
-                    (item) =>
-                      item.full_ref === branch ||
-                      item.full_ref.toLowerCase().includes(branchQuery.toLowerCase()),
-                  )
-                  .map((item) => ({
-                    label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
-                    value: item.full_ref,
-                  }))}
-                value={branch}
-                onValueChange={async (value) => {
-                  if (await save()) {
-                    router.push(`?branch=${encodeURIComponent(value)}`);
-                    router.refresh();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                disabled={projectReadOnly || busy}
-                onClick={() => setDialog("branch")}
-              >
+          <div className="wb-branch-tools">
+            <details className="wb-disclosure wb-branch-picker">
+              <summary>
                 <GitBranch size={16} />
-                Новая ветка
-              </button>
-              <button type="button" disabled={busy} onClick={() => void receiveChanges()}>
-                <RefreshCw size={16} />
-                Получить из Git
-              </button>
-            </div>
-          </details>
+                <span>{branch}</span>
+                {branch === defaultBranch ? <small>основная</small> : <small>рабочая</small>}
+                <ChevronDown size={14} />
+              </summary>
+              <div className="wb-popover">
+                <strong>Перейти в ветку</strong>
+                <input
+                  className="wb-branch-search"
+                  aria-label="Поиск веток"
+                  placeholder="Найти ветку…"
+                  type="search"
+                  value={branchQuery}
+                  onChange={(event) => setBranchQuery(event.target.value)}
+                />
+                <Select
+                  label="Ветка"
+                  options={state.branches
+                    .filter(
+                      (item) =>
+                        item.full_ref === branch ||
+                        item.full_ref.toLowerCase().includes(branchQuery.toLowerCase()),
+                    )
+                    .map((item) => ({
+                      label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
+                      value: item.full_ref,
+                    }))}
+                  value={branch}
+                  onValueChange={async (value) => {
+                    if (await save()) {
+                      router.push(`?branch=${encodeURIComponent(value)}`);
+                      router.refresh();
+                    }
+                  }}
+                />
+                <button type="button" disabled={busy} onClick={() => void receiveChanges()}>
+                  <RefreshCw size={16} />
+                  Получить из Git
+                </button>
+              </div>
+            </details>
+            <button
+              className="wb-new-branch"
+              type="button"
+              disabled={projectReadOnly || busy}
+              onClick={() => setDialog("branch")}
+            >
+              <Plus size={15} />
+              Новая ветка
+            </button>
+          </div>
           <Link
             className="wb-primary"
             href={`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`}
@@ -1644,7 +1672,11 @@ export function Workbench({
                   }[dialog]
                 }
               </h2>
-              <button type="button" disabled={mediaBusy} onClick={() => setDialog(null)}>
+              <button
+                type="button"
+                disabled={mediaBusy || (dialog === "branch" && busy)}
+                onClick={() => setDialog(null)}
+              >
                 Закрыть
               </button>
             </header>
@@ -1742,6 +1774,7 @@ export function Workbench({
                           : "Путь файла"}
                     <input
                       name="path"
+                      aria-describedby={dialog === "branch" ? "new-branch-help" : undefined}
                       required
                       defaultValue={
                         dialog === "new" || dialog === "folder"
@@ -1765,9 +1798,21 @@ export function Workbench({
                   </p>
                 ) : null}
                 {dialog === "branch" ? (
-                  <p>
-                    Основа: {branch}, {state.sha.slice(0, 8)}. Черновики остаются в исходной ветке.
-                  </p>
+                  <div className="wb-branch-origin" id="new-branch-help">
+                    <span>
+                      <small>Основа</small>
+                      <code>{branch}</code>
+                    </span>
+                    <ArrowRight aria-hidden size={16} />
+                    <span>
+                      <small>Новая ветка</small>
+                      <code>ваше имя</code>
+                    </span>
+                    <p>
+                      Ветка будет создана от коммита {state.sha.slice(0, 8)} и откроется после
+                      импорта. Черновики останутся в {branch}.
+                    </p>
+                  </div>
                 ) : null}
                 {dialog === "move" || dialog === "rename" ? (
                   <p>
@@ -1804,14 +1849,18 @@ export function Workbench({
                 ) : null}
                 <button className="wb-primary" type="submit" disabled={busy}>
                   {busy
-                    ? "Выполняем…"
+                    ? dialog === "branch"
+                      ? "Создаём ветку…"
+                      : "Выполняем…"
                     : dialog === "template"
                       ? "Показать план файлов"
                       : dialog === "new"
                         ? "Создать файл"
                         : dialog === "folder"
                           ? "Создать папку"
-                          : "Применить"}
+                          : dialog === "branch"
+                            ? "Создать и перейти"
+                            : "Применить"}
                 </button>
               </form>
             )}

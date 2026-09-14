@@ -817,6 +817,30 @@ export class PushDocsRepository extends SecurityRepository {
     return job.id;
   }
 
+  async enqueueBranchCreation(input: {
+    projectId: string;
+    sourceBranch: string;
+    sourceSha: string;
+    branch: string;
+    userId: string;
+  }): Promise<string> {
+    const job = await this.database
+      .insertInto("jobs")
+      .values({
+        kind: "branch.create",
+        payload: {
+          projectId: input.projectId,
+          sourceBranch: normalizeBranchRef(input.sourceBranch),
+          sourceSha: input.sourceSha,
+          branch: normalizeBranchRef(input.branch),
+          userId: input.userId,
+        },
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    return job.id;
+  }
+
   async enqueueReviewCreation(projectId: string, branch: string, title: string, userId: string) {
     const job = await this.database
       .insertInto("jobs")

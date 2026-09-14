@@ -913,7 +913,11 @@ describe("job execution and review polling", () => {
       createProvider: () => client,
       decryptSecret: () => "fixture",
     }).runJob();
-    expect(port.requireProjectAccess).toHaveBeenCalledWith("actor", "project", "branch:push");
+    expect(port.requireProjectAccess).toHaveBeenCalledWith(
+      "actor",
+      "project",
+      "change-request:create",
+    );
     expect(client.ensureChangeRequest).toHaveBeenCalledWith({
       repositoryId: "42",
       sourceBranch: "docs/update",
@@ -923,7 +927,7 @@ describe("job execution and review polling", () => {
     expect(port.replaceChangeRequests).toHaveBeenCalled();
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
-  it("does not create a review after push access is revoked", async () => {
+  it("does not create a review after review access is revoked", async () => {
     const port = repository();
     const client = provider();
     vi.mocked(port.claimNextJob).mockResolvedValue({
@@ -1051,6 +1055,109 @@ describe("job execution and review polling", () => {
       repository: port,
     }).runJob();
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
+
+  it("creates and imports a working branch in one recoverable job", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 1,
+      id: "job",
+      kind: "branch.create",
+      payload: {
+        branch: "docs/new",
+        projectId: "project",
+        sourceBranch: "main",
+        sourceSha: "head",
+        userId: "actor",
+      },
+    } as never);
+    vi.mocked(client.listBranches)
+      .mockResolvedValueOnce([{ name: "main", sha: "head" }])
+      .mockResolvedValue([
+        { name: "main", sha: "head" },
+        { name: "docs/new", sha: "head" },
+      ]);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    }).runJob();
+    expect(port.requireProjectAccess).toHaveBeenCalledWith("actor", "project", "branch:push");
+    expect(client.createBranch).toHaveBeenCalledWith("42", "docs/new", "head");
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "docs/new",
+      "head",
+      [],
+      [],
+    );
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
+
+  it("resumes branch import when creation succeeded before a retry", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 2,
+      id: "job",
+      kind: "branch.create",
+      payload: {
+        branch: "docs/new",
+        projectId: "project",
+        sourceBranch: "main",
+        sourceSha: "head",
+        userId: "actor",
+      },
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([
+      { name: "main", sha: "head" },
+      { name: "docs/new", sha: "head" },
+    ]);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    }).runJob();
+    expect(client.createBranch).not.toHaveBeenCalled();
+    expect(port.completeJob).toHaveBeenCalledWith("job", 2);
+  });
+
+  it.each([
+    {
+      branches: [{ name: "main", sha: "new-head" }],
+      error: "Исходная ветка обновилась",
+    },
+    {
+      branches: [
+        { name: "main", sha: "head" },
+        { name: "docs/new", sha: "other-head" },
+      ],
+      error: "уже существует",
+    },
+  ])("does not create an unsafe working branch: $error", async ({ branches, error }) => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 1,
+      id: "job",
+      kind: "branch.create",
+      payload: {
+        branch: "docs/new",
+        projectId: "project",
+        sourceBranch: "main",
+        sourceSha: "head",
+        userId: "actor",
+      },
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue(branches);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    }).runJob();
+    expect(client.createBranch).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalledWith("job", expect.stringContaining(error), false, 1);
   });
 
   it("completes a project synchronization job", async () => {

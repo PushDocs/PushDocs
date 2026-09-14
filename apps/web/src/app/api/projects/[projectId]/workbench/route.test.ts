@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   stage: vi.fn(),
   create: vi.fn(),
+  createBranchJob: vi.fn(),
   sync: vi.fn(),
   ensure: vi.fn(),
 }));
@@ -35,11 +36,13 @@ beforeEach(() => {
   });
   mocks.stage.mockResolvedValue({ changeSetId: "change", revision: 8 });
   mocks.create.mockResolvedValue({ name: "docs/new", sha: "sha" });
+  mocks.createBranchJob.mockResolvedValue("branch-job");
   mocks.context.mockImplementation(async () => ({
     store: {
       requireProjectAccess: mocks.access,
       stageFiles: mocks.stage,
       enqueueBranchSync: mocks.sync,
+      enqueueBranchCreation: mocks.createBranchJob,
       ensureBranch: mocks.ensure,
       listBranches: async () => [{ full_ref: "main" }],
       listAttachmentsForChangeSet: async () => [
@@ -79,16 +82,28 @@ it("returns branch state without caching or credentials", async () => {
   expect(data.provider).toBeUndefined();
   expect(data.uploads).toEqual([{ path: "static/img/new.png" }]);
 });
-it("creates a branch from the chosen SHA and queues its import", async () => {
-  expect(
-    (await request({ action: "branch", branch: "main", name: "docs/new", sha: "sha" })).status,
-  ).toBe(200);
-  expect(mocks.create).toHaveBeenCalledWith("42", "docs/new", "sha");
-  expect(mocks.sync).toHaveBeenCalledWith("project", "docs/new");
+it("queues branch creation from the chosen SHA", async () => {
+  const response = await request({
+    action: "branch",
+    branch: "main",
+    name: "docs/new",
+    sha: "sha",
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ jobId: "branch-job", name: "docs/new" });
+  expect(mocks.createBranchJob).toHaveBeenCalledWith({
+    projectId: "project",
+    sourceBranch: "main",
+    sourceSha: "sha",
+    branch: "docs/new",
+    userId: "user",
+  });
+  expect(mocks.create).not.toHaveBeenCalled();
+  expect(mocks.sync).not.toHaveBeenCalled();
   expect(
     (await request({ action: "branch", branch: "main", name: "docs/new", sha: "old" })).status,
   ).toBe(400);
-  expect(mocks.create).toHaveBeenCalledTimes(1);
+  expect(mocks.createBranchJob).toHaveBeenCalledTimes(1);
 });
 it("queues synchronization without writing to Git", async () => {
   role = "reader";

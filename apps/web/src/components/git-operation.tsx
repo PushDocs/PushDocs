@@ -44,7 +44,7 @@ export function GitOperation({
                 : reviewsOnly
                   ? `Состояние ${reviewLabel} обновлено`
                   : "Изменения получены"
-              : "Операция не завершена. Повторите попытку.",
+              : job.last_error || "Операция не завершена. Повторите попытку.",
           );
           router.refresh();
           return;

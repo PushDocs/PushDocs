@@ -50,11 +50,11 @@ it("creates a review for already committed branch changes", async () => {
 });
 it("shows failed jobs and allows retry", async () => {
   mocks.start.mockResolvedValue("job");
-  mocks.status.mockResolvedValue({ status: "failed" });
+  mocks.status.mockResolvedValue({ status: "failed", last_error: "Ветка не содержит изменений" });
   render(<GitOperation projectId="project" branch="docs/update" />);
   fireEvent.click(screen.getByRole("button"));
   await act(async () => {});
-  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toBe("Ветка не содержит изменений");
   expect(screen.getByRole("button").hasAttribute("disabled")).toBe(false);
 });
 

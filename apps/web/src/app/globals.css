@@ -2916,6 +2916,86 @@ textarea:where(:not(.monaco-editor *)):focus {
   gap: 12px;
   margin-bottom: 24px;
 }
+.branch-workflow {
+  align-items: center;
+  display: flex;
+  gap: 0;
+  list-style: none;
+  margin: -8px 0 24px;
+  max-width: 660px;
+  padding: 0;
+}
+.branch-workflow li {
+  align-items: center;
+  color: var(--ink-muted);
+  display: flex;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.branch-workflow li:not(:last-child)::after {
+  background: var(--line-strong);
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin: 0 12px 0 4px;
+  min-width: 16px;
+}
+.branch-workflow li > span {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  display: inline-flex;
+  flex: 0 0 24px;
+  font-size: 10px;
+  height: 24px;
+  justify-content: center;
+}
+.branch-workflow li.complete,
+.branch-workflow li.active {
+  color: var(--violet-deep);
+}
+.branch-workflow li.complete > span {
+  background: var(--violet-wash);
+  border-color: color-mix(in srgb, var(--violet) 35%, var(--line));
+}
+.branch-workflow li.active > span {
+  background: var(--violet);
+  border-color: var(--violet);
+  color: white;
+}
+.submit-route {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  padding: 11px 12px;
+}
+.submit-route > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.submit-route small {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.submit-route code {
+  overflow-wrap: anywhere;
+}
+.submit-route b {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
 .git-operation {
   display: grid;
   gap: 12px;
@@ -3198,6 +3278,17 @@ textarea:where(:not(.monaco-editor *)):focus {
 @media (max-width: 650px) {
   .changes-page {
     padding: 20px 12px;
+  }
+  .branch-workflow {
+    align-items: stretch;
+    display: grid;
+    gap: 8px;
+  }
+  .branch-workflow li:not(:last-child)::after {
+    display: none;
+  }
+  .submit-route {
+    align-items: flex-start;
   }
   .change-review {
     grid-template-columns: minmax(0, 1fr);

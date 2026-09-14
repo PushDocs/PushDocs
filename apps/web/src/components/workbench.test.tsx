@@ -155,7 +155,7 @@ beforeEach(() => {
         }
         state.revision++;
       }
-      return Response.json({ saved: true, name: "docs/new" });
+      return Response.json({ saved: true, jobId: "branch-job", name: "docs/new" });
     }),
   );
 });
@@ -610,14 +610,48 @@ it("creates a branch, handles provider errors, and allows closing the dialog", a
   mount();
   await click("Новая ветка");
   fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
-  await click("Применить");
+  await click("Создать и перейти");
   expect(requests[0]).toMatchObject({ action: "branch", sha: "12345678", name: "docs/new" });
+  expect(mocks.status).toHaveBeenCalledWith("project", "branch-job");
   await click("Новая ветка");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("Provider offline"));
-  await click("Применить");
+  await click("Создать и перейти");
   expect(screen.getByRole("alert").textContent).toContain("Provider offline");
   await click("Закрыть");
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+it("shows a branch creation failure returned by the worker", async () => {
+  mocks.status.mockResolvedValueOnce({ status: "failed", last_error: "Ветка уже существует" });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  expect(screen.getByRole("alert").textContent).toContain("Ветка уже существует");
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+it("waits for branch import before opening its documents", async () => {
+  mocks.status
+    .mockResolvedValueOnce({ status: "running" })
+    .mockResolvedValueOnce({ status: "done" });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  expect(mocks.push).not.toHaveBeenCalled();
+  await tick(2000);
+  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+});
+it("continues checking branch creation after a temporary polling failure", async () => {
+  mocks.status
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce({ status: "done" });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  expect(screen.getByRole("status").textContent).toContain("Нет связи");
+  await tick(5000);
+  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
 });
 it("traps dialog focus and closes with Escape", async () => {
   mount();

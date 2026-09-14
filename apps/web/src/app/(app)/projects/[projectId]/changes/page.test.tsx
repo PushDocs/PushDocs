@@ -70,4 +70,28 @@ it("uses the selected branch's actual before/after content and distinguishes rep
   expect(html).not.toContain("static/other.png");
   expect(html).toContain("Отправить в MR");
   expect(html).toContain("Открыть MR: Update docs");
+  expect(html).toContain('<li class="active" aria-current="step"><span>1</span>Правки</li>');
+});
+
+it.each([
+  { status: "queued", stage: 2 },
+  { status: "done", stage: 3 },
+])("shows branch workflow stage $stage for a $status submission", async ({ status, stage }) => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.listChangedWorkingFiles.mockResolvedValueOnce({
+    branch: { repository_paths: ["docs/a.md"] },
+    files: [],
+  });
+  repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(null);
+  repository.getSubmissionStatus.mockResolvedValueOnce({ status });
+  const html = renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ branch: "fix" }),
+    }),
+  );
+  expect(html).toContain(
+    `<li class="active" aria-current="step"><span>${stage}</span>${stage === 2 ? "Коммит в ветку" : "MR"}</li>`,
+  );
 });

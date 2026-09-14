@@ -17,19 +17,19 @@ const props = {
 };
 it("offers a new branch and MR for drafts on the default branch", () => {
   render(<SubmitChanges {...props} />);
-  const branch = screen.getByLabelText("Новая рабочая ветка");
+  const branch = screen.getByLabelText("Рабочая ветка для изменений");
   expect(branch.getAttribute("value")).toBe("docs/update-12345678");
   fireEvent.change(branch, { target: { value: "docs/custom" } });
   expect(screen.getByText("docs/custom")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();
   fireEvent.click(screen.getByRole("checkbox"));
-  expect(screen.queryByLabelText("Новая рабочая ветка")).toBeNull();
+  expect(screen.queryByLabelText("Рабочая ветка для изменений")).toBeNull();
   expect(screen.getByRole("button", { name: "Отправить в stable" })).toBeTruthy();
 });
 it("sends subsequent changes to the existing review without offering another branch", () => {
   render(<SubmitChanges {...props} branch="docs/update" reviewTitle="Existing MR" />);
   expect(screen.queryByRole("checkbox")).toBeNull();
-  expect(screen.queryByLabelText("Новая рабочая ветка")).toBeNull();
+  expect(screen.queryByLabelText("Рабочая ветка для изменений")).toBeNull();
   expect(screen.getByRole("button", { name: "Отправить в PR / MR" })).toBeTruthy();
 });
 it("blocks duplicate submissions while a job is running", () => {

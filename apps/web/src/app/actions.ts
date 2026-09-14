@@ -604,7 +604,7 @@ export async function startGitOperationAction(input: {
   await store.requireProjectAccess(
     user.id,
     input.projectId,
-    input.title ? "branch:push" : "project:read",
+    input.title ? "change-request:create" : "project:read",
   );
   if (input.reviewsOnly) return store.enqueueReviewsSync(input.projectId);
   if (input.title)

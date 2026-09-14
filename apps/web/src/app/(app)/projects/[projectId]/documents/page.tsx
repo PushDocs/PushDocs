@@ -56,6 +56,7 @@ export default async function DocumentsPage({
       key={`${projectId}:${branch}`}
       projectId={projectId}
       projectName={project.name}
+      defaultBranch={project.defaultBranch}
       components={components}
       branch={branch}
       initialPath={query.path ?? initialFilePath}

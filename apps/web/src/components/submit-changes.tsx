@@ -30,14 +30,26 @@ export function SubmitChanges({
   const [newBranch, setNewBranch] = useState(`docs/update-${changeSetId.slice(0, 8)}`);
   return (
     <form action={submitChangeSetAction} className="submit-panel">
-      <h2>{reviewTitle ? `Обновить ${reviewLabel}` : "Отправить изменения"}</h2>
+      <h2>
+        {reviewTitle
+          ? `Обновить ${reviewLabel}`
+          : needsBranch
+            ? "Отправить изменения"
+            : `Коммит и ${reviewLabel}`}
+      </h2>
       {reviewTitle ? <p>{reviewTitle}</p> : null}
-      <p>
-        <code>{needsBranch && createReview ? newBranch : branch}</code>
+      <p className="submit-route">
+        <span>
+          <small>Рабочая ветка</small>
+          <code>{needsBranch && createReview ? newBranch : branch}</code>
+        </span>
         {createReview ? (
           <>
-            {" "}
-            → <code>{defaultBranch}</code>
+            <b aria-hidden>→</b>
+            <span>
+              <small>{reviewLabel} в ветку</small>
+              <code>{defaultBranch}</code>
+            </span>
           </>
         ) : null}
       </p>
@@ -68,12 +80,12 @@ export function SubmitChanges({
             onChange={(event) => setCreateReview(event.target.checked)}
             disabled={submitting}
           />
-          Создать {reviewLabel} в {defaultBranch}
+          После коммита создать {reviewLabel} в {defaultBranch}
         </label>
       )}
       {needsBranch && createReview ? (
         <label>
-          Новая рабочая ветка
+          Рабочая ветка для изменений
           <input
             name="newBranch"
             value={newBranch}

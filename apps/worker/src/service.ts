@@ -266,6 +266,28 @@ export function createWorkerService(options: WorkerServiceOptions) {
     await synchronizeReviews(projectId, provider, target.provider_repository_id);
   }
 
+  async function createBranch(payload: unknown): Promise<void> {
+    const projectId = projectIdFromPayload(payload);
+    const userId = stringFromPayload(payload, "userId");
+    const branchName = stringFromPayload(payload, "branch");
+    const sourceBranch = stringFromPayload(payload, "sourceBranch");
+    const sourceSha = stringFromPayload(payload, "sourceSha");
+    await repository.requireProjectAccess(userId, projectId, "branch:push");
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    const provider = await providerFor(target);
+    const branches = await provider.listBranches(target.provider_repository_id);
+    const source = branches.find((branch) => branch.name === sourceBranch);
+    if (!source || source.sha !== sourceSha)
+      throw new Error("Исходная ветка обновилась. Получите изменения и повторите создание.");
+    const existing = branches.find((branch) => branch.name === branchName);
+    if (existing && existing.sha !== sourceSha)
+      throw new Error(`Ветка ${branchName} уже существует и содержит другие изменения`);
+    if (!existing)
+      await provider.createBranch(target.provider_repository_id, branchName, sourceSha);
+    await synchronizeBranch(projectId, branchName, provider);
+  }
+
   async function submitChangeSet(payload: unknown): Promise<void> {
     const target = await repository.getChangeSetSubmission(
       stringFromPayload(payload, "changeSetId"),
@@ -523,12 +545,14 @@ export function createWorkerService(options: WorkerServiceOptions) {
           projectIdFromPayload(job.payload),
           stringFromPayload(job.payload, "branch"),
         );
+      } else if (job.kind === "branch.create") {
+        await createBranch(job.payload);
       } else if (job.kind === "review.create") {
         const projectId = projectIdFromPayload(job.payload);
         await repository.requireProjectAccess(
           stringFromPayload(job.payload, "userId"),
           projectId,
-          "branch:push",
+          "change-request:create",
         );
         const target = await repository.getProjectSyncTarget(projectId);
         if (!target) throw new Error("Подключение проекта недоступно");
@@ -555,6 +579,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const projectId = projectIdFromPayload(job.payload);
+      const permanentBranchFailure =
+        job.kind === "branch.create" &&
+        (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
+          (typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ACCESS_DENIED"));
       if (
         job.kind === "change-set.submit" &&
         error &&
@@ -578,7 +609,12 @@ export function createWorkerService(options: WorkerServiceOptions) {
           );
         }
       }
-      await repository.failJob(job.id, message, job.attempts < 5, job.attempts);
+      await repository.failJob(
+        job.id,
+        message,
+        !permanentBranchFailure && job.attempts < 5,
+        job.attempts,
+      );
       logger.error(JSON.stringify({ error: message, jobId: job.id, kind: job.kind }));
     } finally {
       clearInterval(heartbeat);

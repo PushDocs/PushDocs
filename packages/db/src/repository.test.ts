@@ -941,7 +941,7 @@ describe("branches and imported documents", () => {
     await expect(repository.hasImportedBranch(other.id)).resolves.toBe(false);
   });
 
-  it("ensures branches idempotently and queues branch synchronization", async () => {
+  it("ensures branches idempotently and queues branch work", async () => {
     const fixture = await projectFixture();
     const first = await repository.ensureBranch(fixture.projectId, "docs/update", "one");
     const second = await repository.ensureBranch(fixture.projectId, "docs/update", "two");
@@ -961,6 +961,25 @@ describe("branches and imported documents", () => {
       .where("kind", "=", "branch.sync")
       .executeTakeFirstOrThrow();
     expect(queued.payload).toEqual({ branch: "release", projectId: fixture.projectId });
+    await repository.enqueueBranchCreation({
+      projectId: fixture.projectId,
+      sourceBranch: "main",
+      sourceSha: "main-sha",
+      branch: "docs/new",
+      userId: fixture.operatorId,
+    });
+    const creation = await database
+      .selectFrom("jobs")
+      .select(["kind", "payload"])
+      .where("kind", "=", "branch.create")
+      .executeTakeFirstOrThrow();
+    expect(creation.payload).toEqual({
+      projectId: fixture.projectId,
+      sourceBranch: "main",
+      sourceSha: "main-sha",
+      branch: "docs/new",
+      userId: fixture.operatorId,
+    });
   });
 
   it("detects components and lets administrators replace their definitions", async () => {
