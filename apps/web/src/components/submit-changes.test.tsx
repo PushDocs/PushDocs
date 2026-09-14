@@ -19,6 +19,7 @@ it("offers a new branch and MR for drafts on the default branch", () => {
   render(<SubmitChanges {...props} />);
   const branch = screen.getByLabelText("Рабочая ветка для изменений");
   expect(branch.getAttribute("value")).toBe("docs/update-12345678");
+  expect(screen.getByText("stable").closest(".submit-route-target")).toBeTruthy();
   fireEvent.change(branch, { target: { value: "docs/custom" } });
   expect(screen.getByText("docs/custom")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();

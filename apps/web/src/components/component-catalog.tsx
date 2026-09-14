@@ -18,6 +18,7 @@ export function ComponentCatalog({
   branch,
   repositoryPaths,
   canEdit,
+  templateEditingEnabled = false,
 }: {
   components: CatalogComponent[];
   examples: Record<string, ComponentExample>;
@@ -25,6 +26,7 @@ export function ComponentCatalog({
   branch: string;
   repositoryPaths: string[];
   canEdit: boolean;
+  templateEditingEnabled?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   return (
@@ -41,11 +43,11 @@ export function ComponentCatalog({
             projectId={projectId}
             branch={branch}
             repositoryPaths={repositoryPaths}
-            canEdit={canEdit}
+            canEdit={canEdit && templateEditingEnabled}
           />
         ))}
       </div>
-      {canEdit ? (
+      {canEdit && templateEditingEnabled ? (
         <details
           className="component-add"
           open={adding}

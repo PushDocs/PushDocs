@@ -1,8 +1,9 @@
 "use client";
 
+import { Combobox } from "@base-ui/react/combobox";
 import { Select as BaseSelect } from "@base-ui/react/select";
 import clsx from "clsx";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Search } from "lucide-react";
 import { type ButtonHTMLAttributes, type ReactNode, useEffect, useRef, useState } from "react";
 
 export function Button({
@@ -18,6 +19,95 @@ export function Button({
 export interface SelectOption {
   label: string;
   value: string;
+}
+
+export function SearchableSelect({
+  className,
+  disabled,
+  emptyText = "Ничего не найдено",
+  label,
+  leadingIcon,
+  name,
+  onValueChange,
+  options,
+  searchLabel = "Поиск",
+  searchPlaceholder = "Начните вводить…",
+  value,
+}: {
+  className?: string;
+  disabled?: boolean;
+  emptyText?: string;
+  label: string;
+  leadingIcon?: ReactNode;
+  name?: string;
+  onValueChange?: (value: string) => void;
+  options: SelectOption[];
+  searchLabel?: string;
+  searchPlaceholder?: string;
+  value?: string;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [portalContainer, setPortalContainer] = useState<HTMLElement | undefined>();
+  useEffect(() => {
+    setPortalContainer(trigger.current?.closest("dialog") ?? undefined);
+  }, []);
+  const selected = options.find((option) => option.value === value) ?? null;
+  return (
+    <Combobox.Root
+      autoHighlight
+      disabled={disabled}
+      items={options}
+      isItemEqualToValue={(option, current) => option.value === current.value}
+      itemToStringLabel={(option) => option.label}
+      itemToStringValue={(option) => option.value}
+      name={name}
+      value={selected}
+      onValueChange={(option) => {
+        if (option) onValueChange?.(option.value);
+      }}
+    >
+      <Combobox.Trigger
+        ref={trigger}
+        className={clsx("pd-select pd-combobox-trigger", className)}
+        aria-label={label}
+        disabled={disabled}
+      >
+        {leadingIcon ? <span className="pd-combobox-leading">{leadingIcon}</span> : null}
+        <Combobox.Value>
+          {(option: SelectOption | null) => option?.label ?? "Выберите значение"}
+        </Combobox.Value>
+        <Combobox.Icon className="pd-combobox-icon">
+          <ChevronDown aria-hidden size={15} />
+        </Combobox.Icon>
+      </Combobox.Trigger>
+      <Combobox.Portal container={portalContainer}>
+        <Combobox.Positioner className="pd-select-positioner" align="start" sideOffset={6}>
+          <Combobox.Popup className="pd-select-popup pd-combobox-popup" aria-label={label}>
+            <div className="pd-combobox-search">
+              <Search aria-hidden size={15} />
+              <Combobox.Input aria-label={searchLabel} placeholder={searchPlaceholder} />
+            </div>
+            <Combobox.Empty className="pd-combobox-empty">{emptyText}</Combobox.Empty>
+            <Combobox.List className="pd-combobox-list">
+              {(option: SelectOption, index: number) => (
+                <Combobox.Item
+                  className="pd-select-item"
+                  index={index}
+                  key={option.value}
+                  value={option}
+                >
+                  <Combobox.ItemIndicator className="pd-select-check">
+                    <Check aria-hidden size={14} />
+                  </Combobox.ItemIndicator>
+                  <span>{option.label}</span>
+                </Combobox.Item>
+              )}
+            </Combobox.List>
+          </Combobox.Popup>
+        </Combobox.Positioner>
+      </Combobox.Portal>
+    </Combobox.Root>
+  );
 }
 
 export function Select({

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   replace: {} as Record<string, (...args: never[]) => unknown>,
   replaceSelection: vi.fn(),
   router: { push: vi.fn(), refresh: vi.fn() },
+  backgroundSync: vi.fn(),
   start: vi.fn(),
   status: vi.fn(),
   upload: vi.fn(),
@@ -19,10 +20,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({ useRouter: () => mocks.router }));
 vi.mock("next/link", () => ({ default: (props: Record<string, unknown>) => <a {...props} /> }));
 vi.mock("@/app/actions", () => ({
+  startBackgroundBranchSyncAction: mocks.backgroundSync,
   startGitOperationAction: mocks.start,
   gitOperationStatusAction: mocks.status,
 }));
 vi.mock("@pushdocs/ui", () => ({
+  SearchableSelect: ({ label }: { label: string }) => <button type="button">{label}</button>,
   Select: ({ label }: { label: string }) => <select aria-label={label} />,
 }));
 vi.mock("./explorer-upload", () => ({ uploadExplorerFiles: mocks.upload }));
@@ -65,6 +68,7 @@ import { Workbench, type WorkbenchState } from "./workbench";
 
 let state: WorkbenchState;
 beforeEach(() => {
+  mocks.backgroundSync.mockResolvedValue(null);
   mocks.start.mockResolvedValue("job");
   mocks.status.mockResolvedValue({ status: "failed" });
   mocks.upload.mockRejectedValue(new Error("upload failed"));
@@ -113,7 +117,7 @@ function mount() {
   render(<Workbench projectId="project" projectName="Docs" branch="main" initial={state} />);
 }
 
-it("executes explorer callbacks for permissions, copy, upload, refresh, and media", async () => {
+it("executes explorer callbacks for permissions, copy, upload, and media", async () => {
   mount();
   await act(async () => {});
   expect(mocks.explorer.canEdit?.("docs/a.md" as never)).toBe(true);
@@ -121,11 +125,6 @@ it("executes explorer callbacks for permissions, copy, upload, refresh, and medi
   await act(async () => mocks.explorer.onAction?.("copy" as never, "docs/a.md" as never));
   expect(screen.getByRole("status").textContent).toContain("Путь скопирован");
   fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
-
-  await act(async () => mocks.explorer.onRefresh?.());
-  expect(screen.getByRole("alert").textContent).toContain("Не удалось получить изменения");
-  fireEvent.click(screen.getByRole("button", { name: "Перечитать состояние" }));
-  await act(async () => {});
 
   await act(async () =>
     mocks.explorer.onUpload?.([new File(["x"], "x.md")] as never, "docs" as never),

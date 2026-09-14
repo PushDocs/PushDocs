@@ -39,16 +39,18 @@ export function SubmitChanges({
       </h2>
       {reviewTitle ? <p>{reviewTitle}</p> : null}
       <p className="submit-route">
-        <span>
+        <span className="submit-route-source">
           <small>Рабочая ветка</small>
-          <code>{needsBranch && createReview ? newBranch : branch}</code>
+          <code title={needsBranch && createReview ? newBranch : branch}>
+            {needsBranch && createReview ? newBranch : branch}
+          </code>
         </span>
         {createReview ? (
           <>
             <b aria-hidden>→</b>
-            <span>
+            <span className="submit-route-target">
               <small>{reviewLabel} в ветку</small>
-              <code>{defaultBranch}</code>
+              <code title={defaultBranch}>{defaultBranch}</code>
             </span>
           </>
         ) : null}

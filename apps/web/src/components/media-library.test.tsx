@@ -178,7 +178,7 @@ it("shows media usages and requires an explicit confirmation before staging dele
   );
 });
 
-it("uploads dropped files sequentially, retains a successful first upload and retries only the failed remainder", async () => {
+it("uses project upload settings, retains a successful first upload and retries only the failed remainder", async () => {
   const sent: Array<{ url: string; name: string }> = [];
   let fail = true;
   class Request extends EventTarget {
@@ -207,10 +207,10 @@ it("uploads dropped files sequentially, retains a successful first upload and re
   await act(async () => {
     render(<MediaLibrary projectId="p" branch="main" document="docs/intro.md" />);
   });
-  fireEvent.change(screen.getByLabelText("Каталог назначения"), {
-    target: { value: "static/img/custom/" },
-  });
-  fireEvent.click(screen.getByLabelText("Заменять существующие файлы с такими же путями"));
+  expect(screen.queryByText("Настройки загрузки")).toBeNull();
+  expect(screen.queryByLabelText("Каталог назначения")).toBeNull();
+  expect(screen.queryByLabelText("Заменять существующие файлы с такими же путями")).toBeNull();
+  expect(screen.queryByLabelText("Язык каталога")).toBeNull();
   const region = screen.getByRole("region", { name: "Загрузка файлов" });
   fireEvent.dragOver(region);
   await act(async () => {
@@ -219,8 +219,8 @@ it("uploads dropped files sequentially, retains a successful first upload and re
     });
   });
   expect(sent.map((item) => item.name)).toEqual(["a.png", "b.pdf"]);
-  expect(sent[0]?.url).toContain("path=static%2Fimg%2Fcustom%2Fa.png");
-  expect(sent[0]?.url).toContain("replace=true");
+  expect(new URL(sent[0]?.url ?? "", "http://localhost").searchParams.has("path")).toBe(false);
+  expect(sent[0]?.url).toContain("replace=false");
   expect(screen.getByRole("alert").textContent).toContain("Revision changed");
   fail = false;
   await act(async () => {
@@ -258,23 +258,19 @@ it.each(["error", "timeout", "invalid-json"])(
   },
 );
 
-it("filters files, chooses a locale and refreshes after an external event", async () => {
+it("filters files and refreshes after an external event", async () => {
   await act(async () => {
     render(<MediaLibrary projectId="p" branch="main" document="docs/a.md" />);
   });
   fireEvent.change(screen.getByLabelText("Найти файл"), { target: { value: "absent" } });
   expect(screen.queryByText("static/img/a.png")).toBeNull();
   await act(async () => {
-    fireEvent.change(screen.getByLabelText("Язык каталога"), { target: { value: "en" } });
-  });
-  expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining("locale=en"), expect.anything());
-  await act(async () => {
     window.dispatchEvent(new Event("pushdocs:refresh"));
   });
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Обновить" }));
   });
-  expect(fetch).toHaveBeenCalledTimes(4);
+  expect(fetch).toHaveBeenCalledTimes(3);
 });
 
 it("keeps reader uploads disabled, shows out-of-scope media and reports refresh failures", async () => {

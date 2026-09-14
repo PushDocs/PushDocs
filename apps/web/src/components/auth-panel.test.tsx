@@ -23,7 +23,7 @@ describe("PushDocsLogo", () => {
 describe("AuthPanel", () => {
   it("renders the product context and supplied form", () => {
     render(
-      <AuthPanel description="Use your account" title="Sign in">
+      <AuthPanel description="Use your account" title="Sign in" wide>
         <button type="button">Continue</button>
       </AuthPanel>,
     );
@@ -31,5 +31,8 @@ describe("AuthPanel", () => {
     expect(screen.getByText("Use your account")).toBeTruthy();
     expect(screen.getByRole("img", { name: "PushDocs" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in" }).parentElement?.className).toContain(
+      "auth-card--wide",
+    );
   });
 });

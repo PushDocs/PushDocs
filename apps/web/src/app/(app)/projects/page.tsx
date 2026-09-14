@@ -1,5 +1,4 @@
-import { Status } from "@pushdocs/ui";
-import { ArrowRight, CircleAlert, GitBranch, Plus, Search } from "lucide-react";
+import { ArrowRight, GitBranch, Plus, Search } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ProjectResumeLink } from "@/components/project-resume-link";
@@ -83,7 +82,6 @@ export default async function ProjectsPage({
             <span>Проект</span>
             <span>Git-провайдер</span>
             <span>Основная ветка</span>
-            <span>Состояние</span>
             <span />
           </div>
           {projects.map((project) => (
@@ -108,16 +106,6 @@ export default async function ProjectsPage({
               <span className="branch-cell">
                 <GitBranch aria-hidden size={15} />
                 {project.defaultBranch}
-              </span>
-              <span>
-                {project.syncStatus === "attention" ? (
-                  <Status tone="warning">
-                    <CircleAlert aria-hidden size={13} />
-                    Требует внимания
-                  </Status>
-                ) : (
-                  <Status tone="success">Синхронизирован</Status>
-                )}
               </span>
               <ArrowRight className="row-arrow" aria-hidden size={18} />
             </ProjectResumeLink>

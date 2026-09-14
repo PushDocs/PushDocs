@@ -817,6 +817,32 @@ export class PushDocsRepository extends SecurityRepository {
     return job.id;
   }
 
+  async enqueueBranchSyncIfStale(
+    projectId: string,
+    branch: string,
+    maxAgeMs = 120_000,
+  ): Promise<string | null> {
+    const fullRef = normalizeBranchRef(branch);
+    const cached = await this.database
+      .selectFrom("branch_contexts")
+      .select("updated_at")
+      .where("project_id", "=", projectId)
+      .where("full_ref", "=", fullRef)
+      .orderBy("generation", "desc")
+      .executeTakeFirst();
+    if (cached && new Date(cached.updated_at).getTime() >= Date.now() - maxAgeMs) return null;
+    const active = await this.database
+      .selectFrom("jobs")
+      .select("id")
+      .where("kind", "=", "branch.sync")
+      .where("status", "in", ["queued", "running"])
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .where(sql<string>`payload->>'branch'`, "=", fullRef)
+      .orderBy("created_at", "desc")
+      .executeTakeFirst();
+    return active?.id ?? this.enqueueBranchSync(projectId, fullRef);
+  }
+
   async enqueueBranchCreation(input: {
     projectId: string;
     sourceBranch: string;
@@ -1614,13 +1640,13 @@ export class PushDocsRepository extends SecurityRepository {
     });
   }
 
-  async listChangeRequests(projectId: string) {
-    return this.database
+  async listChangeRequests(projectId: string, state?: "open" | "merged" | "closed") {
+    let query = this.database
       .selectFrom("change_requests")
       .selectAll()
-      .where("project_id", "=", projectId)
-      .orderBy("updated_at", "desc")
-      .execute();
+      .where("project_id", "=", projectId);
+    if (state) query = query.where("state", "=", state);
+    return query.orderBy("updated_at", "desc").execute();
   }
 
   async findOpenChangeRequestByBranch(projectId: string, branch: string) {

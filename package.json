@@ -16,6 +16,7 @@
     "architecture:check": "node scripts/check-architecture.mjs",
     "build": "turbo run build",
     "check": "yarn lint && yarn format:check && yarn architecture:check && yarn typecheck && yarn test && yarn build",
+    "checks": "yarn check",
     "db:migrate": "yarn workspace @pushdocs/db migrate",
     "dev": "yarn workspace @pushdocs/web dev",
     "dev:all": "turbo run dev --parallel",

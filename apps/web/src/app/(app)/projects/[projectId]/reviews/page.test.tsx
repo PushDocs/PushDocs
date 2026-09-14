@@ -3,10 +3,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  checks: vi.fn().mockResolvedValue([]),
-  project: vi.fn().mockResolvedValue({ id: "project", provider: "gitlab", role: "editor" }),
-  reviews: [
+const mocks = vi.hoisted(() => {
+  const reviews = [
     {
       id: "first",
       external_id: "1",
@@ -15,6 +13,7 @@ const mocks = vi.hoisted(() => ({
       title: "Other",
       head_sha: "sha",
       provider_url: "https://git.example/1",
+      state: "open",
     },
     {
       id: "selected",
@@ -24,15 +23,34 @@ const mocks = vi.hoisted(() => ({
       title: "Selected",
       head_sha: "sha",
       provider_url: "https://git.example/2",
+      state: "open",
     },
-  ],
-}));
+    {
+      id: "merged",
+      external_id: "43",
+      source_branch: "docs/done",
+      target_branch: "stable",
+      title: "Already merged",
+      head_sha: "sha",
+      provider_url: "https://git.example/3",
+      state: "merged",
+    },
+  ];
+  return {
+    checks: vi.fn().mockResolvedValue([]),
+    project: vi.fn().mockResolvedValue({ id: "project", provider: "gitlab", role: "editor" }),
+    reviews,
+    listReviews: vi.fn(async (_projectId: string, state?: string) =>
+      reviews.filter((review) => !state || review.state === state),
+    ),
+  };
+});
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
   actor: (user: unknown) => user,
   repository: () => ({
     getProjectForUser: mocks.project,
-    listChangeRequests: async () => mocks.reviews,
+    listChangeRequests: mocks.listReviews,
     listChecks: mocks.checks,
   }),
 }));
@@ -148,33 +166,36 @@ it("browses MR details without changing the working branch", async () => {
   expect(screen.getByRole("link", { name: "Переключиться на ветку" }).getAttribute("href")).toBe(
     "/projects/project/documents?branch=docs%2Ffix+%231",
   );
-  expect(screen.getByRole("link", { name: /^Other/ }).getAttribute("href")).toBe(
-    "?review=first&q=&state=all",
-  );
+  expect(screen.getByRole("link", { name: /^Other/ }).getAttribute("href")).toBe("?review=first");
 });
 
-it("filters by branch or number and retains filters while browsing details", async () => {
+it("shows only open reviews without search or state filters", async () => {
   render(
     await ReviewsPage({
       params: Promise.resolve({ projectId: "project" }),
-      searchParams: Promise.resolve({ q: "42" }),
+      searchParams: Promise.resolve({ q: "42", state: "merged" }),
     }),
   );
-  expect(screen.queryByRole("link", { name: /^Other/ })).toBeNull();
-  expect(screen.getByRole("link", { name: /^Selected/ }).getAttribute("href")).toContain("q=42");
+  expect(mocks.listReviews).toHaveBeenLastCalledWith("project", "open");
+  expect(screen.queryByText("Найти MR")).toBeNull();
+  expect(screen.queryByText("Все состояния")).toBeNull();
+  expect(screen.getByRole("link", { name: /^Other/ })).toBeTruthy();
+  expect(screen.getByRole("link", { name: /^Selected/ }).getAttribute("href")).toBe(
+    "?review=selected",
+  );
+  expect(screen.queryByText("Already merged")).toBeNull();
 });
-it("shows an actionable empty state for unmatched state filters", async () => {
+
+it("explains when there are no open reviews", async () => {
+  mocks.listReviews.mockResolvedValueOnce([]);
   render(
     await ReviewsPage({
       params: Promise.resolve({ projectId: "project" }),
-      searchParams: Promise.resolve({ state: "merged" }),
+      searchParams: Promise.resolve({}),
     }),
   );
-  expect(screen.getByText("MR не найдены")).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Сбросить" }).getAttribute("href")).toBe(
-    "/projects/project/reviews",
-  );
-  expect(mocks.checks).not.toHaveBeenCalled();
+  expect(screen.getByText("Нет открытых MR")).toBeTruthy();
+  expect(screen.getByText(/здесь появятся его состояние и результаты проверок/)).toBeTruthy();
 });
 
 it("does not claim readiness or a running preview when checks are absent", async () => {

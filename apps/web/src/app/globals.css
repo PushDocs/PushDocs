@@ -156,6 +156,10 @@ code,
   width: 100%;
 }
 
+.auth-card--wide {
+  max-width: 820px;
+}
+
 .auth-card > .pushdocs-logo {
   margin-bottom: 32px;
 }
@@ -235,10 +239,228 @@ textarea:where(:not(.monaco-editor *)):focus {
   padding: 11px 13px;
 }
 
+.two-factor-setup {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+}
+
+.two-factor-step {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 10px 32px rgb(32 28 50 / 5%);
+  min-width: 0;
+  padding: 24px;
+}
+
+.two-factor-confirm-step {
+  display: flex;
+  flex-direction: column;
+}
+
+.two-factor-step-header {
+  align-items: flex-start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  margin-bottom: 22px;
+}
+
+.two-factor-step-number {
+  align-items: center;
+  background: var(--violet-wash);
+  border-radius: 8px;
+  color: var(--violet-deep);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.two-factor-step-header h2 {
+  font-size: 18px;
+  letter-spacing: -0.025em;
+  margin: 1px 0 5px;
+}
+
+.two-factor-step-header p {
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.two-factor-qr {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+  min-height: 264px;
+  padding: 20px;
+  position: relative;
+}
+
+.two-factor-qr > svg {
+  color: var(--violet);
+  left: 14px;
+  position: absolute;
+  top: 14px;
+}
+
+.two-factor-qr img {
+  background: white;
+  border-radius: 8px;
+  display: block;
+  height: auto;
+  max-width: 224px;
+  width: 100%;
+}
+
+.two-factor-manual {
+  align-items: flex-start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.two-factor-manual > svg {
+  color: var(--ink-muted);
+  margin-top: 29px;
+}
+
+.two-factor-secret > label {
+  color: #4d4f5a;
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  margin-bottom: 7px;
+}
+
+.two-factor-secret-controls {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.two-factor-secret-controls input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.two-factor-secret-controls .pd-button {
+  white-space: nowrap;
+}
+
+.two-factor-secret > p {
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
+.two-factor-recovery-note {
+  line-height: 1.45;
+  margin: 12px 0 0 28px;
+}
+
+.two-factor-code-form {
+  margin: auto 0;
+  padding: 30px 0;
+}
+
+.two-factor-code {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.32em;
+  min-height: 54px;
+  text-align: center;
+}
+
+.two-factor-code::placeholder {
+  color: #b3b3bd;
+}
+
+.two-factor-code-form .pd-button {
+  min-height: 46px;
+  width: 100%;
+}
+
+.two-factor-security-note {
+  align-items: flex-start;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  display: grid;
+  font-size: 11px;
+  gap: 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  line-height: 1.5;
+  margin: 24px 0 0;
+  padding-top: 18px;
+}
+
+.two-factor-security-note svg {
+  color: var(--success);
+}
+
+.two-factor-exit {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 16px;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  .auth-page {
+    align-items: start;
+    padding: 28px 16px;
+  }
+
+  .auth-card--wide > .pushdocs-logo {
+    margin-bottom: 24px;
+  }
+
+  .two-factor-setup {
+    grid-template-columns: 1fr;
+  }
+
+  .two-factor-code-form {
+    margin: 0;
+    padding: 8px 0 0;
+  }
+}
+
+@media (max-width: 430px) {
+  .two-factor-step {
+    padding: 18px;
+  }
+
+  .two-factor-secret-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .two-factor-secret-controls .pd-button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .two-factor-recovery-note {
+    margin-left: 28px;
+  }
+}
+
 .app-frame {
+  align-items: start;
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .app-sidebar {
@@ -246,8 +468,14 @@ textarea:where(:not(.monaco-editor *)):focus {
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px 13px 14px;
+  position: sticky;
+  top: 0;
 }
 
 .sidebar-brand {
@@ -630,7 +858,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   align-items: center;
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(230px, 1.6fr) 1fr 0.8fr 0.9fr 28px;
+  grid-template-columns: minmax(230px, 1.6fr) 1fr 0.8fr 28px;
 }
 
 .project-list-head {
@@ -2186,6 +2414,12 @@ textarea:where(:not(.monaco-editor *)):focus {
   margin: 0;
 }
 
+.setting-sections .project-git-connection {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setting-sections article.danger-setting > svg {
   color: var(--danger);
 }
@@ -2194,6 +2428,10 @@ textarea:where(:not(.monaco-editor *)):focus {
   display: grid;
   gap: 18px;
   margin-top: 18px;
+}
+
+.project-settings-management .project-form .form-section {
+  border-bottom: 0;
 }
 
 .danger-zone {
@@ -2826,18 +3064,6 @@ textarea:where(:not(.monaco-editor *)):focus {
 .media-library {
   min-width: 0;
 }
-.media-upload .media-checkbox {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-.media-upload input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  min-height: 16px;
-  flex: 0 0 16px;
-  margin: 2px 0 0;
-}
 .media-toolbar {
   display: flex;
   align-items: end;
@@ -2972,8 +3198,9 @@ textarea:where(:not(.monaco-editor *)):focus {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 9px;
-  display: flex;
+  display: grid;
   gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(80px, 0.72fr);
   margin: 0;
   padding: 11px 12px;
 }
@@ -2991,6 +3218,12 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 .submit-route code {
   overflow-wrap: anywhere;
+}
+.submit-route-target code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .submit-route b {
   color: var(--ink-muted);
@@ -3452,17 +3685,6 @@ textarea:where(:not(.monaco-editor *)):focus {
 .settings-modal button {
   width: auto;
 }
-.review-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: end;
-  margin-bottom: 20px;
-}
-.review-filters input {
-  max-width: 420px;
-}
-
 .settings-project-picker {
   margin-bottom: 24px;
 }
@@ -3493,32 +3715,37 @@ textarea:where(:not(.monaco-editor *)):focus {
   margin-top: 7px;
 }
 
-.review-filters > label {
-  display: grid;
-  gap: 8px;
-  flex: 0 1 420px;
-  min-width: 0;
-}
-.review-filters input {
-  width: 100%;
-  min-width: 0;
-}
-.review-filters > .pd-select {
-  width: 190px;
-}
 .review-sync {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: 10px 14px;
+  min-height: 42px;
   margin-bottom: 20px;
 }
 .review-sync .git-operation {
-  justify-items: start;
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.review-sync .git-operation p {
+  background: var(--success-wash);
+  border-radius: 999px;
+  color: var(--success);
+  line-height: 1.2;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+.review-sync .git-operation p[role="alert"] {
+  background: var(--danger-wash);
+  color: var(--danger);
 }
 .review-sync > p {
+  color: var(--ink-muted);
   margin: 0;
   font-size: 12px;
+  white-space: nowrap;
 }
 .review-list {
   max-height: 65vh;
@@ -3588,9 +3815,6 @@ textarea:where(:not(.monaco-editor *)):focus {
   }
   .skeleton-list {
     display: none;
-  }
-  .review-filters > label {
-    flex-basis: 100%;
   }
   .review-list {
     max-height: 280px;

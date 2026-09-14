@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => {
       createDraftDocument: vi.fn(),
       deleteSession: vi.fn(),
       enqueueBranchSync: vi.fn(),
+      enqueueBranchSyncIfStale: vi.fn(),
       enqueueReviewCreation: vi.fn(),
       getProjectJob: vi.fn(),
       findUserByEmail: vi.fn(),
@@ -164,6 +165,7 @@ import {
   revokeInvitationAction,
   saveConnectionSettingsAction,
   saveDraftAction,
+  startBackgroundBranchSyncAction,
   startGitOperationAction,
   submitChangeSetAction,
   synchronizeBranchAction,
@@ -1148,6 +1150,15 @@ describe("document and review actions", () => {
     );
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
     expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "docs/update");
+  });
+
+  it("uses the cached branch snapshot for a background refresh", async () => {
+    mocks.repo.enqueueBranchSyncIfStale.mockResolvedValueOnce(null);
+    await expect(
+      startBackgroundBranchSyncAction({ branch: "docs/update", projectId }),
+    ).resolves.toBe(null);
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+    expect(mocks.repo.enqueueBranchSyncIfStale).toHaveBeenCalledWith(projectId, "docs/update");
   });
 
   it("queues a change set submission and parses the checkbox", async () => {

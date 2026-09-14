@@ -34,6 +34,8 @@ const props = {
     },
   },
 };
+const editableProps = { ...props, templateEditingEnabled: true };
+
 it("shows a name once and reveals actual insertion code and preview on expansion", async () => {
   const { container } = render(<ComponentCatalog {...props} />);
   expect(screen.getAllByText("RecentlyUpdatedArticlesIframe")).toHaveLength(1);
@@ -44,10 +46,8 @@ it("shows a name once and reveals actual insertion code and preview on expansion
   expect(await screen.findByRole("heading", { name: "Пример вставки" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Превью" })).toBeTruthy();
   expect(screen.getByText("Написать нам")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Изменить шаблон вставки" }));
-  expect((screen.getByLabelText("Код для вставки в статью") as HTMLTextAreaElement).value).toBe(
-    props.examples.RecentlyUpdatedArticlesIframe.snippet,
-  );
+  expect(screen.queryByRole("button", { name: "Изменить шаблон вставки" })).toBeNull();
+  expect(screen.queryByText("Добавить шаблон вставки")).toBeNull();
 });
 it("hides component configuration from readers", () => {
   render(<ComponentCatalog {...props} canEdit={false} />);
@@ -56,7 +56,7 @@ it("hides component configuration from readers", () => {
 
 it("shows where the template is used, previews edits and saves the template fields", async () => {
   mocks.save.mockResolvedValue(undefined);
-  const { container } = render(<ComponentCatalog {...props} />);
+  const { container } = render(<ComponentCatalog {...editableProps} />);
   const add = container.querySelector(".component-add") as HTMLDetailsElement;
   add.open = true;
   fireEvent(add, new Event("toggle"));
@@ -85,7 +85,7 @@ it("shows where the template is used, previews edits and saves the template fiel
 it("copies insertion code, reports clipboard errors and closes the editor", async () => {
   const writeText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error());
   vi.stubGlobal("navigator", { clipboard: { writeText } });
-  const { container } = render(<ComponentCatalog {...props} />);
+  const { container } = render(<ComponentCatalog {...editableProps} />);
   const card = container.querySelector(".component-card") as HTMLDetailsElement;
   card.open = true;
   fireEvent(card, new Event("toggle"));
@@ -101,7 +101,7 @@ it("copies insertion code, reports clipboard errors and closes the editor", asyn
 
 it("closes a new template form and reports save failures", async () => {
   mocks.save.mockRejectedValue(new Error("offline"));
-  const { container } = render(<ComponentCatalog {...props} />);
+  const { container } = render(<ComponentCatalog {...editableProps} />);
   const add = container.querySelector(".component-add") as HTMLDetailsElement;
   add.open = true;
   fireEvent(add, new Event("toggle"));

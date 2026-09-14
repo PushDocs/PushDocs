@@ -617,6 +617,16 @@ export async function startGitOperationAction(input: {
   return store.enqueueBranchSync(input.projectId, input.branch);
 }
 
+export async function startBackgroundBranchSyncAction(input: {
+  projectId: string;
+  branch: string;
+}) {
+  const user = await requireUser();
+  const store = repository();
+  await store.requireProjectAccess(user.id, input.projectId, "project:read");
+  return store.enqueueBranchSyncIfStale(input.projectId, input.branch);
+}
+
 export async function gitOperationStatusAction(projectId: string, jobId: string) {
   const user = await requireUser();
   await repository().requireProjectAccess(user.id, projectId, "project:read");

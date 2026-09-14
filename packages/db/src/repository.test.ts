@@ -982,6 +982,33 @@ describe("branches and imported documents", () => {
     });
   });
 
+  it("reuses a fresh branch cache and deduplicates a stale background refresh", async () => {
+    const fixture = await synchronizedProject();
+    await expect(
+      repository.enqueueBranchSyncIfStale(fixture.projectId, "main"),
+    ).resolves.toBeNull();
+    await database
+      .updateTable("branch_contexts")
+      .set({ updated_at: new Date("2020-01-01T00:00:00Z") })
+      .where("project_id", "=", fixture.projectId)
+      .where("full_ref", "=", "main")
+      .execute();
+
+    const first = await repository.enqueueBranchSyncIfStale(fixture.projectId, "main");
+    const second = await repository.enqueueBranchSyncIfStale(fixture.projectId, "main");
+
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+    await expect(
+      database
+        .selectFrom("jobs")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("kind", "=", "branch.sync")
+        .where(sql<string>`payload->>'projectId'`, "=", fixture.projectId)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({ count: 1 });
+  });
+
   it("detects components and lets administrators replace their definitions", async () => {
     const fixture = await projectFixture();
     await repository.ensureProjectComponents(fixture.projectId, []);
@@ -1181,11 +1208,13 @@ describe("reviews and checks", () => {
     ]);
     const review = (await repository.listChangeRequests(fixture.projectId))[0];
     expect(review).toMatchObject({ external_id: "1", state: "open", title: "Update" });
+    await expect(repository.listChangeRequests(fixture.projectId, "open")).resolves.toHaveLength(1);
     await expect(repository.listChecks(review?.id ?? "")).resolves.toEqual([
       expect.objectContaining({ conclusion: "success", external_id: "check-1", required: true }),
     ]);
 
     await repository.replaceChangeRequests(fixture.projectId, []);
+    await expect(repository.listChangeRequests(fixture.projectId, "open")).resolves.toEqual([]);
     await expect(repository.listChangeRequests(fixture.projectId)).resolves.toEqual([
       expect.objectContaining({ external_id: "1", state: "closed" }),
     ]);

@@ -1,5 +1,5 @@
 import { evaluateMergeReadiness } from "@pushdocs/domain";
-import { Select, Status } from "@pushdocs/ui";
+import { Status } from "@pushdocs/ui";
 import {
   CheckCircle2,
   CircleDot,
@@ -27,21 +27,10 @@ export default async function ReviewsPage({
   const store = repository();
   const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const allReviews = await store.listChangeRequests(projectId);
-  const needle = query.q?.trim().toLocaleLowerCase() ?? "";
-  const filterState = ["open", "merged", "closed"].includes(query.state ?? "")
-    ? query.state
-    : "all";
-  const reviews = allReviews.filter(
-    (review) =>
-      (filterState === "all" || review.state === filterState) &&
-      `${review.title} ${review.external_id} ${review.source_branch}`
-        .toLocaleLowerCase()
-        .includes(needle),
-  );
+  const reviews = await store.listChangeRequests(projectId, "open");
   const selected =
     reviews.find((review) => review.id === query.review) ??
-    reviews.find((review) => review.source_branch === query.branch && review.state === "open") ??
+    reviews.find((review) => review.source_branch === query.branch) ??
     reviews[0];
   const checks = selected
     ? (await store.listChecks(selected.id)).map((check) => ({
@@ -68,29 +57,6 @@ export default async function ReviewsPage({
           <h1>{reviewLabel}</h1>
         </div>
       </header>
-      <form className="review-filters" method="get">
-        <label>
-          Найти {reviewLabel}
-          <input name="q" defaultValue={query.q} placeholder="Название, номер или ветка" />
-        </label>
-        <Select
-          name="state"
-          label="Состояние"
-          defaultValue={filterState}
-          options={[
-            { value: "all", label: "Все состояния" },
-            { value: "open", label: "Открытые" },
-            { value: "merged", label: "Слитые" },
-            { value: "closed", label: "Закрытые" },
-          ]}
-        />
-        <button className="pd-button pd-button--secondary" type="submit">
-          Найти
-        </button>
-        {needle || filterState !== "all" ? (
-          <Link href={`/projects/${projectId}/reviews`}>Сбросить</Link>
-        ) : null}
-      </form>
       <div className="review-sync">
         <GitOperation
           projectId={projectId}
@@ -110,12 +76,8 @@ export default async function ReviewsPage({
       {reviews.length === 0 ? (
         <section className="empty-state">
           <GitPullRequest aria-hidden />
-          <h2>{allReviews.length ? `${reviewLabel} не найдены` : `Нет ${reviewLabel}`}</h2>
-          <p>
-            {allReviews.length
-              ? "Измените текст поиска или сбросьте фильтры."
-              : `После создания ${reviewLabel} здесь появятся результаты проверок.`}
-          </p>
+          <h2>Нет открытых {reviewLabel}</h2>
+          <p>После создания {reviewLabel} здесь появятся его состояние и результаты проверок.</p>
         </section>
       ) : (
         <div className="reviews-layout">
@@ -123,7 +85,7 @@ export default async function ReviewsPage({
             {reviews.map((review) => (
               <Link
                 className={review.id === selected?.id ? "active" : ""}
-                href={`?${new URLSearchParams({ review: review.id, q: query.q ?? "", state: filterState ?? "all" })}`}
+                href={`?${new URLSearchParams({ review: review.id })}`}
                 key={review.id}
               >
                 <GitPullRequest aria-hidden size={17} />
@@ -141,13 +103,7 @@ export default async function ReviewsPage({
             <section className="review-detail">
               <header className="review-heading">
                 <div>
-                  <Status tone={selected.state === "open" ? "success" : "neutral"}>
-                    {selected.state === "merged"
-                      ? "Слит"
-                      : selected.state === "closed"
-                        ? "Закрыт"
-                        : "Открыт"}
-                  </Status>
+                  <Status tone="success">Открыт</Status>
                   <h2>{selected.title}</h2>
                   <p>
                     {selected.source_branch} → {selected.target_branch}

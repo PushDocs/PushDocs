@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
     id: "project",
     name: "Docs",
     provider_name: "GitLab",
+    provider_base_url: "https://gitlab.example.test/",
     root_path: ".",
     slug: "docs",
   }),
@@ -60,6 +61,8 @@ it("allows project administrators to edit and delete a project", async () => {
   expect(html).toContain('name="rootPath" value="."');
   expect(html).toContain("Удалить проект");
   expect(html).toContain('name="confirmation"');
+  expect(html).toContain("GitLab · https://gitlab.example.test/");
+  expect(html).not.toContain("напрямую");
 });
 
 it("keeps project management hidden from editors", async () => {

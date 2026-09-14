@@ -56,7 +56,6 @@ function mount(selected = "docs/a.md") {
       busy={false}
       onOpen={onOpen}
       onCreate={onCreate}
-      onRefresh={vi.fn()}
     />,
   );
   return { onOpen, onCreate };
@@ -103,7 +102,6 @@ it("decorates changed files and collapsed ancestors without relying on color alo
       busy={false}
       onOpen={vi.fn()}
       onCreate={vi.fn()}
-      onRefresh={vi.fn()}
     />,
   );
   const docs = screen.getByRole("treeitem", { name: "docs" });
@@ -130,7 +128,6 @@ it("uploads to hovered folders, a file's parent or the root without changing the
       busy={false}
       onOpen={open}
       onCreate={vi.fn()}
-      onRefresh={vi.fn()}
       onUpload={upload}
     />,
   );
@@ -190,7 +187,6 @@ it("opens a hovered folder and rejects directory drops instead of creating an em
         busy={false}
         onOpen={vi.fn()}
         onCreate={vi.fn()}
-        onRefresh={vi.fn()}
         onUpload={upload}
       />,
     );
@@ -246,7 +242,6 @@ it("supports every toolbar, context-menu and tree keyboard action", async () => 
   vi.useFakeTimers();
   const onCreate = vi.fn();
   const onOpen = vi.fn();
-  const onRefresh = vi.fn();
   const onMedia = vi.fn();
   const onUpload = vi.fn();
   const onAction = vi.fn();
@@ -260,7 +255,6 @@ it("supports every toolbar, context-menu and tree keyboard action", async () => 
         busy={false}
         onOpen={onOpen}
         onCreate={onCreate}
-        onRefresh={onRefresh}
         onMedia={onMedia}
         onUpload={onUpload}
         onAction={onAction}
@@ -271,9 +265,8 @@ it("supports every toolbar, context-menu and tree keyboard action", async () => 
     );
     expect(screen.getByLabelText("comparison failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Вложения" }));
-    fireEvent.click(screen.getByRole("button", { name: "Получить из Git" }));
     expect(onMedia).toHaveBeenCalledOnce();
-    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Получить из Git" })).toBeNull();
 
     const input = screen.getByLabelText("Файлы для загрузки") as HTMLInputElement;
     const pickerClick = vi.spyOn(input, "click");
@@ -349,7 +342,6 @@ it("virtualizes a large flat repository and keeps the selected file reachable", 
       busy={false}
       onOpen={vi.fn()}
       onCreate={vi.fn()}
-      onRefresh={vi.fn()}
     />,
   );
   expect(screen.getAllByRole("treeitem").length).toBeLessThan(60);

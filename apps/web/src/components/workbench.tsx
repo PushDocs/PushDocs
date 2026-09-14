@@ -3,7 +3,7 @@
 import { assetLocation } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
-import { Select } from "@pushdocs/ui";
+import { SearchableSelect, Select } from "@pushdocs/ui";
 import {
   ArrowRight,
   Bold,
@@ -16,7 +16,6 @@ import {
   MoreHorizontal,
   Plus,
   Puzzle,
-  RefreshCw,
   Save,
   Search,
   Table2,
@@ -27,7 +26,11 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
+import {
+  gitOperationStatusAction,
+  startBackgroundBranchSyncAction,
+  startGitOperationAction,
+} from "@/app/actions";
 import { DiffViewer } from "./diff-viewer";
 import { DocumentPreview } from "./document-preview";
 import { DocumentTabs } from "./document-tabs";
@@ -82,6 +85,7 @@ type Dialog =
   | "rename"
   | "move"
   | "delete"
+  | "deleteResult"
   | "template"
   | "media"
   | null;
@@ -90,11 +94,11 @@ export function Workbench({
   projectId,
   projectName,
   branch,
-  defaultBranch = branch,
   initial,
   initialPath,
   initialPanel,
   components = [],
+  metadataTabEnabled = false,
 }: {
   projectId: string;
   projectName: string;
@@ -104,6 +108,7 @@ export function Workbench({
   initialPath?: string;
   initialPanel?: "media";
   components?: Array<{ label: string; snippet: string }>;
+  metadataTabEnabled?: boolean;
 }) {
   const router = useRouter();
   const [state, setState] = useState(initial);
@@ -132,7 +137,6 @@ export function Workbench({
   const textArea = useRef<SourceEditorHandle>(null);
   const modal = useRef<HTMLElement>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
-  const [branchQuery, setBranchQuery] = useState("");
   const [createDirectory, setCreateDirectory] = useState("");
   const [revealDirectory, setRevealDirectory] = useState("");
   const [branchStatuses, setBranchStatuses] = useState<Record<string, string>>({});
@@ -142,6 +146,8 @@ export function Workbench({
   const [mode, setMode] = useState<"source" | "preview" | "diff" | "metadata" | "split">("source");
   const [dialog, setDialog] = useState<Dialog>(initialPanel ?? null);
   const [replaceAttachment, setReplaceAttachment] = useState<string>();
+  const [mediaMode, setMediaMode] = useState<"library" | "insert">("library");
+  const [deleteResultPath, setDeleteResultPath] = useState("");
   const [mediaBusy, setMediaBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const mediaBusyRef = useRef(false);
@@ -180,7 +186,6 @@ export function Workbench({
   }
   const [needsMerge, setNeedsMerge] = useState(false);
   const blocked = useRef(false);
-  const [component, setComponent] = useState(components[0]?.snippet ?? "");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -392,6 +397,34 @@ export function Workbench({
     },
     [branch, endpoint, selected],
   );
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  useEffect(() => {
+    let active = true;
+    const synchronize = async () => {
+      try {
+        const jobId = await startBackgroundBranchSyncAction({ projectId, branch });
+        if (!jobId) return;
+        const deadline = Date.now() + 300_000;
+        while (active && Date.now() < deadline) {
+          const job = await gitOperationStatusAction(projectId, jobId);
+          if (!active || job.status === "failed") return;
+          if (job.status === "done") {
+            await loadRef.current(true);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      } catch {
+        // Cached repository data remains usable while a background refresh is unavailable.
+      }
+    };
+    void synchronize();
+    return () => {
+      active = false;
+    };
+  }, [projectId, branch]);
 
   const command = useCallback(
     async (payload: Record<string, unknown>) => {
@@ -532,7 +565,7 @@ export function Workbench({
             }
           })
           .catch(() => setNotice("Нет связи с сервером."));
-      } else setNotice("В ветке появились изменения. Ваш ввод остаётся в редакторе.");
+      }
     };
     window.addEventListener("pushdocs:refresh", refresh);
     return () => window.removeEventListener("pushdocs:refresh", refresh);
@@ -716,50 +749,6 @@ export function Workbench({
     setTabs(remaining);
   }
 
-  const receiveGeneration = useRef(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Cancel pending polling when the working context changes.
-  useEffect(
-    () => () => {
-      receiveGeneration.current += 1;
-    },
-    [projectId, branch],
-  );
-  async function receiveChanges() {
-    const generation = receiveGeneration.current;
-    /* v8 ignore next -- refresh controls are disabled while busy; failed saves are tested separately. */
-    if (busy || !(await save())) return;
-    setBusy(true);
-    setError("");
-    setNotice("Получаем изменения из Git…");
-    try {
-      const jobId = await startGitOperationAction({ projectId, branch });
-      const deadline = Date.now() + 300_000;
-      while (Date.now() < deadline && generation === receiveGeneration.current) {
-        const job = await gitOperationStatusAction(projectId, jobId);
-        /* v8 ignore next -- protects a completed poll after its workbench context was unmounted. */
-        if (generation !== receiveGeneration.current) return;
-        if (job.status === "failed")
-          throw new Error("Не удалось получить изменения из Git. Повторите попытку.");
-        if (job.status === "done") {
-          await load(true);
-          setNotice("Изменения получены из Git");
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-      /* v8 ignore next 2 -- the five-minute production deadline is not advanced in UI unit tests. */
-      if (generation === receiveGeneration.current)
-        throw new Error("Получение ещё выполняется. Обновите состояние позже.");
-    } catch (cause) {
-      if (generation === receiveGeneration.current) {
-        setNotice("");
-        setError(cause instanceof Error ? cause.message : "Нет связи с сервером");
-      }
-    } finally {
-      if (generation === receiveGeneration.current) setBusy(false);
-    }
-  }
-
   async function mutate(payload: Record<string, unknown>, nextPath?: string) {
     /* v8 ignore next -- callers already keep their operation dialog open after a tested save failure. */
     if (!(await save())) return;
@@ -923,7 +912,11 @@ export function Workbench({
         path,
       );
     } else if (dialog === "delete") {
-      await mutate({ action: "files", files: [{ path: selected, content: null }] });
+      const deletedPath = selected;
+      if (await mutate({ action: "files", files: [{ path: deletedPath, content: null }] })) {
+        setDeleteResultPath(deletedPath);
+        setDialog("deleteResult");
+      }
     } else if (dialog === "template") {
       try {
         const payload = {
@@ -956,49 +949,25 @@ export function Workbench({
         </div>
         <div className="wb-actions">
           <div className="wb-branch-tools">
-            <details className="wb-disclosure wb-branch-picker">
-              <summary>
-                <GitBranch size={16} />
-                <span>{branch}</span>
-                {branch === defaultBranch ? <small>основная</small> : <small>рабочая</small>}
-                <ChevronDown size={14} />
-              </summary>
-              <div className="wb-popover">
-                <strong>Перейти в ветку</strong>
-                <input
-                  className="wb-branch-search"
-                  aria-label="Поиск веток"
-                  placeholder="Найти ветку…"
-                  type="search"
-                  value={branchQuery}
-                  onChange={(event) => setBranchQuery(event.target.value)}
-                />
-                <Select
-                  label="Ветка"
-                  options={state.branches
-                    .filter(
-                      (item) =>
-                        item.full_ref === branch ||
-                        item.full_ref.toLowerCase().includes(branchQuery.toLowerCase()),
-                    )
-                    .map((item) => ({
-                      label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
-                      value: item.full_ref,
-                    }))}
-                  value={branch}
-                  onValueChange={async (value) => {
-                    if (await save()) {
-                      router.push(`?branch=${encodeURIComponent(value)}`);
-                      router.refresh();
-                    }
-                  }}
-                />
-                <button type="button" disabled={busy} onClick={() => void receiveChanges()}>
-                  <RefreshCw size={16} />
-                  Получить из Git
-                </button>
-              </div>
-            </details>
+            <SearchableSelect
+              className="wb-branch-picker"
+              emptyText="Ветки не найдены"
+              label="Текущая ветка"
+              leadingIcon={<GitBranch aria-hidden size={16} />}
+              options={state.branches.map((item) => ({
+                label: `${item.full_ref}${item.is_protected ? " · защищена" : ""}`,
+                value: item.full_ref,
+              }))}
+              searchLabel="Поиск по веткам"
+              searchPlaceholder="Найти ветку…"
+              value={branch}
+              onValueChange={async (value) => {
+                if (value !== branch && (await save())) {
+                  router.push(`?branch=${encodeURIComponent(value)}`);
+                  router.refresh();
+                }
+              }}
+            />
             <button
               className="wb-new-branch"
               type="button"
@@ -1203,10 +1172,10 @@ export function Workbench({
               setCreateDirectory(directory);
               setDialog(kind);
             }}
-            onRefresh={() => void receiveChanges()}
             onMedia={async () => {
               if (await save()) {
                 setReplaceAttachment(undefined);
+                setMediaMode("library");
                 setDialog("media");
               }
             }}
@@ -1305,23 +1274,25 @@ export function Workbench({
                   <div className="wb-document-heading">
                     <code title={selected}>{selected.split("/").join(" / ")}</code>
                   </div>
-                  <div className="wb-save-info">
-                    <span
-                      aria-live="polite"
-                      title="Черновик сохраняется в PushDocs. Для отправки в Git откройте «Изменения»."
-                    >
-                      {active && !busy && !dirty && !needsMerge ? <Check size={14} /> : null}
-                      {state.role === "reader" || !active || saveFailure === "permission"
-                        ? "Только чтение"
-                        : needsMerge
-                          ? "Автосохранение остановлено"
-                          : saving
-                            ? "Сохраняем…"
-                            : dirty
-                              ? "Есть изменения"
-                              : "Черновик сохранён"}
-                    </span>
-                  </div>
+                  {active ? (
+                    <div className="wb-save-info">
+                      <span
+                        aria-live="polite"
+                        title="Черновик сохраняется в PushDocs. Для отправки в Git откройте «Изменения»."
+                      >
+                        {!busy && !dirty && !needsMerge ? <Check size={14} /> : null}
+                        {state.role === "reader" || saveFailure === "permission"
+                          ? "Только чтение"
+                          : needsMerge
+                            ? "Автосохранение остановлено"
+                            : saving
+                              ? "Сохраняем…"
+                              : dirty
+                                ? "Есть изменения"
+                                : "Черновик сохранён"}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="wb-toolbar" hidden={!active}>
                   <div role="tablist" aria-label="Режим документа">
@@ -1333,7 +1304,11 @@ export function Workbench({
                         ["diff", "Изменения"],
                       ] as const
                     )
-                      .filter(([value]) => isArticle || value === "source" || value === "diff")
+                      .filter(
+                        ([value]) =>
+                          (isArticle || value === "source" || value === "diff") &&
+                          (metadataTabEnabled || value !== "metadata"),
+                      )
                       .map(([value, label]) => (
                         <button
                           type="button"
@@ -1443,26 +1418,21 @@ export function Workbench({
                         <summary>
                           <Puzzle size={16} /> Компонент <ChevronDown size={12} />
                         </summary>
-                        <div className="wb-popover">
-                          <Select
-                            label="Компонент MDX"
-                            options={components.map((item) => ({
-                              label: item.label,
-                              value: item.snippet,
-                            }))}
-                            value={component}
-                            onValueChange={setComponent}
-                          />
-                          <button
-                            type="button"
-                            disabled={readOnly}
-                            onClick={(event) => {
-                              insert(`\n${component}\n`);
-                              event.currentTarget.closest("details")?.removeAttribute("open");
-                            }}
-                          >
-                            Вставить компонент
-                          </button>
+                        <div className="wb-popover wb-component-list" role="menu">
+                          {components.map((item) => (
+                            <button
+                              key={`${item.label}:${item.snippet}`}
+                              type="button"
+                              role="menuitem"
+                              disabled={readOnly}
+                              onClick={(event) => {
+                                insert(`\n${item.snippet}\n`);
+                                event.currentTarget.closest("details")?.removeAttribute("open");
+                              }}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
                         </div>
                       </details>
                     ) : null}
@@ -1472,6 +1442,7 @@ export function Workbench({
                       onClick={async () => {
                         if (await save()) {
                           setReplaceAttachment(undefined);
+                          setMediaMode("insert");
                           setDialog("media");
                         }
                       }}
@@ -1524,28 +1495,29 @@ export function Workbench({
                       ) : (
                         <ExplorerFileIcon path={selected} />
                       )}
-                      <a
-                        href={
-                          state.repositoryPaths.includes(selected) && !uploaded
-                            ? `${endpoint}?${new URLSearchParams({ branch, path: selected, download: "1" })}`
-                            : `/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: selected })}`
-                        }
-                        download
-                      >
-                        Скачать файл
-                      </a>
-                      {attachmentUrl ? (
-                        <div className="wb-actions">
-                          <button
-                            type="button"
-                            disabled={projectReadOnly}
-                            onClick={() => {
-                              setReplaceAttachment(selected);
-                              setDialog("media");
-                            }}
-                          >
-                            Заменить файл
-                          </button>
+                      <div className="wb-actions wb-binary-actions">
+                        <button
+                          type="button"
+                          disabled={projectReadOnly}
+                          onClick={() => {
+                            setReplaceAttachment(selected);
+                            setMediaMode("library");
+                            setDialog("media");
+                          }}
+                        >
+                          Заменить файл
+                        </button>
+                        <a
+                          href={
+                            state.repositoryPaths.includes(selected) && !uploaded
+                              ? `${endpoint}?${new URLSearchParams({ branch, path: selected, download: "1" })}`
+                              : `/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: selected })}`
+                          }
+                          download
+                        >
+                          Скачать файл
+                        </a>
+                        {attachmentUrl ? (
                           <button
                             type="button"
                             onClick={async () => {
@@ -1559,8 +1531,19 @@ export function Workbench({
                           >
                             Копировать ссылку
                           </button>
-                        </div>
-                      ) : null}
+                        ) : null}
+                        <button
+                          className="wb-danger-button"
+                          type="button"
+                          disabled={projectReadOnly}
+                          onClick={() => {
+                            setDeleteResultPath("");
+                            setDialog("delete");
+                          }}
+                        >
+                          <Trash2 aria-hidden size={15} /> Удалить файл
+                        </button>
+                      </div>
                     </div>
                   ) : mode === "source" || mode === "split" ? (
                     <>
@@ -1708,8 +1691,9 @@ export function Workbench({
                     branch: "Новая ветка",
                     move: "Переместить файл",
                     rename: "Переименовать файл",
-                    delete: "Удалить документ",
-                    media: "Вложения",
+                    delete: active ? "Удалить документ" : "Удалить файл",
+                    deleteResult: "Файл отмечен для удаления",
+                    media: mediaMode === "insert" ? "Вставить файл" : "Вложения",
                     template: "Создать по шаблону",
                   }[dialog]
                 }
@@ -1722,7 +1706,17 @@ export function Workbench({
                 Закрыть
               </button>
             </header>
-            {dialog === "replace" ? (
+            {dialog === "deleteResult" ? (
+              <div className="wb-operation-result">
+                <p>
+                  Файл <code>{deleteResultPath}</code> добавлен в изменения ветки. До отправки в Git
+                  удаление можно отменить.
+                </p>
+                <button className="wb-primary" type="button" onClick={() => setDialog(null)}>
+                  Готово
+                </button>
+              </div>
+            ) : dialog === "replace" ? (
               <ReplacePreview
                 path={selected}
                 key={selected}
@@ -1770,6 +1764,7 @@ export function Workbench({
                 onBusyChange={setMediaBusy}
                 replacePath={replaceAttachment}
                 initialQuery={replaceAttachment?.split("/").at(-1)}
+                uploadOnly={mediaMode === "insert" && !replaceAttachment}
                 onChanged={async (path) => {
                   await load();
                   if (path) setRevealDirectory(path.slice(0, path.lastIndexOf("/")));
@@ -1792,6 +1787,18 @@ export function Workbench({
                       }
                     : undefined
                 }
+                onUploadComplete={(assets) => {
+                  const markdown = assets
+                    .map(({ path, url }) => {
+                      const name = path.split("/").at(-1)?.replace(/[[\]]/g, "") ?? "Файл";
+                      const image = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(path) ? "!" : "";
+                      return `${image}[${name}](${url})`;
+                    })
+                    .join("\n");
+                  insert(`\n${markdown}\n`);
+                  setMode("source");
+                  setDialog(null);
+                }}
               />
             ) : (
               <form onSubmit={submitDialog}>
@@ -1897,20 +1904,26 @@ export function Workbench({
                     <input name="locale" defaultValue={state.config.defaultLocale} required />
                   </label>
                 ) : null}
-                <button className="wb-primary" type="submit" disabled={busy}>
+                <button
+                  className={dialog === "delete" ? "wb-danger-button" : "wb-primary"}
+                  type="submit"
+                  disabled={busy}
+                >
                   {busy
                     ? dialog === "branch"
                       ? "Создаём ветку…"
                       : "Выполняем…"
-                    : dialog === "template"
-                      ? "Показать план файлов"
-                      : dialog === "new"
-                        ? "Создать файл"
-                        : dialog === "folder"
-                          ? "Создать папку"
-                          : dialog === "branch"
-                            ? "Создать и перейти"
-                            : "Применить"}
+                    : dialog === "delete"
+                      ? "Подтвердить удаление"
+                      : dialog === "template"
+                        ? "Показать план файлов"
+                        : dialog === "new"
+                          ? "Создать файл"
+                          : dialog === "folder"
+                            ? "Создать папку"
+                            : dialog === "branch"
+                              ? "Создать и перейти"
+                              : "Применить"}
                 </button>
               </form>
             )}

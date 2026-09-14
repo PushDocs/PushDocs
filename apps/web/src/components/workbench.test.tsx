@@ -2,17 +2,20 @@
 
 import { parseProjectConfig } from "@pushdocs/content";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { draftKey, readDraft, writeDraft } from "./draft-storage";
 import { Workbench, type WorkbenchState } from "./workbench";
 
 const mocks = vi.hoisted(() => ({
+  backgroundSync: vi.fn(),
   push: vi.fn(),
   refresh: vi.fn(),
   start: vi.fn(),
   status: vi.fn(),
 }));
 vi.mock("@/app/actions", () => ({
+  startBackgroundBranchSyncAction: mocks.backgroundSync,
   startGitOperationAction: mocks.start,
   gitOperationStatusAction: mocks.status,
 }));
@@ -22,6 +25,56 @@ vi.mock("@pushdocs/ui", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@pushdocs/ui")>();
   return {
     ...actual,
+    SearchableSelect: ({
+      label,
+      onValueChange,
+      options,
+      searchLabel,
+      value,
+    }: {
+      label: string;
+      onValueChange?: (value: string) => void;
+      options: Array<{ label: string; value: string }>;
+      searchLabel: string;
+      value?: string;
+    }) => {
+      const [open, setOpen] = useState(false);
+      const [query, setQuery] = useState("");
+      return (
+        <div>
+          <button
+            aria-expanded={open}
+            aria-label={label}
+            role="combobox"
+            type="button"
+            onClick={() => setOpen((current) => !current)}
+          >
+            {options.find((option) => option.value === value)?.label}
+          </button>
+          {open ? (
+            <div className="pd-combobox-popup" role="listbox">
+              <input
+                aria-label={searchLabel}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              {options
+                .filter((option) => option.label.toLowerCase().includes(query.toLowerCase()))
+                .map((option) => (
+                  <button
+                    key={option.value}
+                    role="option"
+                    type="button"
+                    onClick={() => onValueChange?.(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    },
     Select: ({
       defaultValue,
       disabled,
@@ -70,6 +123,7 @@ let requests: Array<Record<string, unknown>>;
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.start.mockResolvedValue("job");
+  mocks.backgroundSync.mockResolvedValue(null);
   mocks.status.mockResolvedValue({ status: "done" });
   sessionStorage.clear();
   localStorage.clear();
@@ -163,7 +217,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
 });
-function mount() {
+function mount(options: { metadataTabEnabled?: boolean } = {}) {
   render(
     <Workbench
       projectId="project"
@@ -171,6 +225,7 @@ function mount() {
       branch="main"
       initial={structuredClone(state)}
       components={[{ label: "Widget", snippet: '<Widget title="Hi" />' }]}
+      metadataTabEnabled={options.metadataTabEnabled}
     />,
   );
 }
@@ -250,6 +305,7 @@ it("opens a text search match using the shortcut and saves the previous file fir
 });
 it("shows split preview for articles and only source/diff controls for configuration", async () => {
   mount();
+  expect(screen.queryByRole("tab", { name: "Свойства" })).toBeNull();
   await click("Файл и просмотр рядом");
   expect(screen.getByLabelText("Исходник документа")).toBeTruthy();
   expect(screen.getByRole("article").textContent).toContain("Первый");
@@ -341,11 +397,21 @@ it("persists reordered tabs without saving or changing the active document", asy
 it("searches branch names and identifies protected branches", async () => {
   state.branches[0] = { full_ref: "main", is_protected: true };
   mount();
+  fireEvent.click(screen.getByRole("combobox", { name: "Текущая ветка" }));
+  expect(screen.getByLabelText("Поиск по веткам").closest(".pd-combobox-popup")).toBeTruthy();
   expect(screen.getByRole("option", { name: "main · защищена" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Поиск веток"), { target: { value: "docs/new" } });
+  fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "docs/new" } });
   expect(screen.getByRole("option", { name: "docs/new" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Поиск веток"), { target: { value: "missing" } });
+  fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "missing" } });
   expect(screen.queryByRole("option", { name: "docs/new" })).toBeNull();
+});
+it("refreshes Git data in the background and keeps manual refresh out of the editor", async () => {
+  mocks.backgroundSync.mockResolvedValueOnce("background-job");
+  mount();
+  await act(async () => {});
+  expect(mocks.backgroundSync).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
+  expect(mocks.status).toHaveBeenCalledWith("project", "background-job");
+  expect(screen.queryByRole("button", { name: "Получить из Git" })).toBeNull();
 });
 it("closes tabs after saving", async () => {
   mount();
@@ -363,7 +429,7 @@ it("saves metadata edits through the same optimistic draft operation", async () 
     ...state.files[0],
     content: "---\r\ntitle: Old # keep\r\n---\r\n<Widget />",
   } as WorkbenchState["files"][number];
-  mount();
+  mount({ metadataTabEnabled: true });
   fireEvent.click(screen.getByRole("tab", { name: "Свойства" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Название страницы" }), {
     target: { value: "New" },
@@ -403,7 +469,9 @@ it("keeps untouched CRLF endings when editing through a browser textarea", async
 async function click(name: string) {
   await act(async () => {
     fireEvent.click(
-      screen.queryByRole("button", { name }) ?? screen.getByRole("treeitem", { name }),
+      screen.queryByRole("button", { name }) ??
+        screen.queryByRole("menuitem", { name }) ??
+        screen.getByRole("treeitem", { name }),
     );
   });
 }
@@ -498,10 +566,8 @@ it("does not allow a reader to change files", async () => {
   mount();
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
   expect(screen.getByRole("button", { name: "Новая ветка" })).toHaveProperty("disabled", true);
-  expect(screen.getByRole("button", { name: "Вставить компонент" })).toHaveProperty(
-    "disabled",
-    true,
-  );
+  fireEvent.click(screen.getByText("Компонент").closest("summary") as HTMLElement);
+  expect(screen.getByRole("menuitem", { name: "Widget" })).toHaveProperty("disabled", true);
   await tick();
   expect(requests).toHaveLength(0);
 });
@@ -530,7 +596,10 @@ it("saves before navigating to changes or another branch", async () => {
   expect(state.files[0]?.content).toBe("черновик");
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/changes?branch=main");
   await act(async () => {
-    fireEvent.change(screen.getByLabelText("Ветка"), { target: { value: "docs/new" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Текущая ветка" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("option", { name: "docs/new" }));
   });
   expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
 });
@@ -541,8 +610,9 @@ it("inserts formatting and components without rewriting the rest of MDX", async 
   input.setSelectionRange(2, 8);
   await click("Жирный");
   expect(input.value).toContain("**Первый**");
-  for (const name of ["Вставить компонент", "Заголовок", "Таблица", "Примечание"])
-    await click(name);
+  fireEvent.click(screen.getByText("Компонент").closest("summary") as HTMLElement);
+  await click("Widget");
+  for (const name of ["Заголовок", "Таблица", "Примечание"]) await click(name);
   expect(input.value).toContain('<Widget title="Hi" />');
   expect(input.value).toContain("| Колонка | Колонка |");
   expect(input.value).toContain(":::tip");
@@ -595,7 +665,7 @@ it("previews MDX imports, admonitions, component children and repository images"
 it("marks a deletion without losing its original source", async () => {
   mount();
   await click("Удалить документ");
-  await click("Применить");
+  await click("Подтвердить удаление");
   expect(requests[0]).toMatchObject({ files: [{ path: "docs/a.mdx", content: null }] });
   expect(screen.getByText(/Документ будет удалён/)).toBeTruthy();
   fireEvent.click(screen.getByRole("tab", { name: "Изменения" }));
@@ -723,7 +793,7 @@ it("previews template files before applying them atomically", async () => {
     values: { title: "Doc", slug: "new", locale: "ru" },
   });
 });
-it("inserts an existing library image into the editor after refreshing the draft revision", async () => {
+it("hides the existing media library when inserting a new file", async () => {
   const original = vi.mocked(fetch).getMockImplementation();
   vi.mocked(fetch).mockImplementation(async (url, options) => {
     if (String(url).includes("/media?"))
@@ -741,15 +811,12 @@ it("inserts an existing library image into the editor after refreshing the draft
   });
   mount();
   await click("Вставить файл");
-  vi.mocked(fetch).mockRejectedValueOnce(new Error("Draft refresh failed"));
-  await click("Вставить ссылку");
-  expect(screen.getByRole("alert").textContent).toContain("Draft refresh failed");
-  await click("Вставить ссылку");
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
-    "value",
-    expect.stringContaining("![a.png](/img/a.png)"),
-  );
+  expect(screen.getByRole("heading", { name: "Вставить файл" })).toBeTruthy();
+  expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("multiple", false);
+  expect(screen.getByRole("dialog").querySelector(".media-toolbar")).toBeNull();
+  expect(screen.queryByText("Настройки загрузки")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Вставить ссылку" })).toBeNull();
+  expect(screen.queryByRole("img", { name: "static/img/a.png" })).toBeNull();
 });
 it("keeps the selected document and branch when opening the files section", async () => {
   mount();
@@ -764,7 +831,7 @@ it("keeps the selected document and branch when opening the files section", asyn
   );
   anchor.remove();
 });
-it("refreshes a clean editor on events but retains unsaved typing", async () => {
+it("refreshes a clean editor on events and silently retains unsaved typing", async () => {
   mount();
   const file = state.files[0];
   if (!file) throw new Error("Missing fixture");
@@ -780,7 +847,7 @@ it("refreshes a clean editor on events but retains unsaved typing", async () => 
     window.dispatchEvent(new Event("pushdocs:refresh"));
   });
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "локальная правка");
-  expect(screen.getByText(/В ветке появились изменения/)).toBeTruthy();
+  expect(screen.queryByText(/В ветке появились изменения/)).toBeNull();
 });
 it("avoids full workbench polling and reports a failed background status refresh", async () => {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -801,11 +868,6 @@ it("avoids full workbench polling and reports a failed background status refresh
   expect(
     vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/workbench?")),
   ).toHaveLength(0);
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
-  });
-  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
-  expect(screen.getByText("Изменения получены из Git")).toBeTruthy();
 });
 it("keeps typing entered while an earlier save is in flight", async () => {
   mount();
@@ -861,7 +923,7 @@ it("protects unload and saves before sidebar navigation", async () => {
   fireEvent.click(screen.getByText("Документы"), { ctrlKey: true });
 });
 
-it("opens document tabs and manually saves a selected component", async () => {
+it("opens document tabs and inserts a selected component immediately", async () => {
   mount();
   await click("b.md");
   await act(async () => {
@@ -871,19 +933,21 @@ it("opens document tabs and manually saves a selected component", async () => {
     "value",
     state.files[0]?.content,
   );
-  fireEvent.change(screen.getByLabelText("Компонент MDX"), {
-    target: { value: '<Widget title="Hi" />' },
-  });
-  await click("Вставить компонент");
+  const componentMenu = screen.getByText("Компонент").closest("details") as HTMLDetailsElement;
+  fireEvent.click(componentMenu.querySelector("summary") as HTMLElement);
+  expect(screen.queryByLabelText("Компонент MDX")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Вставить компонент" })).toBeNull();
+  await click("Widget");
+  expect(componentMenu.open).toBe(false);
   await click("Сохранить");
   expect(state.files[0]?.content).toContain('<Widget title="Hi" />');
 });
 
-it("keeps a failed operation visible and handles failed reload, sync and events", async () => {
+it("keeps a failed operation visible and handles failed reload and events", async () => {
   mount();
   await click("Удалить документ");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("mutation failed"));
-  await click("Применить");
+  await click("Подтвердить удаление");
   expect(screen.getByRole("alert").textContent).toContain("mutation failed");
   await click("Закрыть");
   vi.mocked(fetch).mockResolvedValueOnce(
@@ -891,11 +955,6 @@ it("keeps a failed operation visible and handles failed reload, sync and events"
   );
   await click("Перечитать состояние");
   expect(screen.getByRole("alert").textContent).toContain("Нет связи с сервером");
-  mocks.start.mockRejectedValueOnce(new Error("sync failed"));
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
-  });
-  expect(screen.getByRole("alert").textContent).toContain("sync failed");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("offline"));
   await act(async () => {
     window.dispatchEvent(new Event("pushdocs:refresh"));
@@ -1015,7 +1074,7 @@ it("shows committed changes and immediate unsaved edits in the tree and tabs", a
   expect(requests).toHaveLength(0);
 });
 
-it("saves the article before uploading and immediately reveals the attachment as a new file", async () => {
+it("saves the article and inserts an uploaded file immediately", async () => {
   const original = vi.mocked(fetch).getMockImplementation();
   if (!original) throw new Error("Missing fixture");
   vi.mocked(fetch).mockImplementation(async (url, options) => {
@@ -1066,9 +1125,12 @@ it("saves the article before uploading and immediately reveals the attachment as
       target: { files: [new File(["image"], "new.png")] },
     });
   });
-  await click("Закрыть");
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("treeitem", { name: "new.png" }).textContent).toContain("A");
-  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Unsaved article");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    expect.stringContaining("![new.png](/img/new.png)"),
+  );
   const calls = vi.mocked(fetch).mock.calls.length;
   await click("new.png");
   expect(
@@ -1260,22 +1322,20 @@ it("resizes the explorer with pointer controls", () => {
   expect(separator.getAttribute("aria-valuenow")).toBe("450");
 });
 
-it("shows failed and pending Git imports", async () => {
-  mount();
-  mocks.status.mockResolvedValueOnce({ status: "failed" });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
-  });
-  expect(screen.getByRole("alert").textContent).toContain("Не удалось получить изменения");
-
+it("finishes a queued background Git refresh without blocking the editor", async () => {
+  mocks.backgroundSync.mockResolvedValueOnce("background-job");
   mocks.status
     .mockResolvedValueOnce({ status: "queued" })
     .mockResolvedValueOnce({ status: "done" });
-  await act(async () => {
-    fireEvent.click(screen.getAllByRole("button", { name: "Получить из Git" })[0] as HTMLElement);
-  });
+  mount();
+  await act(async () => {});
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    "# Первый\n<Widget />",
+  );
   await tick(2000);
-  expect(screen.getByText("Изменения получены из Git")).toBeTruthy();
+  expect(mocks.status).toHaveBeenLastCalledWith("project", "background-job");
+  expect(screen.queryByText(/Получаем изменения/)).toBeNull();
 });
 
 it("copies and replaces an uploaded attachment", async () => {
@@ -1310,6 +1370,46 @@ it("copies and replaces an uploaded attachment", async () => {
   expect(screen.getByText("Ссылка скопирована")).toBeTruthy();
   await click("Заменить файл");
   expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
+it("groups binary file actions and confirms deletion with a result dialog", async () => {
+  state.repositoryPaths = ["static/img/photo.jpg"];
+  state.uploads = [{ path: "static/img/photo.jpg" }];
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="static/img/photo.jpg"
+    />,
+  );
+
+  const actions = screen.getByRole("button", { name: "Заменить файл" }).parentElement;
+  expect(Array.from(actions?.children ?? []).map((item) => item.textContent?.trim())).toEqual([
+    "Заменить файл",
+    "Скачать файл",
+    "Копировать ссылку",
+    "Удалить файл",
+  ]);
+  expect(screen.queryByText("Только чтение")).toBeNull();
+  expect(screen.getByRole("button", { name: "Удалить файл" }).className).toContain(
+    "wb-danger-button",
+  );
+
+  await click("Удалить файл");
+  expect(screen.getByRole("heading", { name: "Удалить файл" })).toBeTruthy();
+  expect(screen.getByText(/будет помечен для удаления/)).toBeTruthy();
+  await click("Подтвердить удаление");
+  expect(requests.at(-1)).toMatchObject({
+    files: [{ path: "static/img/photo.jpg", content: null }],
+  });
+  expect(screen.getByRole("heading", { name: "Файл отмечен для удаления" })).toBeTruthy();
+  expect(screen.getByText(/добавлен в изменения ветки/).textContent).toContain(
+    "static/img/photo.jpg",
+  );
+  await click("Готово");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 it("reports invalid media configuration and an unsuccessful Git status response", async () => {
@@ -1408,7 +1508,7 @@ it("requires a successful save before mutating files or creating a branch", asyn
   fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: "Dirty" } });
   await click("Удалить документ");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("save failed"));
-  await click("Применить");
+  await click("Подтвердить удаление");
   expect(screen.getByRole("alert").textContent).toContain("Нет связи");
   expect(requests).toHaveLength(0);
 

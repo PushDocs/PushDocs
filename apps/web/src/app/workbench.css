@@ -386,12 +386,10 @@
   .wb-branch-tools {
     width: 100%;
   }
-  .wb-branch-picker {
+  .workbench .wb-branch-picker {
     flex: 1;
-    min-width: 0;
-  }
-  .wb-branch-picker > summary {
     max-width: none;
+    min-width: 0;
   }
   .wb-new-branch {
     flex-shrink: 0;
@@ -448,10 +446,6 @@
   border: 1px solid #ddd;
   border-radius: 8px;
   padding: 10px;
-}
-.wb-branch-search {
-  width: 150px;
-  min-width: 0;
 }
 .wb-tab-item {
   position: relative;
@@ -896,23 +890,9 @@
   width: 100%;
   max-width: none;
 }
-.wb-branch-picker > summary {
-  border: 1px solid var(--line);
-  max-width: 260px;
-}
-.wb-branch-picker > summary span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wb-branch-picker > summary small {
-  border-left: 1px solid var(--line);
-  color: var(--ink-muted);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  padding-left: 7px;
-  text-transform: uppercase;
+.workbench .wb-branch-picker {
+  max-width: 300px;
+  min-width: 210px;
 }
 .workbench .wb-new-branch {
   border-color: color-mix(in srgb, var(--violet) 34%, var(--line));
@@ -1080,6 +1060,14 @@
 }
 .workbench .wb-danger {
   color: var(--danger);
+}
+.workbench .wb-danger-button {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+.workbench .wb-danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, black);
 }
 .wb-format {
   gap: 3px;
@@ -1347,6 +1335,16 @@
   max-width: 100%;
   max-height: 60vh;
   object-fit: contain;
+}
+.wb-binary-actions {
+  justify-content: center;
+}
+.wb-operation-result {
+  display: grid;
+  gap: 18px;
+}
+.wb-operation-result .wb-primary {
+  justify-self: end;
 }
 .wb-toolbar[hidden] {
   display: none;
@@ -1702,10 +1700,6 @@
   min-height: 0;
   overflow: hidden;
 }
-.app-frame:has(.workbench) > .app-sidebar {
-  min-height: 0;
-  overflow-y: auto;
-}
 .app-main:has(> .workbench) {
   min-height: 0;
   overflow: hidden;
@@ -1918,18 +1912,6 @@
 .media-upload-picker:focus-within {
   outline: 2px solid var(--violet);
   outline-offset: 6px;
-}
-.media-options {
-  margin-top: 16px;
-  font-size: 13px;
-}
-.media-options summary {
-  color: var(--ink-muted);
-  cursor: pointer;
-}
-.wb-media-modal .media-options label {
-  font-size: 13px;
-  font-weight: 400;
 }
 .wb-media-modal label.media-article-filter {
   display: flex;

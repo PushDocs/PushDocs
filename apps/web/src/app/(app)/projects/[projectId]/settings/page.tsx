@@ -57,13 +57,9 @@ export default async function ProjectSettingsPage({
           <LockKeyhole aria-hidden />
           <div>
             <h2>Git-подключение</h2>
-            <p>
-              {project.providerLabel} ·{" "}
-              {settings.provider_vpn_slot
-                ? `через VPN, слот ${settings.provider_vpn_slot}`
-                : "напрямую"}
+            <p className="project-git-connection">
+              {project.providerLabel} · {settings.provider_base_url}
             </p>
-            <small>{settings.provider_base_url}</small>
           </div>
         </article>
       </section>

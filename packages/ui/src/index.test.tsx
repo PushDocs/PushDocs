@@ -4,6 +4,67 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@base-ui/react/combobox", () => {
+  let items: Array<{ label: string; value: string }> = [];
+  let selected: { label: string; value: string } | null = null;
+  let select: ((value: { label: string; value: string }) => void) | undefined;
+  return {
+    Combobox: {
+      Empty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+      Icon: ({ children }: { children: ReactNode }) => children,
+      Input: (props: Record<string, unknown>) => <input {...props} />,
+      Item: ({
+        children,
+        value,
+      }: {
+        children: ReactNode;
+        value: { label: string; value: string };
+      }) => (
+        <button role="option" type="button" onClick={() => select?.(value)}>
+          {children}
+        </button>
+      ),
+      ItemIndicator: ({ children }: { children: ReactNode }) => children,
+      List: ({
+        children,
+      }: {
+        children: (item: { label: string; value: string }, index: number) => ReactNode;
+      }) => <div>{items.map(children)}</div>,
+      Popup: ({ children, ...props }: { children: ReactNode; className?: string }) => (
+        <div {...props}>{children}</div>
+      ),
+      Portal: ({ children }: { children: ReactNode }) => children,
+      Positioner: ({ children }: { children: ReactNode }) => children,
+      Root: ({
+        children,
+        items: nextItems,
+        onValueChange,
+        value,
+      }: {
+        children: ReactNode;
+        items: Array<{ label: string; value: string }>;
+        onValueChange: (value: { label: string; value: string }) => void;
+        value: { label: string; value: string } | null;
+      }) => {
+        items = nextItems;
+        selected = value;
+        select = onValueChange;
+        return children;
+      },
+      Trigger: ({ children, ...props }: { children: ReactNode; "aria-label"?: string }) => (
+        <button aria-expanded="true" role="combobox" type="button" {...props}>
+          {children}
+        </button>
+      ),
+      Value: ({
+        children,
+      }: {
+        children: (value: { label: string; value: string } | null) => ReactNode;
+      }) => children(selected),
+    },
+  };
+});
+
 vi.mock("@base-ui/react/select", () => {
   let selectedValue: string | undefined;
   return {
@@ -73,7 +134,7 @@ vi.mock("@base-ui/react/select", () => {
   };
 });
 
-import { Button, Select, Status } from "./index";
+import { Button, SearchableSelect, Select, Status } from "./index";
 
 afterEach(cleanup);
 
@@ -158,5 +219,31 @@ describe("Select", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(onValueChange).toHaveBeenCalledOnce();
     expect(onValueChange).toHaveBeenCalledWith("stable");
+  });
+});
+
+describe("SearchableSelect", () => {
+  it("keeps search and options inside the branch popup", () => {
+    const onValueChange = vi.fn();
+    render(
+      <SearchableSelect
+        label="Текущая ветка"
+        onValueChange={onValueChange}
+        options={[
+          { label: "main · защищена", value: "main" },
+          { label: "feature/docs", value: "feature/docs" },
+        ]}
+        searchLabel="Поиск по веткам"
+        value="main"
+      />,
+    );
+
+    const search = screen.getByRole("textbox", { name: "Поиск по веткам" });
+    expect(search.closest(".pd-combobox-popup")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Текущая ветка" }).textContent).toContain(
+      "main · защищена",
+    );
+    fireEvent.click(screen.getByText("feature/docs"));
+    expect(onValueChange).toHaveBeenCalledWith("feature/docs");
   });
 });

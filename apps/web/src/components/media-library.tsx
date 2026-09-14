@@ -30,6 +30,8 @@ export function MediaLibrary({
   onBusyChange,
   initialQuery = "",
   replacePath,
+  uploadOnly = false,
+  onUploadComplete,
 }: {
   projectId: string;
   branch: string;
@@ -39,6 +41,8 @@ export function MediaLibrary({
   onBusyChange?: (busy: boolean) => void;
   initialQuery?: string;
   replacePath?: string;
+  uploadOnly?: boolean;
+  onUploadComplete?: (assets: Array<{ path: string; url: string }>) => void;
 }) {
   const [state, setState] = useState<MediaState>();
   const [error, setError] = useState("");
@@ -46,9 +50,6 @@ export function MediaLibrary({
   const [onlyArticle, setOnlyArticle] = useState(false);
   const [selected, setSelected] = useState<Asset>();
   const [busy, setBusy] = useState(false);
-  const [locale, setLocale] = useState("");
-  const [replace, setReplace] = useState(!!replacePath);
-  const [destination, setDestination] = useState("");
   const [progress, setProgress] = useState<{ name: string; percent: number }>();
   const [retry, setRetry] = useState(false);
   const pending = useRef<File[]>([]);
@@ -56,13 +57,13 @@ export function MediaLibrary({
   const uploading = useRef(false);
   const endpoint = `/api/projects/${projectId}/media`;
   const reload = useCallback(async () => {
-    const params = new URLSearchParams({ branch, document, ...(locale ? { locale } : {}) });
+    const params = new URLSearchParams({ branch, document });
     const response = await fetch(`${endpoint}?${params}`, { cache: "no-store" });
     const next = await response.json();
     if (!response.ok) throw new Error(next.error);
     setState(next);
     return next as MediaState;
-  }, [branch, document, endpoint, locale]);
+  }, [branch, document, endpoint]);
   useEffect(() => {
     const refresh = () => {
       void reload().catch((cause) => setError(String(cause)));
@@ -83,11 +84,16 @@ export function MediaLibrary({
       setError("Для замены выберите один файл.");
       return;
     }
+    if (uploadOnly && files.length > 1) {
+      setError("Для вставки выберите один файл.");
+      return;
+    }
     uploading.current = true;
     pending.current = files;
     setBusy(true);
     setRetry(false);
     setError("");
+    const uploadedPaths: string[] = [];
     try {
       while (pending.current.length) {
         const file = pending.current[0];
@@ -101,12 +107,8 @@ export function MediaLibrary({
           document,
           locale: current.locale,
           revision: String(current.revision),
-          replace: String(replacePath ? true : replace),
-          ...(replacePath
-            ? { path: replacePath }
-            : destination
-              ? { path: `${destination.replace(/\/$/, "")}/${file.name}` }
-              : {}),
+          replace: String(!!replacePath),
+          ...(replacePath ? { path: replacePath } : {}),
         });
         setProgress({ name: file.name, percent: 0 });
         const uploadedPath = await new Promise<string | undefined>((resolve, reject) => {
@@ -146,9 +148,21 @@ export function MediaLibrary({
         });
         transfer.current = undefined;
         pending.current.shift();
+        if (uploadedPath) uploadedPaths.push(uploadedPath);
         await onChanged?.(uploadedPath);
       }
-      await reload();
+      const refreshed = await reload();
+      if (uploadOnly && uploadedPaths.length) {
+        const uploadedAssets = uploadedPaths.flatMap((path) => {
+          const asset = refreshed.assets.find((item) => item.path === path);
+          return asset?.url ? [{ path, url: asset.url }] : [];
+        });
+        if (uploadedAssets.length !== uploadedPaths.length) {
+          setError("Файл загружен, но его нельзя вставить по текущим настройкам вложений.");
+        } else {
+          onUploadComplete?.(uploadedAssets);
+        }
+      }
     } catch (cause) {
       setError(String(cause));
       setRetry(pending.current.length > 0);
@@ -233,7 +247,7 @@ export function MediaLibrary({
           <small>или перетащите сюда · до 64 МиБ</small>
           <FilePicker
             aria-label="Загрузить файлы"
-            multiple={!replacePath}
+            multiple={!replacePath && !uploadOnly}
             disabled={readOnly || busy}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
@@ -242,37 +256,6 @@ export function MediaLibrary({
             }}
           />
         </label>
-        {!replacePath ? (
-          <details className="media-options">
-            <summary>Настройки загрузки</summary>
-            <label>
-              Каталог назначения
-              <input
-                value={destination}
-                placeholder="По настройкам проекта"
-                disabled={busy || readOnly}
-                onChange={(event) => setDestination(event.target.value)}
-              />
-            </label>
-            <label className="media-checkbox">
-              <input
-                type="checkbox"
-                checked={replace}
-                disabled={busy || readOnly}
-                onChange={(event) => setReplace(event.target.checked)}
-              />
-              Заменять существующие файлы с такими же путями
-            </label>
-            <label>
-              Язык каталога
-              <input
-                value={locale || state?.locale || ""}
-                onChange={(event) => setLocale(event.target.value)}
-                disabled={busy}
-              />
-            </label>
-          </details>
-        ) : null}
         {progress ? (
           <div role="status">
             <p>
@@ -297,37 +280,45 @@ export function MediaLibrary({
           </Button>
         ) : null}
       </section>
-      <div className="media-toolbar">
-        <label>
-          Найти файл
-          <input value={query} onChange={(event) => setQuery(event.target.value)} type="search" />
-        </label>
+      {!uploadOnly ? (
+        <>
+          <div className="media-toolbar">
+            <label>
+              Найти файл
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                type="search"
+              />
+            </label>
 
-        <Button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            void reload()
-              .then(() => setError(""))
-              .catch((cause) => setError(String(cause)));
-          }}
-        >
-          Обновить
-        </Button>
-      </div>
-      {document ? (
-        <label className="media-article-filter">
-          <input
-            type="checkbox"
-            checked={onlyArticle}
-            onChange={(event) => setOnlyArticle(event.target.checked)}
-          />{" "}
-          Только в этой статье
-        </label>
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                void reload()
+                  .then(() => setError(""))
+                  .catch((cause) => setError(String(cause)));
+              }}
+            >
+              Обновить
+            </Button>
+          </div>
+          {document ? (
+            <label className="media-article-filter">
+              <input
+                type="checkbox"
+                checked={onlyArticle}
+                onChange={(event) => setOnlyArticle(event.target.checked)}
+              />{" "}
+              Только в этой статье
+            </label>
+          ) : null}
+        </>
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
       {!state ? <p role="status">Загружаем медиатеку…</p> : null}
-      {selected ? (
+      {!uploadOnly && selected ? (
         <section className="media-confirm" aria-label="Удаление файла">
           <h2>Удалить {selected.path}?</h2>
           <p>Удаление попадёт в общий набор изменений. В Git файл останется до отправки коммита.</p>
@@ -358,79 +349,83 @@ export function MediaLibrary({
           </Button>
         </section>
       ) : null}
-      <div className="asset-grid">
-        {assets?.map((asset) => (
-          <article className="media-card" key={asset.path}>
-            {asset.status !== "delete" && /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(asset.path) ? (
-              // biome-ignore lint/performance/noImgElement: private media require the authenticated asset route
-              <img
-                alt={asset.path}
-                loading="lazy"
-                src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
-              />
-            ) : (
-              <span className="media-placeholder">
-                {asset.status === "delete" ? "Удаление" : <FileText size={30} />}
-              </span>
-            )}
-            <strong>{asset.path}</strong>
-            {asset.status !== "clean" || asset.size !== null ? (
-              <small>
-                {asset.status === "upload"
-                  ? "Загружен в черновик"
-                  : asset.status === "delete"
-                    ? "Будет удалён"
-                    : ""}
-                {asset.size === null
-                  ? ""
-                  : `${asset.status === "clean" ? "" : " · "}${(asset.size / 1024).toFixed(1)} КиБ`}
-              </small>
-            ) : null}
-            <div className="media-actions">
-              <a
-                href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Открыть
-              </a>
-              {asset.url && onInsert && asset.status !== "delete" ? (
-                <Button
-                  type="button"
-                  disabled={busy || readOnly}
-                  onClick={() => {
-                    if (asset.url) onInsert(asset.url);
-                  }}
-                >
-                  Вставить ссылку
-                </Button>
-              ) : null}
-              {asset.url ? (
-                <Button
-                  type="button"
-                  disabled={readOnly || busy}
-                  aria-label={`${asset.status === "delete" ? "Отменить удаление" : "Удалить"} ${asset.path}`}
-                  onClick={() => {
-                    if (asset.status === "delete") void mutate(asset, "revert");
-                    else setSelected(asset);
-                  }}
-                >
-                  {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
-                </Button>
+      {!uploadOnly ? (
+        <div className="asset-grid">
+          {assets?.map((asset) => (
+            <article className="media-card" key={asset.path}>
+              {asset.status !== "delete" && /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(asset.path) ? (
+                // biome-ignore lint/performance/noImgElement: private media require the authenticated asset route
+                <img
+                  alt={asset.path}
+                  loading="lazy"
+                  src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
+                />
               ) : (
-                <span
-                  className="media-scope"
-                  title="Вставка и удаление доступны в каталоге вложений, указанном в настройках проекта."
-                >
-                  Вне каталога вложений
+                <span className="media-placeholder">
+                  {asset.status === "delete" ? "Удаление" : <FileText size={30} />}
                 </span>
               )}
-            </div>
-          </article>
-        ))}
-      </div>
-      {state && state.assets.length > 0 && assets?.length === 0 ? <p>Файлы не найдены.</p> : null}
-      {state?.assets.length === 0 ? <p>В этой ветке пока нет медиафайлов.</p> : null}
+              <strong>{asset.path}</strong>
+              {asset.status !== "clean" || asset.size !== null ? (
+                <small>
+                  {asset.status === "upload"
+                    ? "Загружен в черновик"
+                    : asset.status === "delete"
+                      ? "Будет удалён"
+                      : ""}
+                  {asset.size === null
+                    ? ""
+                    : `${asset.status === "clean" ? "" : " · "}${(asset.size / 1024).toFixed(1)} КиБ`}
+                </small>
+              ) : null}
+              <div className="media-actions">
+                <a
+                  href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Открыть
+                </a>
+                {asset.url && onInsert && asset.status !== "delete" ? (
+                  <Button
+                    type="button"
+                    disabled={busy || readOnly}
+                    onClick={() => {
+                      if (asset.url) onInsert(asset.url);
+                    }}
+                  >
+                    Вставить ссылку
+                  </Button>
+                ) : null}
+                {asset.url ? (
+                  <Button
+                    type="button"
+                    disabled={readOnly || busy}
+                    aria-label={`${asset.status === "delete" ? "Отменить удаление" : "Удалить"} ${asset.path}`}
+                    onClick={() => {
+                      if (asset.status === "delete") void mutate(asset, "revert");
+                      else setSelected(asset);
+                    }}
+                  >
+                    {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
+                  </Button>
+                ) : (
+                  <span
+                    className="media-scope"
+                    title="Вставка и удаление доступны в каталоге вложений, указанном в настройках проекта."
+                  >
+                    Вне каталога вложений
+                  </span>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {!uploadOnly && state && state.assets.length > 0 && assets?.length === 0 ? (
+        <p>Файлы не найдены.</p>
+      ) : null}
+      {!uploadOnly && state?.assets.length === 0 ? <p>В этой ветке пока нет медиафайлов.</p> : null}
     </section>
   );
 }

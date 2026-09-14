@@ -13,7 +13,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  RefreshCw,
   Upload,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -74,7 +73,6 @@ export function FileExplorer({
   busy,
   onOpen,
   onCreate,
-  onRefresh,
   onMedia,
   onUpload,
   uploadProgress,
@@ -91,7 +89,6 @@ export function FileExplorer({
   busy: boolean;
   onOpen: (path: string) => void;
   onCreate: (kind: "new" | "folder", directory: string) => void;
-  onRefresh: () => void;
   onMedia?: () => void;
   onUpload?: (files: File[], directory: string) => void;
   uploadProgress?: string;
@@ -295,15 +292,6 @@ export function FileExplorer({
               <FileImage size={16} />
             </button>
           ) : null}
-          <button
-            type="button"
-            aria-label="Получить из Git"
-            title="Получить из Git"
-            disabled={busy}
-            onClick={onRefresh}
-          >
-            <RefreshCw size={15} />
-          </button>
           <button
             type="button"
             aria-label="Свернуть все папки"
