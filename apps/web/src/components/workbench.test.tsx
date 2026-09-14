@@ -609,6 +609,7 @@ it("marks a deletion without losing its original source", async () => {
 it("creates a branch, handles provider errors, and allows closing the dialog", async () => {
   mount();
   await click("Новая ветка");
+  expect(screen.getByRole("dialog").textContent).not.toContain("Ветка будет создана от коммита");
   fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
   await click("Создать и перейти");
   expect(requests[0]).toMatchObject({ action: "branch", sha: "12345678", name: "docs/new" });
@@ -628,6 +629,30 @@ it("shows a branch creation failure returned by the worker", async () => {
   await click("Создать и перейти");
   expect(screen.getByRole("alert").textContent).toContain("Ветка уже существует");
   expect(mocks.push).not.toHaveBeenCalled();
+});
+it("refreshes an updated source branch and retries branch creation", async () => {
+  mocks.start.mockResolvedValueOnce("sync-job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "failed",
+      last_error: "Исходная ветка обновилась. Получите изменения и повторите создание.",
+    })
+    .mockImplementationOnce(async () => {
+      state.sha = "new-head";
+      return { status: "done" };
+    })
+    .mockResolvedValueOnce({ status: "done" });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
+  expect(requests).toEqual([
+    expect.objectContaining({ action: "branch", sha: "12345678", name: "docs/new" }),
+    expect.objectContaining({ action: "branch", sha: "new-head", name: "docs/new" }),
+  ]);
+  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 it("waits for branch import before opening its documents", async () => {
   mocks.status

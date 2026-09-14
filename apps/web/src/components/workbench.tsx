@@ -800,6 +800,48 @@ export function Workbench({
     });
   }
 
+  async function waitForBranchCreation(jobId: string) {
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
+      try {
+        job = await gitOperationStatusAction(projectId, jobId);
+      } catch {
+        setNotice("Нет связи с сервером. Проверяем создание ветки…");
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        continue;
+      }
+      if (job.status === "failed")
+        throw new Error(job.last_error || "Не удалось создать ветку. Повторите попытку.");
+      if (job.status === "done") return;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    /* v8 ignore next -- the five-minute production deadline is not advanced in UI unit tests. */
+    throw new Error("Создание ветки ещё выполняется. Обновите страницу позже.");
+  }
+
+  async function refreshSourceBranchForCreation() {
+    setNotice(`Обновляем ${branch} перед созданием ветки…`);
+    const jobId = await startGitOperationAction({ projectId, branch });
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
+      try {
+        job = await gitOperationStatusAction(projectId, jobId);
+      } catch {
+        setNotice(`Нет связи с сервером. Проверяем обновление ${branch}…`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        continue;
+      }
+      if (job.status === "failed")
+        throw new Error(job.last_error || `Не удалось обновить ${branch}. Повторите попытку.`);
+      if (job.status === "done") return (await load()).sha;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    /* v8 ignore next -- the five-minute production deadline is not advanced in UI unit tests. */
+    throw new Error(`Обновление ${branch} ещё выполняется. Повторите попытку позже.`);
+  }
+
   async function submitDialog(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -816,25 +858,25 @@ export function Workbench({
       setBusy(true);
       setNotice(`Создаём ветку ${path} от ${branch}…`);
       try {
-        const result = await command({ action: "branch", name: path, sha: stateRef.current.sha });
-        const deadline = Date.now() + 300_000;
-        while (Date.now() < deadline) {
-          let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
+        let sourceSha = stateRef.current.sha;
+        let result: Awaited<ReturnType<typeof command>> | undefined;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
-            job = await gitOperationStatusAction(projectId, result.jobId);
-          } catch {
-            setNotice("Нет связи с сервером. Проверяем создание ветки…");
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-            continue;
+            result = await command({ action: "branch", name: path, sha: sourceSha });
+            await waitForBranchCreation(result.jobId);
+            break;
+          } catch (cause) {
+            const message = cause instanceof Error ? cause.message : String(cause);
+            if (attempt === 0 && message.startsWith("Исходная ветка обновилась")) {
+              sourceSha = await refreshSourceBranchForCreation();
+              setNotice(`Создаём ветку ${path} от обновлённой ${branch}…`);
+              continue;
+            }
+            throw cause;
           }
-          if (job.status === "failed")
-            throw new Error(job.last_error || "Не удалось создать ветку. Повторите попытку.");
-          if (job.status === "done") break;
-          await new Promise((resolve) => setTimeout(resolve, 2000));
         }
-        /* v8 ignore next 2 -- the five-minute production deadline is not advanced in UI unit tests. */
-        if (Date.now() >= deadline)
-          throw new Error("Создание ветки ещё выполняется. Обновите страницу позже.");
+        /* v8 ignore next -- both attempts either assign a result or throw. */
+        if (!result) throw new Error("Не удалось создать ветку");
         setNotice(`Ветка ${result.name} создана. Открываем документы…`);
         router.push(`?branch=${encodeURIComponent(result.name)}`);
         router.refresh();
@@ -1799,19 +1841,27 @@ export function Workbench({
                 ) : null}
                 {dialog === "branch" ? (
                   <div className="wb-branch-origin" id="new-branch-help">
-                    <span>
-                      <small>Основа</small>
-                      <code>{branch}</code>
+                    <div className="wb-branch-node">
+                      <span className="wb-branch-node-icon" aria-hidden>
+                        <GitBranch size={16} />
+                      </span>
+                      <span>
+                        <small>Основа</small>
+                        <code>{branch}</code>
+                      </span>
+                    </div>
+                    <span className="wb-branch-route" aria-hidden>
+                      <ArrowRight size={16} />
                     </span>
-                    <ArrowRight aria-hidden size={16} />
-                    <span>
-                      <small>Новая ветка</small>
-                      <code>ваше имя</code>
-                    </span>
-                    <p>
-                      Ветка будет создана от коммита {state.sha.slice(0, 8)} и откроется после
-                      импорта. Черновики останутся в {branch}.
-                    </p>
+                    <div className="wb-branch-node wb-branch-node--new">
+                      <span className="wb-branch-node-icon" aria-hidden>
+                        <Plus size={16} />
+                      </span>
+                      <span>
+                        <small>Новая ветка</small>
+                        <code>ваше имя</code>
+                      </span>
+                    </div>
                   </div>
                 ) : null}
                 {dialog === "move" || dialog === "rename" ? (
