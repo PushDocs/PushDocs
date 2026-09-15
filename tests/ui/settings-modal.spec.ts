@@ -123,3 +123,63 @@ test("branch picker keeps compact rows and shows a pointer hover state", async (
     await page.getByRole("status").evaluate((element) => element.getBoundingClientRect().height),
   ).toBe(0);
 });
+
+test("connection field values are distinct from muted labels and placeholders", async ({
+  page,
+}, testInfo) => {
+  await page.getByText("Открыть форму").click();
+  const name = page.getByLabel("Название");
+  await expect(name).toHaveValue("Sendsay");
+  const colors = await name.evaluate((el) => ({
+    value: getComputedStyle(el).color,
+    label: getComputedStyle(el.parentElement as HTMLElement).color,
+    placeholder: getComputedStyle(el, "::placeholder").color,
+  }));
+  expect(colors.value).toBe("rgb(37, 38, 49)");
+  expect(colors.value).not.toBe(colors.label);
+  expect(colors.value).not.toBe(colors.placeholder);
+  await page.screenshot({ path: testInfo.outputPath("connection-field-colors.png") });
+});
+
+for (const tall of [false, true]) {
+  test(`role dropdown is fully visible and clickable in a ${tall ? "scrolling" : "compact"} modal`, async ({
+    page,
+  }, testInfo) => {
+    await page.goto(`${baseURL}/?roles${tall ? "&tall" : ""}`);
+    await page.getByText("Открыть форму").click();
+    const trigger = page.getByRole("combobox", { name: "Доступ к проекту" });
+    await trigger.click();
+    const popup = page.getByRole("listbox");
+    await expect(popup).toBeVisible();
+    for (const label of ["Администратор", "Редактор", "Читатель"]) {
+      const option = page.getByRole("option", { name: label, exact: true });
+      await expect(option).toBeVisible();
+      const exposed = await option.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return [rect.top + 2, rect.bottom - 2].every((y) =>
+          element.contains(document.elementFromPoint(rect.x + rect.width / 2, y)),
+        );
+      });
+      expect(exposed, `${label} should not be clipped or covered`).toBe(true);
+    }
+    await page.screenshot({
+      path: testInfo.outputPath(`roles-${tall ? "scrolling" : "compact"}.png`),
+    });
+    await page.getByRole("option", { name: "Читатель", exact: true }).click();
+    await expect(trigger).toContainText("Читатель");
+    await expect(popup).not.toBeVisible();
+    await trigger.focus();
+    await trigger.press("ArrowDown");
+    await expect(page.getByRole("option", { name: "Читатель", exact: true })).toBeFocused();
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Enter");
+    await expect(trigger).toContainText("Администратор");
+    if (tall) {
+      const bounds = await page.getByRole("dialog").boundingBox();
+      expect(bounds?.y).toBeGreaterThanOrEqual(0);
+      expect((bounds?.y ?? 0) + (bounds?.height ?? 0)).toBeLessThanOrEqual(
+        page.viewportSize()?.height ?? 0,
+      );
+    }
+  });
+}

@@ -12,10 +12,19 @@ import { createProvider, type GitProvider, type ProviderFileChange } from "@push
 import { prepareVpnAccess, type VpnAccess, type VpnConnection } from "@pushdocs/vpn";
 import { GitTransport, type GitTransportOptions } from "./git-transport";
 
+class CloneOriginMismatchError extends Error {
+  constructor() {
+    super(
+      "Адрес репозитория не совпадает с Git-подключением. Проверьте адрес подключения в настройках проекта.",
+    );
+  }
+}
+
 export type WorkerRepository = Pick<
   PushDocsRepository,
   | "claimNextJob"
   | "heartbeatJob"
+  | "updateJobProgress"
   | "completeJob"
   | "ensureBranches"
   | "ensureProjectComponents"
@@ -182,12 +191,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
     projectId: string,
     branchName: string,
     provider?: GitProvider,
+    onDocumentsLoaded?: (completed: number, total: number) => Promise<void>,
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     await repository.withGitRefLock(
       `${target.base_url}:${target.provider_repository_id}:${branchName}`,
-      () => synchronizeBranchLocked(projectId, branchName, provider),
+      () => synchronizeBranchLocked(projectId, branchName, provider, onDocumentsLoaded),
     );
   }
 
@@ -195,6 +205,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     projectId: string,
     branchName: string,
     provider?: GitProvider,
+    onDocumentsLoaded?: (completed: number, total: number) => Promise<void>,
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
@@ -215,6 +226,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
       (filePath) =>
         filePath.startsWith(prefix) && isEditableFile(config, filePath.slice(prefix.length)),
     );
+    await onDocumentsLoaded?.(0, paths.length);
     const contents = new Map<string, string>();
     for (let offset = 0; offset < paths.length; offset += 12) {
       const batch = paths.slice(offset, offset + 12);
@@ -228,6 +240,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
         ),
       );
       for (const [filePath, content] of loaded) contents.set(filePath, content);
+      await onDocumentsLoaded?.(contents.size, paths.length);
     }
     const profile = analyzeDocusaurusFiles(contents, target.root_path);
     const existing = new Set(profile.documents.map((document) => document.path));
@@ -266,7 +279,11 @@ export function createWorkerService(options: WorkerServiceOptions) {
     await synchronizeReviews(projectId, provider, target.provider_repository_id);
   }
 
-  async function createBranch(payload: unknown): Promise<void> {
+  async function createBranch(
+    payload: unknown,
+    onProgress: (progress: string, counts?: { completed: number; total: number }) => Promise<void>,
+  ): Promise<void> {
+    await onProgress("checking-source");
     const projectId = projectIdFromPayload(payload);
     const userId = stringFromPayload(payload, "userId");
     const branchName = stringFromPayload(payload, "branch");
@@ -283,9 +300,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const existing = branches.find((branch) => branch.name === branchName);
     if (existing && existing.sha !== sourceSha)
       throw new Error(`Ветка ${branchName} уже существует и содержит другие изменения`);
+    await onProgress("creating-branch");
     if (!existing)
       await provider.createBranch(target.provider_repository_id, branchName, sourceSha);
-    await synchronizeBranch(projectId, branchName, provider);
+    await onProgress("importing-documents");
+    await synchronizeBranch(projectId, branchName, provider, (completed, total) =>
+      onProgress("importing-documents", { completed, total }),
+    );
   }
 
   async function submitChangeSet(payload: unknown): Promise<void> {
@@ -462,14 +483,25 @@ export function createWorkerService(options: WorkerServiceOptions) {
       target.prepared_commit?.operationId ?? stringFromPayload(payload, "operationId");
     const createdAt = target.prepared_commit?.createdAt ?? stringFromPayload(payload, "createdAt");
     const token = decrypt(target.secret_encrypted);
-    if (new URL(target.clone_url).origin !== new URL(target.base_url).origin)
-      throw new Error("Clone origin does not match the provider connection");
+    const remote = new URL(target.clone_url);
+    const connection = new URL(target.base_url);
+    // GitLab behind an HTTPS proxy can advertise an HTTP clone URL for the same host.
+    if (
+      remote.protocol === "http:" &&
+      connection.protocol === "https:" &&
+      remote.hostname === connection.hostname &&
+      !remote.port &&
+      !connection.port
+    ) {
+      remote.protocol = "https:";
+    }
+    if (remote.origin !== connection.origin) throw new CloneOriginMismatchError();
     const transport = (options.createGitTransport ?? ((input) => new GitTransport(input)))({
       directory: path.join(
         path.resolve(options.gitRoot ?? process.env.PUSHDOCS_GIT_CACHE_DIR ?? "./data/git"),
         createHash("sha256").update(operationId).digest("hex"),
       ),
-      remote: target.clone_url,
+      remote: remote.href,
       authorization: `Authorization: Basic ${Buffer.from(`${target.kind === "gitlab" ? "oauth2" : "x-access-token"}:${token}`).toString("base64")}`,
       proxyUrl: access.gitProxyUrl,
     });
@@ -546,7 +578,11 @@ export function createWorkerService(options: WorkerServiceOptions) {
           stringFromPayload(job.payload, "branch"),
         );
       } else if (job.kind === "branch.create") {
-        await createBranch(job.payload);
+        await createBranch(job.payload, (progress, counts) =>
+          counts
+            ? repository.updateJobProgress(job.id, job.attempts, progress, counts)
+            : repository.updateJobProgress(job.id, job.attempts, progress),
+        );
       } else if (job.kind === "review.create") {
         const projectId = projectIdFromPayload(job.payload);
         await repository.requireProjectAccess(
@@ -579,6 +615,8 @@ export function createWorkerService(options: WorkerServiceOptions) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const projectId = projectIdFromPayload(job.payload);
+      const permanentSubmissionFailure =
+        job.kind === "change-set.submit" && error instanceof CloneOriginMismatchError;
       const permanentBranchFailure =
         job.kind === "branch.create" &&
         (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
@@ -599,7 +637,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
         await repository.failJob(job.id, message, false, job.attempts);
         return true;
       }
-      if (job.attempts >= 5) {
+      if (job.attempts >= 5 || permanentSubmissionFailure) {
         await repository.markProjectAttention(projectId);
         if (job.kind === "change-set.submit") {
           await repository.releaseChangeSetSubmission(
@@ -612,7 +650,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
       await repository.failJob(
         job.id,
         message,
-        !permanentBranchFailure && job.attempts < 5,
+        !permanentBranchFailure && !permanentSubmissionFailure && job.attempts < 5,
         job.attempts,
       );
       logger.error(JSON.stringify({ error: message, jobId: job.id, kind: job.kind }));

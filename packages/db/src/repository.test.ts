@@ -145,6 +145,55 @@ describe("project and connection administration", () => {
     expect(await repository.countConnectionProjects(fixture.connectionId)).toBe(1);
   });
 
+  it("updates repository clone URLs together with the connection address", async () => {
+    const fixture = await projectFixture();
+    const otherConnection = await repository.createConnection({
+      baseUrl: "https://gitlab.example.test",
+      kind: "gitlab",
+      name: "Other GitLab",
+      secretEncrypted: "other-secret",
+    });
+    const other = await repository.createProject({
+      connectionId: otherConnection.id,
+      defaultBranch: "main",
+      name: "Other docs",
+      operatorUserId: fixture.operatorId,
+      repositoryFullName: "acme/docs",
+      repositoryProviderId: "42",
+      repositoryUrl: "https://gitlab.example.test/acme/docs.git",
+      rootPath: ".",
+      slug: "other-docs",
+    });
+    await repository.updateConnection({
+      baseUrl: "http://gitlab.example.test",
+      connectionId: fixture.connectionId,
+      name: "GitLab",
+      repositoryCloneUrls: [
+        { repositoryId: "42", cloneUrl: "http://gitlab.example.test/acme/docs.git" },
+      ],
+    });
+    expect(await repository.getProjectSyncTarget(fixture.projectId)).toMatchObject({
+      base_url: "http://gitlab.example.test",
+    });
+    expect(await repository.getProjectSyncTarget(other.id)).toMatchObject({
+      base_url: "https://gitlab.example.test",
+    });
+    expect(
+      await database
+        .selectFrom("repositories")
+        .select("clone_url")
+        .where("connection_id", "=", fixture.connectionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ clone_url: "http://gitlab.example.test/acme/docs.git" });
+    expect(
+      await database
+        .selectFrom("repositories")
+        .select("clone_url")
+        .where("connection_id", "=", otherConnection.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ clone_url: "https://gitlab.example.test/acme/docs.git" });
+  });
+
   it("assigns and releases an isolated VPN slot", async () => {
     const connection = await repository.createConnection({
       baseUrl: "https://gitlab.internal.test",
@@ -1893,6 +1942,56 @@ describe("invitations and members", () => {
 });
 
 describe("job lifecycle", () => {
+  it("persists operation stages without exposing payloads or accepting stale worker updates", async () => {
+    const fixture = await projectFixture();
+    const jobId = await repository.enqueueBranchCreation({
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      sourceBranch: "main",
+      sourceSha: "head",
+      branch: "docs/new",
+    });
+    await repository.updateJobProgress(jobId, 0, "creating-branch");
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toMatchObject({
+      progress: null,
+    });
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 1 })
+      .where("id", "=", jobId)
+      .execute();
+    await repository.updateJobProgress(jobId, 1, "checking-source");
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toEqual({
+      status: "running",
+      last_error: null,
+      progress: "checking-source",
+      progressCounts: null,
+    });
+    await repository.updateJobProgress(jobId, 0, "importing-documents");
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toMatchObject({
+      progress: "checking-source",
+    });
+    await repository.updateJobProgress(jobId, 1, "importing-documents", {
+      completed: 12,
+      total: 25,
+    });
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toMatchObject({
+      progress: "importing-documents",
+      progressCounts: { completed: 12, total: 25 },
+    });
+    expect(await repository.getProjectJob(randomUUID(), jobId)).toBeUndefined();
+    const job = await database
+      .selectFrom("jobs")
+      .select("payload")
+      .where("id", "=", jobId)
+      .executeTakeFirstOrThrow();
+    expect(job.payload).toMatchObject({
+      branch: "docs/new",
+      projectId: fixture.projectId,
+      sourceSha: "head",
+    });
+  });
+
   it("recovers an expired lease and ignores acknowledgements from its old worker", async () => {
     await projectFixture();
     const first = (await repository.claimNextJob())!;

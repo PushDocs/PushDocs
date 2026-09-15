@@ -832,11 +832,6 @@ textarea:where(:not(.monaco-editor *)):focus {
   width: auto;
 }
 
-.project-count {
-  color: var(--ink-muted);
-  font-size: 12px;
-}
-
 .project-list {
   background: var(--paper);
   border: 1px solid var(--line);
@@ -1138,12 +1133,23 @@ textarea:where(:not(.monaco-editor *)):focus {
   border-radius: 14px;
   box-shadow: 0 20px 80px rgb(0 0 0 / 20%);
   max-height: min(760px, calc(100dvh - 40px));
-  overflow-y: auto;
+  overflow: visible;
   padding: 24px;
   width: min(560px, 100%);
 }
 
+.settings-modal[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-modal-content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .settings-modal > header {
+  flex-shrink: 0;
   align-items: flex-start;
   display: flex;
   gap: 16px;
@@ -1233,6 +1239,16 @@ textarea:where(:not(.monaco-editor *)):focus {
   display: grid;
   font-size: 11px;
   gap: 6px;
+}
+
+/* Field values must not inherit the muted color used by their labels. */
+.connection-edit-form input {
+  color: var(--ink);
+}
+
+.connection-edit-form input::placeholder {
+  color: var(--ink-muted);
+  opacity: 1;
 }
 
 .connection-edit-form .checkbox-row {

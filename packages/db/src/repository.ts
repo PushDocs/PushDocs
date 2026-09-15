@@ -350,6 +350,7 @@ export class PushDocsRepository extends SecurityRepository {
     connectionId: string;
     name: string;
     secretEncrypted?: string;
+    repositoryCloneUrls?: { repositoryId: string; cloneUrl: string }[];
     vpnProfileEncrypted?: string | null;
   }) {
     return this.database.transaction().execute(async (transaction) => {
@@ -390,6 +391,14 @@ export class PushDocsRepository extends SecurityRepository {
         .executeTakeFirst();
       /* v8 ignore next -- the row was locked and verified earlier in this transaction. */
       if (!connection) throw new NotFoundError("Connection not found");
+      for (const remote of input.repositoryCloneUrls ?? []) {
+        await transaction
+          .updateTable("repositories")
+          .set({ clone_url: remote.cloneUrl })
+          .where("connection_id", "=", input.connectionId)
+          .where("provider_repository_id", "=", remote.repositoryId)
+          .execute();
+      }
       return connection;
     });
   }
@@ -725,6 +734,39 @@ export class PushDocsRepository extends SecurityRepository {
     return result.numUpdatedRows === 1n;
   }
 
+  async updateJobProgress(
+    jobId: string,
+    attempt: number,
+    progress: string,
+    counts?: { completed: number; total: number },
+  ): Promise<void> {
+    await this.database.transaction().execute(async (transaction) => {
+      const job = await transaction
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!job) return;
+      await transaction
+        .updateTable("jobs")
+        .set({
+          payload: {
+            ...(job.payload as Record<string, unknown>),
+            progress,
+            progressCounts: counts ?? null,
+          },
+          updated_at: new Date(),
+        })
+        .where("id", "=", jobId)
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .execute();
+    });
+  }
+
   async completeJob(jobId: string, attempt?: number): Promise<void> {
     await this.database
       .updateTable("jobs")
@@ -888,12 +930,29 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async getProjectJob(projectId: string, jobId: string) {
-    return this.database
+    const job = await this.database
       .selectFrom("jobs")
-      .select(["status", "last_error"])
+      .select(["status", "last_error", "payload"])
       .where("id", "=", jobId)
       .where(sql<string>`payload->>'projectId'`, "=", projectId)
       .executeTakeFirst();
+    if (!job) return undefined;
+    const payload = job.payload as Record<string, unknown>;
+    const progress = payload.progress;
+    const counts = payload.progressCounts as
+      | { completed?: unknown; total?: unknown }
+      | null
+      | undefined;
+    const progressCounts =
+      counts && typeof counts.completed === "number" && typeof counts.total === "number"
+        ? { completed: counts.completed, total: counts.total }
+        : null;
+    return {
+      status: job.status,
+      last_error: job.last_error,
+      progress: typeof progress === "string" ? progress : null,
+      progressCounts,
+    };
   }
 
   async listBranches(projectId: string) {

@@ -82,13 +82,11 @@ export function RevertFile({
               Откатить <code>{path}</code>?
             </strong>
           </p>
-          <p>
-            {!existed
-              ? "Новый файл будет удалён из изменений."
-              : operation === "delete"
-                ? "Удаление будет отменено. Файл восстановится из Git."
-                : "Неотправленные правки будут удалены. Восстановится версия из Git."}
-          </p>
+          {!existed ? (
+            <p>Новый файл будет удалён из изменений.</p>
+          ) : operation === "delete" ? (
+            <p>Удаление будет отменено. Файл восстановится из Git.</p>
+          ) : null}
           {error ? <p role="alert">{error}</p> : null}
           {stale ? (
             <p role="alert">

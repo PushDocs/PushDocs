@@ -22,7 +22,7 @@ function Form() {
     >
       <label>
         Название
-        <input name="name" defaultValue="Sendsay" />
+        <input name="name" defaultValue="Sendsay" placeholder="Название подключения" />
       </label>
       <Select
         name="kind"
@@ -39,6 +39,42 @@ function Form() {
     </form>
   );
 }
+function RoleForm() {
+  const [role, setRole] = useState("admin");
+  return (
+    <form className="critical-fields">
+      {new URLSearchParams(window.location.search).has("tall") ? (
+        <div>
+          {Array.from({ length: 30 }, (_, index) => `Настройки подключения ${index + 1}`).map(
+            (text) => (
+              <p key={text}>{text}</p>
+            ),
+          )}
+        </div>
+      ) : null}
+      <Select
+        name="role"
+        label="Доступ к проекту"
+        value={role}
+        onValueChange={setRole}
+        options={[
+          { value: "admin", label: "Администратор" },
+          { value: "editor", label: "Редактор" },
+          { value: "reader", label: "Читатель" },
+        ]}
+      />
+      <div className="settings-modal-actions">
+        <button type="button" className="pd-button pd-button--primary">
+          Сохранить роль
+        </button>
+        <button type="button" className="pd-button pd-button--danger">
+          Отозвать доступ
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function SettingsFixture() {
   const [open, setOpen] = useState(false);
   return (
@@ -49,7 +85,7 @@ function SettingsFixture() {
       <button type="button">За пределами окна</button>
       {open ? (
         <SettingsModal title="Подключение" onClose={() => setOpen(false)}>
-          <Form />
+          {new URLSearchParams(window.location.search).has("roles") ? <RoleForm /> : <Form />}
         </SettingsModal>
       ) : null}
     </main>

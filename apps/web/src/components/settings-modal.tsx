@@ -92,7 +92,9 @@ export function SettingsModal({
             ×
           </button>
         </header>
-        <div hidden={confirm}>{children}</div>
+        <div className="settings-modal-content" hidden={confirm}>
+          {children}
+        </div>
         {confirm ? (
           <section role="alert">
             <p>Закрыть без сохранения? Введённые данные будут потеряны.</p>

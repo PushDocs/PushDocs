@@ -73,6 +73,7 @@ function repository(): WorkerRepository {
   return {
     claimNextJob: vi.fn().mockResolvedValue(undefined),
     heartbeatJob: vi.fn().mockResolvedValue(true),
+    updateJobProgress: vi.fn(),
     completeJob: vi.fn(),
     ensureBranches: vi.fn(),
     ensureProjectComponents: vi.fn(),
@@ -434,12 +435,50 @@ describe("change set submission", () => {
     expect(client.commitFiles).not.toHaveBeenCalled();
   });
 
-  it("never forwards a provider credential to a different clone origin", async () => {
+  it("upgrades the provider's HTTP clone URL to its configured HTTPS origin", async () => {
     const port = repository();
     const client = provider();
     vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
       ...submissionTarget,
-      clone_url: "https://unrelated.invalid/docs.git",
+      clone_url: "http://gitlab.test/demo/docs.git",
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    const transport = vi.fn(() => ({
+      prepare: vi
+        .fn()
+        .mockResolvedValue({ branch: "docs/update", parentSha: "base", sha: "commit-sha" }),
+      publish: vi.fn().mockResolvedValue({ sha: "commit-sha", alreadyApplied: false }),
+    }));
+    await createService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      createGitTransport: transport,
+    }).submitChangeSet({
+      changeSetId: "change",
+      projectId: "project",
+      userId: "actor",
+      operationId: "attempt",
+      createdAt: "2026-09-08T00:00:00Z",
+      message: "Edit",
+      createReview: false,
+    });
+    expect(transport).toHaveBeenCalledWith(
+      expect.objectContaining({ remote: "https://gitlab.test/demo/docs.git" }),
+    );
+    expect(port.markChangeSetSubmitted).toHaveBeenCalled();
+  });
+  it.each([
+    "https://unrelated.invalid/docs.git",
+    "http://unrelated.invalid/docs.git",
+    "http://gitlab.test:8080/docs.git",
+    "https://gitlab.test:8443/docs.git",
+  ])("never forwards a provider credential to a different clone origin: %s", async (cloneUrl) => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      clone_url: cloneUrl,
     } as never);
     vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
     await expect(
@@ -448,7 +487,47 @@ describe("change set submission", () => {
         createProvider: () => client,
         decryptSecret: () => "fixture",
       }).submitChangeSet({ changeSetId: "change", projectId: "project", message: "Edit" }),
-    ).rejects.toThrow("origin");
+    ).rejects.toThrow("Адрес репозитория не совпадает");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("stops retrying a mismatched clone origin and releases the submission", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      clone_url: "https://unrelated.invalid/docs.git",
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(port.claimNextJob).mockResolvedValueOnce({
+      id: "job",
+      kind: "change-set.submit",
+      attempts: 1,
+      payload: {
+        changeSetId: "change",
+        projectId: "project",
+        userId: "actor",
+        operationId: "attempt",
+        createdAt: "2026-09-08T00:00:00Z",
+        message: "Edit",
+      },
+    } as never);
+    await createService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      logger: { error: vi.fn() },
+    }).runJob();
+    expect(port.failJob).toHaveBeenCalledWith(
+      "job",
+      expect.stringContaining("Адрес репозитория не совпадает"),
+      false,
+      1,
+    );
+    expect(port.releaseChangeSetSubmission).toHaveBeenCalledWith(
+      "change",
+      "project",
+      expect.stringContaining("Адрес репозитория не совпадает"),
+    );
     expect(client.commitFiles).not.toHaveBeenCalled();
   });
   it("uses the native Git transport and rejects an invalid provider SHA before writing", async () => {
@@ -1092,6 +1171,60 @@ describe("job execution and review polling", () => {
       [],
       [],
     );
+    expect(port.updateJobProgress).toHaveBeenNthCalledWith(1, "job", 1, "checking-source");
+    expect(port.updateJobProgress).toHaveBeenNthCalledWith(2, "job", 1, "creating-branch");
+    expect(port.updateJobProgress).toHaveBeenNthCalledWith(3, "job", 1, "importing-documents");
+    expect(vi.mocked(port.updateJobProgress).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(client.listBranches).mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(vi.mocked(port.updateJobProgress).mock.invocationCallOrder[1]).toBeLessThan(
+      vi.mocked(client.createBranch).mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(vi.mocked(port.updateJobProgress).mock.invocationCallOrder[2]).toBeLessThan(
+      vi.mocked(port.replaceImportedDocuments).mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
+
+  it("reports document loading counts after each completed import batch", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValueOnce({
+      attempts: 1,
+      id: "job",
+      kind: "branch.create",
+      payload: {
+        branch: "docs/new",
+        projectId: "project",
+        sourceBranch: "main",
+        sourceSha: "head",
+        userId: "actor",
+      },
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([
+      { name: "main", sha: "head" },
+      { name: "docs/new", sha: "head" },
+    ]);
+    vi.mocked(client.listFiles).mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => `docs/page-${index}.md`),
+    );
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "token",
+    }).runJob();
+    expect(port.updateJobProgress).toHaveBeenCalledWith("job", 1, "importing-documents", {
+      completed: 0,
+      total: 13,
+    });
+    expect(port.updateJobProgress).toHaveBeenCalledWith("job", 1, "importing-documents", {
+      completed: 12,
+      total: 13,
+    });
+    expect(port.updateJobProgress).toHaveBeenLastCalledWith("job", 1, "importing-documents", {
+      completed: 13,
+      total: 13,
+    });
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
 

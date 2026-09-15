@@ -827,9 +827,90 @@ describe("installation actions", () => {
       ),
     ).resolves.toEqual({
       ok: false,
-      message: "Адрес нельзя изменить, пока подключение используется проектами.",
+      message:
+        "Для другого сервера укажите новый access token. Сохранённый токен не будет отправлен на новый адрес.",
     });
   });
+
+  it("validates an in-use connection address and refreshes clone URLs before saving", async () => {
+    mocks.repo.getConnection.mockResolvedValue({
+      id: connectionId,
+      base_url: "https://gitlab.test",
+      kind: "gitlab",
+      secret_encrypted: "encrypted:old",
+    });
+    mocks.repo.listConnectionRepositories.mockResolvedValue(["42"]);
+    const client = mocks.createProvider();
+    client.getRepository.mockResolvedValue({
+      cloneUrl: "https://new-gitlab.test/acme/docs.git",
+      id: "42",
+    });
+    await updateConnectionAction(
+      form({
+        baseUrl: "https://new-gitlab.test",
+        connectionId,
+        name: "GitLab",
+        token: "new-token",
+      }),
+    );
+    expect(client.getRepository).toHaveBeenCalledWith("42");
+    expect(client.listBranches).toHaveBeenCalledWith("42");
+    expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        baseUrl: "https://new-gitlab.test",
+        repositoryCloneUrls: [
+          { repositoryId: "42", cloneUrl: "https://new-gitlab.test/acme/docs.git" },
+        ],
+      }),
+    );
+    mocks.app.updateConnection.mockClear();
+    client.getRepository.mockRejectedValueOnce(new Error("Access denied"));
+    await expect(
+      updateConnectionAction(
+        form({
+          baseUrl: "https://new-gitlab.test",
+          connectionId,
+          name: "GitLab",
+          token: "new-token",
+        }),
+      ),
+    ).rejects.toThrow("Access denied");
+    expect(mocks.app.updateConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["https://gitlab.test/", "http://gitlab.test/"],
+    ["http://gitlab.test/", "https://gitlab.test/"],
+  ])(
+    "changes the same server protocol from %s to %s without replacing its token",
+    async (oldUrl, newUrl) => {
+      mocks.repo.getConnection.mockResolvedValue({
+        id: connectionId,
+        base_url: oldUrl,
+        kind: "gitlab",
+        secret_encrypted: "encrypted:old",
+      });
+      mocks.repo.listConnectionRepositories.mockResolvedValue(["42"]);
+      const client = mocks.createProvider();
+      client.getRepository.mockResolvedValue({ cloneUrl: `${newUrl}acme/docs.git`, id: "42" });
+      await updateConnectionAction(form({ baseUrl: newUrl, connectionId, name: "GitLab" }));
+      expect(mocks.providerForConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ base_url: newUrl, secret_encrypted: "encrypted:old" }),
+      );
+      expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          baseUrl: newUrl,
+          repositoryCloneUrls: [{ repositoryId: "42", cloneUrl: `${newUrl}acme/docs.git` }],
+        }),
+      );
+      expect(mocks.app.updateConnection).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.not.objectContaining({ secretEncrypted: expect.anything() }),
+      );
+    },
+  );
 
   it("keeps the current connection token when only metadata changes", async () => {
     mocks.repo.getConnection.mockResolvedValue({
@@ -848,7 +929,7 @@ describe("installation actions", () => {
     );
   });
 
-  it("revalidates a new base URL with the stored token", async () => {
+  it("revalidates a path change on the same origin with the stored token", async () => {
     mocks.repo.getConnection.mockResolvedValue({
       base_url: "https://gitlab.test",
       kind: "gitlab",
@@ -857,7 +938,7 @@ describe("installation actions", () => {
     });
     mocks.repo.listConnectionRepositories.mockResolvedValueOnce([]);
     await updateConnectionAction(
-      form({ baseUrl: "https://new-gitlab.test", connectionId, name: "GitLab" }),
+      form({ baseUrl: "https://gitlab.test/new-path", connectionId, name: "GitLab" }),
     );
     expect(mocks.providerForConnection).toHaveBeenCalledWith(
       expect.objectContaining({ secret_encrypted: "encrypted:old" }),

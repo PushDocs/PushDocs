@@ -45,9 +45,6 @@ export default async function ProjectsPage({
             placeholder="Найти проект"
           />
         </form>
-        <span className="project-count">
-          {projects.length} {projects.length === 1 ? "доступен" : "доступно"}
-        </span>
       </div>
 
       {availableProjects.length === 0 ? (

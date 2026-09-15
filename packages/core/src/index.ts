@@ -68,6 +68,7 @@ export interface CoreRepository {
     connectionId: string;
     name: string;
     secretEncrypted?: string;
+    repositoryCloneUrls?: { repositoryId: string; cloneUrl: string }[];
     vpnProfileEncrypted?: string | null;
   }): Promise<unknown>;
   updateProject(input: {

@@ -252,8 +252,16 @@ export async function updateConnectionAction(formData: FormData): Promise<void> 
   const vpnChanged = Boolean(vpnProfile) || removeVpn;
   const credentialsChanged =
     Boolean(input.token) || input.baseUrl !== current.base_url || vpnChanged;
-  if (input.baseUrl !== current.base_url && repositoryIds.length > 0)
-    throw new Error("CONNECTION_BASE_URL_IN_USE");
+  const addressChanged = input.baseUrl !== current.base_url;
+  const address = new URL(input.baseUrl);
+  const oldAddress = new URL(current.base_url);
+  const sameServer = address.hostname === oldAddress.hostname && address.port === oldAddress.port;
+  if (address.protocol !== "http:" && address.protocol !== "https:")
+    throw new Error("CONNECTION_INVALID_PROTOCOL");
+  if (addressChanged && !sameServer && !input.token)
+    throw new Error("CONNECTION_NEW_SERVER_TOKEN_REQUIRED");
+  if (addressChanged && vpnChanged) throw new Error("CONNECTION_ADDRESS_VPN_CHANGE_CONFLICT");
+  const repositoryCloneUrls: { repositoryId: string; cloneUrl: string }[] = [];
   if (credentialsChanged && !vpnChanged) {
     const provider = await providerForConnection({
       ...current,
@@ -261,13 +269,20 @@ export async function updateConnectionAction(formData: FormData): Promise<void> 
       connection_id: current.id,
       secret_encrypted: input.token ? encryptSecret(input.token) : current.secret_encrypted,
     });
-    for (const repositoryId of repositoryIds) await provider.listBranches(repositoryId);
+    for (const repositoryId of repositoryIds) {
+      await provider.listBranches(repositoryId);
+      if (addressChanged) {
+        const remote = await provider.getRepository(repositoryId);
+        repositoryCloneUrls.push({ repositoryId, cloneUrl: remote.cloneUrl });
+      }
+    }
   }
   if (removeVpn) await clearVpnAccess(current.vpn_slot).catch(() => undefined);
   await application().updateConnection(actor(user), {
     baseUrl: input.baseUrl,
     connectionId: input.connectionId,
     name: input.name,
+    ...(addressChanged ? { repositoryCloneUrls } : {}),
     ...(input.token ? { secretEncrypted: encryptSecret(input.token) } : {}),
     ...(vpnProfile
       ? { vpnProfileEncrypted: encryptSecret(vpnProfile) }
@@ -289,8 +304,12 @@ function connectionSettingsError(error: unknown): string {
   if (error instanceof TwoFactorError) return error.message;
   if (!(error instanceof Error)) return "Не удалось сохранить настройки. Повторите попытку.";
   switch (error.message) {
-    case "CONNECTION_BASE_URL_IN_USE":
-      return "Адрес нельзя изменить, пока подключение используется проектами.";
+    case "CONNECTION_NEW_SERVER_TOKEN_REQUIRED":
+      return "Для другого сервера укажите новый access token. Сохранённый токен не будет отправлен на новый адрес.";
+    case "CONNECTION_INVALID_PROTOCOL":
+      return "Укажите адрес подключения с HTTP или HTTPS.";
+    case "CONNECTION_ADDRESS_VPN_CHANGE_CONFLICT":
+      return "Измените адрес и настройки VPN отдельно, чтобы проверить доступ к репозиториям.";
     case "CONNECTION_NOT_FOUND":
       return "Подключение не найдено. Обновите страницу.";
     case "VPN_PROFILE_INVALID_FILE":

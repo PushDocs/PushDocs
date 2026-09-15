@@ -185,3 +185,12 @@ it("renders Russian project plurals and GitHub-specific settings", () => {
   render(<ConnectionCard connection={{ ...connection, projectCount: 5 }} {...actions} />);
   expect(screen.getByText("5 проектов")).toBeTruthy();
 });
+
+it("lets an operator edit the address of a connection used by projects", () => {
+  render(<ConnectionCard connection={connection} updateAction={vi.fn()} deleteAction={vi.fn()} />);
+  fireEvent.click(screen.getByText("Редактировать"));
+  const address = screen.getByLabelText(/Адрес/) as HTMLInputElement;
+  expect(address.readOnly).toBe(false);
+  fireEvent.change(address, { target: { value: "https://new.gitlab.test" } });
+  expect(address.value).toBe("https://new.gitlab.test");
+});

@@ -2125,3 +2125,29 @@
 .wb-explorer-heading [role="toolbar"] {
   flex-shrink: 0;
 }
+
+.wb-branch-progress {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+.wb-branch-progress ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 22px;
+  color: var(--ink-muted);
+}
+.wb-branch-progress li[data-state="active"] {
+  color: var(--violet-deep);
+  font-weight: 700;
+}
+.wb-branch-progress li[data-state="done"] {
+  color: var(--success);
+}
+.wb-branch-progress small {
+  color: var(--ink-muted);
+  line-height: 1.5;
+}

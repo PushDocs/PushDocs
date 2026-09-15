@@ -139,16 +139,11 @@ export function ConnectionCard({
             </label>
             <label>
               Адрес
-              <input
-                name="baseUrl"
-                type="url"
-                defaultValue={connection.baseUrl}
-                readOnly={connection.projectCount > 0}
-                required
-              />
-              {connection.projectCount > 0 ? (
-                <small>Адрес нельзя менять, пока подключение используется проектами.</small>
-              ) : null}
+              <input name="baseUrl" type="url" defaultValue={connection.baseUrl} required />
+              <small>
+                При смене сервера укажите новый access token. Перед сохранением проверим доступ к
+                репозиториям.
+              </small>
             </label>
             <label>
               Новый access token

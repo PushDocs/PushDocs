@@ -737,6 +737,41 @@ it("waits for branch import before opening its documents", async () => {
   await tick(2000);
   expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
 });
+it("shows actual branch creation stages inside its dialog", async () => {
+  mocks.status
+    .mockResolvedValueOnce({ status: "queued", progress: null })
+    .mockResolvedValueOnce({ status: "running", progress: "checking-source" })
+    .mockResolvedValueOnce({ status: "running", progress: "creating-branch" })
+    .mockResolvedValueOnce({
+      status: "running",
+      progress: "importing-documents",
+      progressCounts: { completed: 12, total: 25 },
+    })
+    .mockResolvedValueOnce({
+      status: "queued",
+      last_error: "temporary failure",
+      progress: "importing-documents",
+    })
+    .mockResolvedValueOnce({ status: "done" });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  expect(screen.getByRole("dialog").textContent).toContain("Ожидаем свободный обработчик");
+  await tick(2000);
+  expect(screen.getByRole("dialog").textContent).toContain("Проверяем исходную ветку");
+  await tick(2000);
+  expect(screen.getByRole("dialog").textContent).toContain("Создаём ветку в Git");
+  await tick(2000);
+  expect(screen.getByRole("dialog").textContent).toContain("Подготавливаем документы");
+  expect(screen.getByRole("dialog").textContent).toContain("12 из 25 файлов загружено");
+  expect(mocks.push).not.toHaveBeenCalled();
+  await tick(2000);
+  expect(screen.getByRole("dialog").textContent).toContain("Повторная попытка");
+  await tick(2000);
+  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+});
+
 it("continues checking branch creation after a temporary polling failure", async () => {
   mocks.status
     .mockRejectedValueOnce(new Error("offline"))

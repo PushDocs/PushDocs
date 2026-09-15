@@ -200,6 +200,10 @@ export function Workbench({
   const [needsMerge, setNeedsMerge] = useState(false);
   const blocked = useRef(false);
   const [notice, setNotice] = useState("");
+  const [branchStage, setBranchStage] = useState<string | null>(null);
+  const [branchCounts, setBranchCounts] = useState<{ completed: number; total: number } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const [plan, setPlan] = useState<Array<{ path: string; content: string }> | null>(null);
@@ -929,6 +933,23 @@ export function Workbench({
       if (job.status === "failed")
         throw new Error(job.last_error || "Не удалось создать ветку. Повторите попытку.");
       if (job.status === "done") return;
+      setBranchCounts(job.status === "running" ? job.progressCounts : null);
+      if (job.status === "queued") {
+        setBranchStage(null);
+        setNotice(
+          job.last_error
+            ? "Повторная попытка: ожидаем свободный обработчик…"
+            : "Ожидаем свободный обработчик…",
+        );
+      } else {
+        setBranchStage(job.progress);
+        const messages: Record<string, string> = {
+          "checking-source": "Проверяем исходную ветку…",
+          "creating-branch": "Создаём ветку в Git…",
+          "importing-documents": "Подготавливаем документы…",
+        };
+        setNotice(messages[job.progress ?? ""] ?? "Обрабатываем создание ветки…");
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     /* v8 ignore next -- the five-minute production deadline is not advanced in UI unit tests. */
@@ -968,10 +989,17 @@ export function Workbench({
       return;
     }
     if (dialog === "branch") {
+      setBranchStage(null);
+      setBranchCounts(null);
+      setNotice("Сохраняем текущие правки…");
       /* v8 ignore next -- the branch dialog retains input after the same tested save failure path. */
-      if (!(await save())) return;
+      if (!(await save())) {
+        setNotice("");
+        return;
+      }
       setBusy(true);
-      setNotice(`Создаём ветку ${path} от ${branch}…`);
+      setBranchStage(null);
+      setNotice("Отправляем задачу на сервер…");
       try {
         let sourceSha = stateRef.current.sha;
         let result: Awaited<ReturnType<typeof command>> | undefined;
@@ -1195,7 +1223,7 @@ export function Workbench({
           </button>
         </div>
       ) : null}
-      {notice ? (
+      {notice && !(dialog === "branch" && busy) ? (
         <div className="wb-notice" role="status">
           {notice}
           <button type="button" onClick={() => setNotice("")}>
@@ -2017,6 +2045,41 @@ export function Workbench({
                     Язык
                     <input name="locale" defaultValue={state.config.defaultLocale} required />
                   </label>
+                ) : null}
+                {dialog === "branch" && busy ? (
+                  <div className="wb-branch-progress" role="status" aria-live="polite">
+                    <strong>{notice}</strong>
+                    {branchStage === "importing-documents" && branchCounts ? (
+                      <span>
+                        {branchCounts.completed} из {branchCounts.total} файлов загружено
+                      </span>
+                    ) : null}
+                    <ol aria-label="Этапы создания ветки">
+                      {[
+                        ["checking-source", "Проверка исходной ветки"],
+                        ["creating-branch", "Создание ветки в Git"],
+                        ["importing-documents", "Подготовка документов"],
+                      ].map(([stage, label], index, stages) => {
+                        const activeIndex = stages.findIndex(([key]) => key === branchStage);
+                        return (
+                          <li
+                            key={stage}
+                            data-state={
+                              index < activeIndex
+                                ? "done"
+                                : index === activeIndex
+                                  ? "active"
+                                  : "waiting"
+                            }
+                            aria-current={index === activeIndex ? "step" : undefined}
+                          >
+                            {label}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                    <small>После подготовки документов откроем новую ветку автоматически.</small>
+                  </div>
                 ) : null}
                 <button
                   className={dialog === "delete" ? "wb-danger-button" : "wb-primary"}
