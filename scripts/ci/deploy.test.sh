@@ -39,6 +39,19 @@ cat > "$mock_bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$PUSHDOCS_DOCKER_LOG"
+if [[ "$*" == 'image ls '* ]]; then
+  for spec in '2026-09-15T13:00:00 1' '2026-09-15T13:00:00 1' '2026-09-15T12:00:00 2' '2026-09-15T11:00:00 3' '2026-09-15T10:00:00 4'; do
+    read -r created id <<< "$spec"
+    printf '%s\tsha256:%064d\tghcr.io/pushdocs/pushdocs\n' "$created" "$id"
+  done
+  printf '2026-09-15T09:00:00\tsha256:%064d\tpostgres\n' 5
+fi
+if [[ "$*" == "ps -aq --filter ancestor=sha256:$(printf '%064d' 4)" ]]; then
+  echo 'in-use-container'
+fi
+if [[ "${PUSHDOCS_TEST_MIGRATION_FAIL:-0}" == 1 && "$*" == *'--exit-code-from migrate migrate'* ]]; then
+  exit 1
+fi
 exit 0
 EOF
 
@@ -95,12 +108,12 @@ grep -qx 'PUSHDOCS_VPN_GATEWAY_TOKEN=0000000000000000000000000000000000000000000
 [[ $(grep -c '^PUSHDOCS_VPN_GATEWAY_TOKEN=' "$deployment_root/.env") == 1 ]]
 grep -qx 'PUSHDOCS_VPN_ENABLED=0' "$deployment_root/.env"
 
-grep -Fq 'up --no-build --no-deps migrate' "$docker_log"
+grep -Fq 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log"
 grep -Fq -- '--profile vpn stop vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
 ! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
 grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
 
-migration_line=$(grep -n -F 'up --no-build --no-deps migrate' "$docker_log" | cut -d: -f1)
+migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
 application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
 (( migration_line < application_line ))
 
@@ -112,9 +125,29 @@ grep -qx 'PUSHDOCS_VPN_ENABLED=1' "$deployment_root/.env"
 grep -Fq -- '--profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
 grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
 
-migration_line=$(grep -n -F 'up --no-build --no-deps migrate' "$docker_log" | cut -d: -f1)
+migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
 gateway_line=$(grep -n -F 'vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log" | cut -d: -f1)
 application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
 (( migration_line < gateway_line && gateway_line < application_line ))
 
-echo 'PASS: production deploy starts VPN gateways only when explicitly enabled'
+# Keep the latest two distinct images, containers and unrelated repositories.
+grep -Fq "image rm sha256:$(printf '%064d' 3)" "$docker_log"
+for preserved in 1 2 4 5; do
+  ! grep -Fq "image rm sha256:$(printf '%064d' "$preserved")" "$docker_log"
+done
+! grep -Eq 'image (prune|rm.*(--force|-f))|volume (prune|rm)' "$docker_log"
+cleanup_line=$(grep -n -m1 -F 'image rm ' "$docker_log" | cut -d: -f1)
+pull_line=$(grep -n -m1 -F ' pull' "$docker_log" | cut -d: -f1)
+(( cleanup_line < pull_line ))
+
+# A failed migration must stop deployment before any application is started.
+: > "$docker_log"
+if PUSHDOCS_TEST_MIGRATION_FAIL=1 "$deployment_root/scripts/deploy.sh" \
+  "$image" https://docs.example.com '' 44 "$revision" 0; then
+  echo "Deployment continued after a failed migration" >&2
+  exit 1
+fi
+! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
+[[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
+
+echo 'PASS: deploy retains current images and data, removes old images before pull, stops on migration failure and gates VPN gateways'

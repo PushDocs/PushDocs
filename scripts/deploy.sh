@@ -87,6 +87,29 @@ set_setting() {
 }
 
 compose=(docker compose --env-file .env -f compose.yml)
+# Retain two recent releases for rollback and every image referenced by a container.
+# Limit cleanup to this application's repository; never prune volumes or other images.
+cleanup_application_images() {
+  local old_image
+  local old_images
+  old_images=$(
+    docker image ls --all --no-trunc \
+      --format '{{.CreatedAt}}\t{{.ID}}\t{{.Repository}}' ghcr.io/pushdocs/pushdocs |
+      awk -F '\t' '$3 == "ghcr.io/pushdocs/pushdocs" && $2 ~ /^sha256:[0-9a-f]+$/ { print }' |
+      LC_ALL=C sort --reverse |
+      awk -F '\t' '!seen[$2]++ { if (++count > 2) print $2 }'
+  )
+  while IFS= read -r old_image; do
+    [[ -n "$old_image" ]] || continue
+    if [[ -n "$(docker ps -aq --filter "ancestor=$old_image")" ]]; then
+      continue
+    fi
+    docker image rm "$old_image" || echo "Retained image $old_image: Docker refused removal." >&2
+  done <<< "$old_images"
+}
+
+# Release disk space before pulling a new image or creating a backup.
+cleanup_application_images
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup_id="$timestamp-run-$run_number"
 secret_backup="$secret_backup_root/$backup_id.env"
@@ -126,7 +149,7 @@ set_setting PUSHDOCS_VPN_ENABLED "$vpn_enabled"
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
 "${compose[@]}" up --detach --no-build --wait --wait-timeout 180 postgres
-"${compose[@]}" up --no-build --no-deps migrate
+"${compose[@]}" up --no-build --no-deps --exit-code-from migrate migrate
 if [[ "$vpn_enabled" == 1 ]]; then
   "${compose[@]}" --profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 \
     vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
@@ -157,6 +180,8 @@ for _ in {1..30}; do
         rm -rf -- "${backup_root:?}/$old_backup_id"
       fi
     done
+
+    cleanup_application_images
 
     echo "Deployed $image to $public_origin"
     exit 0
