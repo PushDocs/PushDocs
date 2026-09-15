@@ -1453,6 +1453,45 @@ describe("invitation acceptance", () => {
     );
   });
 
+  it.each(["short", "", "p".repeat(201)])(
+    "returns an invitation form error instead of crashing for an invalid submitted password",
+    async (password) => {
+      await expect(
+        acceptInvitationAction(form({ displayName: "Reader", password, token: "a".repeat(20) })),
+      ).rejects.toThrow(`REDIRECT:/invite/${"a".repeat(20)}?error=password`);
+      expect(mocks.repo.createUser).not.toHaveBeenCalled();
+      expect(mocks.repo.acceptInvitation).not.toHaveBeenCalled();
+      expect(mocks.argonHash).not.toHaveBeenCalled();
+    },
+  );
+
+  it("handles invalid names and tokens without creating an account", async () => {
+    await expect(
+      acceptInvitationAction(
+        form({ displayName: "R", password: "a secure password", token: "a".repeat(20) }),
+      ),
+    ).rejects.toThrow(`REDIRECT:/invite/${"a".repeat(20)}?error=name`);
+    await expect(
+      acceptInvitationAction(
+        form({ displayName: "Reader", password: "a secure password", token: "bad" }),
+      ),
+    ).rejects.toThrow("REDIRECT:/login?error=invitation");
+    expect(mocks.repo.createUser).not.toHaveBeenCalled();
+  });
+
+  it("accepts a pasted password without altering whitespace or special characters", async () => {
+    mocks.repo.getInvitation.mockResolvedValue(invitation);
+    mocks.repo.findUserByEmail.mockResolvedValue(undefined);
+    const pasted = "  My pasted secure password! ";
+    await expect(
+      acceptInvitationAction(
+        form({ displayName: "Reader", password: pasted, token: "a".repeat(20) }),
+      ),
+    ).rejects.toThrow("REDIRECT:");
+    expect(mocks.argonHash).toHaveBeenCalledWith(pasted, expect.anything());
+    expect(mocks.repo.acceptInvitation).toHaveBeenCalled();
+  });
+
   it("creates and signs in a new invited user", async () => {
     mocks.repo.getInvitation.mockResolvedValue(invitation);
     mocks.repo.findUserByEmail.mockResolvedValue(undefined);

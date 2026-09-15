@@ -3898,9 +3898,6 @@ progress::-moz-progress-bar {
   margin: 0;
   font-size: 13px;
 }
-.invitation-copy .invitation-copy-success {
-  color: var(--success);
-}
 .invitation-copy .invitation-copy-error {
   color: var(--danger);
 }

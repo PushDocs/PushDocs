@@ -81,7 +81,7 @@ test("shared controls have styled states and copying reports its result", async 
   });
   await expect(page.getByText("company.ovpn")).toBeVisible();
   await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-  await expect(page.getByRole("status")).toHaveText("Ссылка скопирована");
+  await expect(page.getByText("Ссылка скопирована", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Скопировано" })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
     page.viewportSize()?.width ?? 0,

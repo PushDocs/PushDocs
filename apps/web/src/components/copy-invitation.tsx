@@ -44,6 +44,7 @@ export function CopyInvitation({ value }: { value: string }) {
           type="button"
           onClick={() => void copy()}
           disabled={status === "copying"}
+          aria-live="polite"
         >
           {status === "copied" ? (
             <Check size={16} aria-hidden />
@@ -59,11 +60,6 @@ export function CopyInvitation({ value }: { value: string }) {
               : "Скопировать ссылку"}
         </button>
       </div>
-      {status === "copied" ? (
-        <p className="invitation-copy-success" role="status">
-          Ссылка скопирована
-        </p>
-      ) : null}
       {status === "error" ? (
         <p className="invitation-copy-error" role="alert">
           Не удалось скопировать автоматически. Ссылка выделена — нажмите Ctrl+C или ⌘C.

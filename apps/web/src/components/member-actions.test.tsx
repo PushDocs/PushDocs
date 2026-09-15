@@ -49,8 +49,12 @@ it("copies the exact invitation link and announces success", async () => {
   vi.stubGlobal("navigator", { clipboard: { writeText: copy } });
   render(<CopyInvitation value="https://docs.example/invite/one-time-token" />);
   fireEvent.click(screen.getByText("Скопировать ссылку"));
-  await screen.findByText("Ссылка скопирована");
+  await screen.findByRole("button", { name: "Скопировано" });
   expect(copy).toHaveBeenCalledWith("https://docs.example/invite/one-time-token");
+  expect(screen.queryByText("Ссылка скопирована")).toBeNull();
+  expect(screen.getByRole("button", { name: "Скопировано" }).getAttribute("aria-live")).toBe(
+    "polite",
+  );
 });
 it("keeps a manually selectable link when clipboard access fails", async () => {
   vi.stubGlobal("navigator", {
@@ -81,9 +85,9 @@ it("shows pending state and allows another copy after success", async () => {
   fireEvent.click(screen.getByText("Скопировать ссылку"));
   expect(screen.getByText("Копируем…")).toHaveProperty("disabled", true);
   resolve();
-  await screen.findByText("Ссылка скопирована");
+  await screen.findByRole("button", { name: "Скопировано" });
   fireEvent.click(screen.getByText("Скопировано"));
-  await screen.findByText("Ссылка скопирована");
+  await screen.findByRole("button", { name: "Скопировано" });
   expect(copy).toHaveBeenCalledTimes(2);
 });
 it("selects the link and reports unavailable clipboard access", async () => {

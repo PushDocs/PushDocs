@@ -455,7 +455,17 @@ export async function inviteMemberAction(formData: FormData): Promise<void> {
 }
 
 export async function acceptInvitationAction(formData: FormData): Promise<void> {
-  const input = acceptInvitationSchema.parse(Object.fromEntries(formData));
+  const parsed = acceptInvitationSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    const token = formData.get("token");
+    if (typeof token !== "string" || token.length < 20 || token.length > 200)
+      redirect("/login?error=invitation");
+    const field = parsed.error.issues[0]?.path[0];
+    const error =
+      field === "password" ? "password" : field === "displayName" ? "name" : "validation";
+    redirect(`/invite/${encodeURIComponent(token)}?error=${error}`);
+  }
+  const input = parsed.data;
   const tokenHash = hashInvitationToken(input.token);
   const invitation = await repository().getInvitation(tokenHash);
   if (!invitation) redirect("/login?error=invitation");

@@ -45,6 +45,15 @@ export default async function InvitationPage({
           Пароль существующей учётной записи не подошёл.
         </p>
       ) : null}
+      {query.error === "password" || query.error === "name" || query.error === "validation" ? (
+        <p className="form-error" role="alert">
+          {query.error === "password"
+            ? "Пароль должен содержать от 12 до 200 символов."
+            : query.error === "name"
+              ? "Имя должно содержать от 2 до 80 символов."
+              : "Проверьте введённые данные и повторите попытку."}
+        </p>
+      ) : null}
       <form action={acceptInvitationAction} className="auth-form">
         <input name="token" type="hidden" value={token} />
         <label>
@@ -55,7 +64,7 @@ export default async function InvitationPage({
           <>
             <label>
               Имя
-              <input name="displayName" required minLength={2} autoComplete="name" />
+              <input name="displayName" required minLength={2} maxLength={80} autoComplete="name" />
             </label>
             <label>
               Пароль
@@ -63,11 +72,13 @@ export default async function InvitationPage({
                 name="password"
                 required
                 minLength={12}
+                maxLength={200}
                 type="password"
                 autoComplete="current-password"
               />
               <span className="field-note">
-                Для новой учётной записи придумайте пароль; для существующей введите текущий.
+                От 12 до 200 символов. Для новой учётной записи придумайте пароль; для существующей
+                введите текущий.
               </span>
             </label>
           </>
