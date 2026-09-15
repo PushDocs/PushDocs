@@ -1963,7 +1963,6 @@ export function Workbench({
                           : "Путь файла"}
                     <input
                       name="path"
-                      aria-describedby={dialog === "branch" ? "new-branch-help" : undefined}
                       required
                       defaultValue={
                         dialog === "new" || dialog === "folder"
@@ -1985,31 +1984,6 @@ export function Workbench({
                     Файл {selected} будет помечен для удаления. До отправки в Git удаление можно
                     отменить.
                   </p>
-                ) : null}
-                {dialog === "branch" ? (
-                  <div className="wb-branch-origin" id="new-branch-help">
-                    <div className="wb-branch-node">
-                      <span className="wb-branch-node-icon" aria-hidden>
-                        <GitBranch size={16} />
-                      </span>
-                      <span>
-                        <small>Основа</small>
-                        <code>{branch}</code>
-                      </span>
-                    </div>
-                    <span className="wb-branch-route" aria-hidden>
-                      <ArrowRight size={16} />
-                    </span>
-                    <div className="wb-branch-node wb-branch-node--new">
-                      <span className="wb-branch-node-icon" aria-hidden>
-                        <Plus size={16} />
-                      </span>
-                      <span>
-                        <small>Новая ветка</small>
-                        <code>ваше имя</code>
-                      </span>
-                    </div>
-                  </div>
                 ) : null}
                 {dialog === "move" || dialog === "rename" ? (
                   <p>

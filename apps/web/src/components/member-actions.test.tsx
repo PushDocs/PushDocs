@@ -42,6 +42,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 it("copies the exact invitation link and announces success", async () => {
   const copy = vi.fn().mockResolvedValue(undefined);
@@ -107,7 +108,7 @@ it("offers manual copying when clipboard permission never resolves", async () =>
   expect(screen.getByText("Скопировать ссылку")).toHaveProperty("disabled", false);
 });
 
-it("changes and revokes member access in the settings dialog", async () => {
+it("separates revocation from roles and allows cancelling without losing the chosen role", async () => {
   render(
     // biome-ignore lint/a11y/useValidAriaRole: role is a domain-level component prop, not an ARIA attribute.
     <MemberActions
@@ -121,16 +122,28 @@ it("changes and revokes member access in the settings dialog", async () => {
   const trigger = screen.getByRole("button", { name: "Изменить доступ: Reader" });
   fireEvent.click(trigger);
   expect(screen.getByRole("dialog")).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Доступ к проекту"), { target: { value: "remove" } });
+  expect(screen.queryByRole("option", { name: "Отозвать доступ" })).toBeNull();
+  fireEvent.change(screen.getByLabelText("Доступ к проекту"), { target: { value: "editor" } });
+  fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+  expect(screen.queryByLabelText("Доступ к проекту")).toBeNull();
+  expect(criticalSettingsAction).not.toHaveBeenCalled();
   expect(screen.getByText(/Участник потеряет доступ/)).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Отозвать доступ" }).className).toContain("danger");
+  expect(screen.getByRole("button", { name: "Подтвердить отзыв доступа" }).className).toContain(
+    "danger",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+  expect(screen.getByLabelText("Доступ к проекту")).toHaveProperty("value", "editor");
 
   fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
-  fireEvent.click(screen.getByRole("button", { name: "Закрыть без сохранения" }));
+  expect(screen.queryByText(/Закрыть без сохранения/)).toBeNull();
   expect(screen.queryByRole("dialog")).toBeNull();
 
   fireEvent.click(trigger);
   expect(screen.getByLabelText("Доступ к проекту")).toHaveProperty("value", "reader");
+  fireEvent.change(screen.getByLabelText("Доступ к проекту"), { target: { value: "admin" } });
+  fireEvent(screen.getByRole("dialog"), new Event("cancel", { bubbles: true, cancelable: true }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(criticalSettingsAction).not.toHaveBeenCalled();
 });
 
 it("closes the member dialog after a verified successful update", async () => {
@@ -146,5 +159,34 @@ it("closes the member dialog after a verified successful update", async () => {
   fireEvent.change(screen.getByLabelText("Код 2FA"), { target: { value: "123456" } });
   fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
   expect(await screen.findByRole("status")).toHaveProperty("textContent", "Доступ обновлён");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("requires confirmation and verification for the separate revoke action", async () => {
+  vi.mocked(twoFactorStatusAction).mockResolvedValue(true);
+  vi.mocked(criticalSettingsAction).mockResolvedValue({});
+  render(
+    // biome-ignore lint/a11y/useValidAriaRole: role is a domain-level component prop, not an ARIA attribute.
+    <MemberActions projectId="project" userId="reader" name="Reader" role="reader" />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Изменить доступ: Reader" }));
+  fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+  expect(criticalSettingsAction).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Подтвердить отзыв доступа" }));
+  expect(await screen.findByLabelText("Код 2FA")).toBeTruthy();
+  expect(criticalSettingsAction).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Код 2FA"), { target: { value: "123456" } });
+  fireEvent.click(screen.getByRole("button", { name: "Подтвердить" }));
+  expect(await screen.findByRole("status")).toHaveProperty("textContent", "Доступ отозван");
+  const call = vi.mocked(criticalSettingsAction).mock.calls[0];
+  if (!call) throw new Error("Expected a verified revoke action");
+  const [kind, data] = call;
+  expect(kind).toBe("manageMember");
+  expect(Object.fromEntries(data)).toMatchObject({
+    projectId: "project",
+    userId: "reader",
+    role: "remove",
+    otp: "123456",
+  });
   expect(screen.queryByRole("dialog")).toBeNull();
 });

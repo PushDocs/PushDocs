@@ -21,10 +21,12 @@ export function SettingsModal({
   title,
   children,
   onClose,
+  confirmDiscard = true,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  confirmDiscard?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -39,7 +41,7 @@ export function SettingsModal({
   }, []);
   const close = () => {
     if (!pending) {
-      if (dirty) setConfirm(true);
+      if (dirty && confirmDiscard) setConfirm(true);
       else onClose();
     }
   };

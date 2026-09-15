@@ -19,7 +19,17 @@ test("select remains interactive inside the modal and close preserves dirty inpu
   await page.getByText("Открыть форму").click();
   const dialog = page.getByRole("dialog");
   await page.getByLabel("Название").fill("Draft connection");
-  await page.getByRole("combobox").click();
+  const select = page.getByRole("combobox");
+  await select.click();
+  const selectBox = await select.boundingBox();
+  const popupBox = await page.getByRole("listbox").boundingBox();
+  expect(selectBox).not.toBeNull();
+  expect(popupBox).not.toBeNull();
+  expect(Math.abs((popupBox?.x ?? 0) - (selectBox?.x ?? 0))).toBeLessThanOrEqual(2);
+  expect(Math.abs((popupBox?.width ?? 0) - (selectBox?.width ?? 0))).toBeLessThanOrEqual(2);
+  const below = (popupBox?.y ?? 0) >= (selectBox?.y ?? 0) + (selectBox?.height ?? 0);
+  const above = (popupBox?.y ?? 0) + (popupBox?.height ?? 0) <= (selectBox?.y ?? 0);
+  expect(below || above).toBe(true);
   await page.getByRole("option", { name: "GitHub" }).click();
   await expect(page.getByRole("combobox")).toContainText("GitHub");
   await page.keyboard.press("Escape");
@@ -89,6 +99,14 @@ test("branch picker keeps compact rows and shows a pointer hover state", async (
   expect(await search.evaluate((element) => getComputedStyle(element).boxShadow)).toBe("none");
   expect(await search.evaluate((element) => getComputedStyle(element).borderTopWidth)).toBe("0px");
 
+  const searchRow = await search.locator("..").boundingBox();
+  const firstOption = await page.getByRole("option").first().boundingBox();
+  expect(searchRow).not.toBeNull();
+  expect(firstOption).not.toBeNull();
+  expect(
+    (firstOption?.y ?? 0) - ((searchRow?.y ?? 0) + (searchRow?.height ?? 0)),
+  ).toBeLessThanOrEqual(8);
+
   const option = page.getByRole("option", { name: "feat/create-translate-script" });
   const beforeHover = await option.evaluate((element) => getComputedStyle(element).backgroundColor);
   await option.hover();
@@ -96,4 +114,12 @@ test("branch picker keeps compact rows and shows a pointer hover state", async (
   expect(afterHover).not.toBe(beforeHover);
   expect(await option.evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
   expect((await option.boundingBox())?.height).toBeLessThanOrEqual(40);
+
+  await search.fill("no-such-branch");
+  await expect(page.getByRole("status")).toHaveText("Ничего не найдено");
+  await search.fill("");
+  await expect(page.getByRole("option").first()).toBeVisible();
+  expect(
+    await page.getByRole("status").evaluate((element) => element.getBoundingClientRect().height),
+  ).toBe(0);
 });

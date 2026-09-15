@@ -99,12 +99,14 @@
 }
 
 .pd-select-popup {
+  box-sizing: border-box;
   background: var(--paper);
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: 0 14px 40px rgb(39 42 51 / 12%);
   color: var(--ink);
-  min-width: var(--anchor-width);
+  width: var(--anchor-width);
+  max-width: calc(100vw - 32px);
   max-height: min(320px, var(--available-height));
   overflow-y: auto;
   padding: 5px;
@@ -139,7 +141,7 @@
   color: var(--violet);
 }
 
-.pd-select-item > span:last-child {
+.pd-select-item > :last-child {
   grid-column: 2;
   min-width: 0;
   overflow: hidden;
@@ -212,6 +214,10 @@
   font-size: 13px;
   padding: 18px 14px;
   text-align: center;
+}
+
+.pd-combobox-empty:empty {
+  padding: 0;
 }
 
 .pd-status {

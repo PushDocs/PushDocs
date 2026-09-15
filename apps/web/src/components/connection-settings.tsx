@@ -70,7 +70,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
         </div>
 
         <CreateConnectionDialog>
-          <CriticalForm warnBefore kind="createConnection" className="connection-edit-form">
+          <CriticalForm kind="createConnection" className="connection-edit-form">
             {projectId ? <input type="hidden" name="projectId" value={projectId} /> : null}
             <label>
               Название

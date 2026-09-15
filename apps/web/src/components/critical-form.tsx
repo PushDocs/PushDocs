@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { criticalSettingsAction, twoFactorStatusAction } from "@/app/actions";
 import { useSettingsModal } from "./settings-modal";
 import { TwoFactorField } from "./two-factor-field";
@@ -12,9 +12,7 @@ export function CriticalForm({
   children,
   onSuccess,
   description,
-  warnBefore = false,
 }: {
-  warnBefore?: boolean;
   description?: string;
   kind?: string;
   action?: (data: FormData) => Promise<{ ok: boolean; message: string }>;
@@ -23,24 +21,11 @@ export function CriticalForm({
   onSuccess?: () => void;
 }) {
   const modal = useSettingsModal();
-  const [needsSetup, setNeedsSetup] = useState(false);
-  useEffect(() => {
-    if (!warnBefore) return;
-    let active = true;
-    void twoFactorStatusAction()
-      .then((enabled) => {
-        if (active) setNeedsSetup(enabled === false);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [warnBefore]);
   const [summary, setSummary] = useState("");
   const [message, setMessage] = useState("");
   const [failed, setFailed] = useState(false);
   const [pending, setPending] = useState(false);
-  const [step, setStep] = useState<"edit" | "verify" | "setup">("edit");
+  const [step, setStep] = useState<"edit" | "verify">("edit");
   const data = useRef<FormData | null>(null);
   return (
     <form
@@ -69,11 +54,15 @@ export function CriticalForm({
               description ??
                 `${labels[kind ?? ""] ?? "Сохранить настройки"}${objectName ? `: ${objectName}` : ""}`,
             );
-            setStep((await twoFactorStatusAction()) ? "verify" : "setup");
-            return;
+            if (await twoFactorStatusAction()) {
+              setStep("verify");
+              return;
+            }
           }
-          if (step !== "verify" || !data.current) return;
-          data.current.set("otp", String(new FormData(form).get("otp") ?? ""));
+          if (!data.current) return;
+          if (step === "verify") {
+            data.current.set("otp", String(new FormData(form).get("otp") ?? ""));
+          }
           const result = action
             ? await action(data.current)
             : await criticalSettingsAction(kind ?? "", data.current).then((result) => ({
@@ -99,14 +88,6 @@ export function CriticalForm({
         }
       }}
     >
-      {needsSetup && step === "edit" ? (
-        <p role="status">
-          Для сохранения нужна 2FA.{" "}
-          <a href="/settings/profile" target="_blank" rel="noreferrer">
-            Настроить в профиле
-          </a>
-        </p>
-      ) : null}
       {pending && step === "edit" ? <p role="status">Проверяем возможность сохранения…</p> : null}
       <fieldset
         disabled={pending || modal.pending || step !== "edit"}
@@ -128,21 +109,6 @@ export function CriticalForm({
             </button>
           </div>
         </fieldset>
-      ) : null}
-      {step === "setup" ? (
-        <div role="status">
-          <h3>Подключите двухфакторную аутентификацию</h3>
-          <p>
-            Для этого действия нужен код из приложения-аутентификатора. Сначала настройте его в
-            профиле.
-          </p>
-          <a href="/settings/profile" target="_blank" rel="noreferrer">
-            Настроить 2FA в профиле
-          </a>
-          <button type="button" className="pd-button" onClick={() => setStep("edit")}>
-            Вернуться к форме
-          </button>
-        </div>
       ) : null}
       {message ? <p role={failed ? "alert" : "status"}>{message}</p> : null}
     </form>

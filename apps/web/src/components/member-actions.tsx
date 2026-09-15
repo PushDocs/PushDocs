@@ -16,6 +16,7 @@ export function MemberActions({
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(role);
+  const [revoking, setRevoking] = useState(false);
   const [message, setMessage] = useState("");
   return (
     <>
@@ -25,6 +26,7 @@ export function MemberActions({
         onClick={(event) => {
           event.currentTarget.focus();
           setSelected(role);
+          setRevoking(false);
           setOpen(true);
         }}
         aria-label={`Изменить доступ: ${name}`}
@@ -33,38 +35,69 @@ export function MemberActions({
       </button>
       {message ? <span role="status">{message}</span> : null}
       {open ? (
-        <SettingsModal title={`Доступ: ${name}`} onClose={() => setOpen(false)}>
+        <SettingsModal
+          title={`Доступ: ${name}`}
+          onClose={() => setOpen(false)}
+          confirmDiscard={false}
+        >
           <CriticalForm
+            key={revoking ? "revoke" : "role"}
             kind="manageMember"
-            description={`${selected === "remove" ? "Отозвать доступ" : "Изменить роль"}: ${name}`}
+            description={`${revoking ? "Отозвать доступ" : "Изменить роль"}: ${name}`}
             onSuccess={() => {
               setOpen(false);
-              setMessage("Доступ обновлён");
+              setMessage(revoking ? "Доступ отозван" : "Доступ обновлён");
             }}
           >
             <input type="hidden" name="projectId" value={projectId} />
             <input type="hidden" name="userId" value={userId} />
-            <Select
-              name="role"
-              label="Доступ к проекту"
-              value={selected}
-              onValueChange={setSelected}
-              options={[
-                { value: "admin", label: "Администратор" },
-                { value: "editor", label: "Редактор" },
-                { value: "reader", label: "Читатель" },
-                { value: "remove", label: "Отозвать доступ" },
-              ]}
-            />
-            {selected === "remove" ? (
-              <p>Участник потеряет доступ к этому проекту. Его правки и комментарии сохранятся.</p>
-            ) : null}
-            <button
-              className={`pd-button pd-button--${selected === "remove" ? "danger" : "primary"}`}
-              type="submit"
-            >
-              {selected === "remove" ? "Отозвать доступ" : "Сохранить роль"}
-            </button>
+            {revoking ? (
+              <>
+                <input type="hidden" name="role" value="remove" />
+                <h3>Отозвать доступ у {name}?</h3>
+                <p>
+                  Участник потеряет доступ к этому проекту. Его правки и комментарии сохранятся.
+                </p>
+                <div className="settings-modal-actions">
+                  <button
+                    className="pd-button pd-button--secondary"
+                    type="button"
+                    onClick={() => setRevoking(false)}
+                  >
+                    Отмена
+                  </button>
+                  <button className="pd-button pd-button--danger" type="submit">
+                    Подтвердить отзыв доступа
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <Select
+                  name="role"
+                  label="Доступ к проекту"
+                  value={selected}
+                  onValueChange={setSelected}
+                  options={[
+                    { value: "admin", label: "Администратор" },
+                    { value: "editor", label: "Редактор" },
+                    { value: "reader", label: "Читатель" },
+                  ]}
+                />
+                <div className="settings-modal-actions">
+                  <button className="pd-button pd-button--primary" type="submit">
+                    Сохранить роль
+                  </button>
+                  <button
+                    className="pd-button pd-button--danger"
+                    type="button"
+                    onClick={() => setRevoking(true)}
+                  >
+                    Отозвать доступ
+                  </button>
+                </div>
+              </>
+            )}
           </CriticalForm>
         </SettingsModal>
       ) : null}

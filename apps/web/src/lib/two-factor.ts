@@ -17,7 +17,8 @@ export async function authenticationSession() {
 
 export async function requireTwoFactor(userId: string, formData: FormData): Promise<void> {
   const user = await repository().getSecurityUser(userId);
-  if (!user?.totp_secret) throw new TwoFactorError("Сначала подключите 2FA в настройках профиля.");
+  if (!user) throw new TwoFactorError("Пользователь не найден. Войдите снова.");
+  if (!user.totp_secret) return;
   if (!(await repository().consumeTotp(userId, String(formData.get("otp") ?? "").trim()))) {
     throw new TwoFactorError(
       "Код 2FA неверен или уже использован. Введите новый код. После 10 попыток подождите 15 минут.",

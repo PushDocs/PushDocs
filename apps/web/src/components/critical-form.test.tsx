@@ -39,19 +39,17 @@ it("requests the code only after submitting details and preserves them through v
   expect(mocks.save.mock.calls[0]?.[1].get("name")).toBe("Docs");
   expect(mocks.save.mock.calls[0]?.[1].get("otp")).toBe("123456");
 });
-it("offers setup without asking for an impossible code when 2FA is disabled", async () => {
+it("saves without an OTP or setup step when 2FA is disabled", async () => {
   mocks.status.mockResolvedValue(false);
-  const { container } = setup();
+  mocks.save.mockResolvedValue({});
+  setup();
   fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
-  expect(
-    (await screen.findByRole("link", { name: "Настроить 2FA в профиле" })).getAttribute("href"),
-  ).toBe("/settings/profile");
+  await screen.findByText("Изменения сохранены.");
   expect(screen.queryByLabelText("Код 2FA")).toBeNull();
-  expect(mocks.save).not.toHaveBeenCalled();
-  fireEvent.submit(container.querySelector("form") as HTMLFormElement);
-  expect(mocks.save).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Вернуться к форме" }));
-  expect(screen.getByLabelText("Название")).toHaveProperty("value", "Docs");
+  expect(screen.queryByRole("link", { name: "Настроить 2FA в профиле" })).toBeNull();
+  expect(mocks.save).toHaveBeenCalledTimes(1);
+  expect(mocks.save.mock.calls[0]?.[1].get("name")).toBe("Docs");
+  expect(mocks.save.mock.calls[0]?.[1].has("otp")).toBe(false);
 });
 
 it("keeps the action and object visible on the code step and restores input on back", async () => {
@@ -101,14 +99,33 @@ it("blocks duplicate submissions and reports status and action failures", async 
   expect((await screen.findByRole("alert")).textContent).toBe("Code expired");
 });
 
-it("survives a failed background 2FA status hint", async () => {
-  mocks.status.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(false);
-  const view = render(
-    <CriticalForm warnBefore>
-      <button type="submit">Continue</button>
+it("does not execute the action if checking 2FA status fails", async () => {
+  mocks.status.mockRejectedValueOnce(new Error("offline"));
+  setup();
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось выполнить");
+  expect(mocks.save).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("Название")).toHaveProperty("value", "Docs");
+});
+
+it("retains details and retries a failed custom action without 2FA", async () => {
+  mocks.status.mockResolvedValue(false);
+  const action = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: false, message: "Failed" })
+    .mockResolvedValueOnce({ ok: true, message: "Saved" });
+  const onSuccess = vi.fn();
+  render(
+    <CriticalForm action={action} onSuccess={onSuccess}>
+      <input name="name" defaultValue="Docs" />
+      <button type="submit">Save</button>
     </CriticalForm>,
   );
-  await Promise.resolve();
-  expect(screen.queryByText(/Для сохранения нужна 2FA/)).toBeNull();
-  view.unmount();
+  fireEvent.click(screen.getByText("Save"));
+  await screen.findByRole("alert");
+  expect(onSuccess).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("Save"));
+  await screen.findByText("Saved");
+  expect(onSuccess).toHaveBeenCalledTimes(1);
+  expect(action.mock.calls[1]?.[0].get("name")).toBe("Docs");
 });

@@ -172,7 +172,12 @@ export function Select({
         </BaseSelect.Icon>
       </BaseSelect.Trigger>
       <BaseSelect.Portal container={portalContainer}>
-        <BaseSelect.Positioner className="pd-select-positioner" sideOffset={6}>
+        <BaseSelect.Positioner
+          className="pd-select-positioner"
+          align="start"
+          alignItemWithTrigger={false}
+          sideOffset={6}
+        >
           <BaseSelect.Popup className="pd-select-popup">
             {options.map((option) => (
               <BaseSelect.Item className="pd-select-item" key={option.value} value={option.value}>

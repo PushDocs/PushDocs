@@ -42,7 +42,7 @@ it("checks the repository before exposing import settings, fills defaults, prese
     connectionId: "c",
     locator: "https://git.example/docs",
   });
-  await screen.findByRole("link", { name: "Настроить в профиле" });
+  expect(screen.queryByRole("link", { name: "Настроить в профиле" })).toBeNull();
   expect(mocks.save).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText("Другой репозиторий"));
   expect(screen.getByLabelText("Адрес репозитория")).toHaveProperty(

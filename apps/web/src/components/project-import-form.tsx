@@ -17,7 +17,6 @@ export function ProjectImportForm({
   const [error, setError] = useState("");
   return inspection ? (
     <CriticalForm
-      warnBefore
       kind="createProject"
       className="project-form project-import-form"
       description={`Импортировать проект: ${inspection.name}`}

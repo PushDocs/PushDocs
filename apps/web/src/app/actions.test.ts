@@ -581,16 +581,25 @@ describe("two-factor actions", () => {
       expect(method).not.toHaveBeenCalled();
   });
 
-  it("does not exempt the legacy owner from critical actions", async () => {
+  it("allows critical actions without setting up 2FA when it is not configured", async () => {
     mocks.repo.getSecurityUser.mockResolvedValue({
       id: "user",
       totp_secret: null,
       legacy_password_login: true,
     });
-    expect(await criticalSettingsAction("createProject", form({}))).toEqual({
-      error: "Сначала подключите 2FA в настройках профиля.",
+    expect(
+      await criticalSettingsAction(
+        "manageMember",
+        form({ projectId, userId: connectionId, role: "editor" }),
+      ),
+    ).toEqual({});
+    expect(mocks.repo.consumeTotp).not.toHaveBeenCalled();
+    expect(mocks.repo.manageMember).toHaveBeenCalledWith({
+      actorId: "user",
+      projectId,
+      userId: connectionId,
+      role: "editor",
     });
-    expect(mocks.app.createProject).not.toHaveBeenCalled();
   });
 
   it("requires both password and 2FA to change the password", async () => {
@@ -1525,4 +1534,15 @@ it("rejects repository inspection when the connection disappears", async () => {
   await expect(inspectProjectRepository({ connectionId, locator: "group/docs" })).rejects.toThrow(
     "Подключение не найдено",
   );
+});
+
+it("does not bypass verification when the security user no longer exists", async () => {
+  mocks.repo.getSecurityUser.mockResolvedValue(undefined);
+  expect(
+    await criticalSettingsAction(
+      "manageMember",
+      form({ projectId, userId: connectionId, role: "remove" }),
+    ),
+  ).toEqual({ error: "Пользователь не найден. Войдите снова." });
+  expect(mocks.repo.manageMember).not.toHaveBeenCalled();
 });
