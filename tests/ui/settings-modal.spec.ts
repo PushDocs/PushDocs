@@ -23,29 +23,37 @@ test("search modal keeps maximum size across modes and results, highlights match
   expect(bounds).not.toBeNull();
   expect(bounds?.height).toBe((page.viewportSize()?.height ?? 0) - 40);
   expect(bounds?.width).toBe(Math.min(1200, (page.viewportSize()?.width ?? 0) - 40));
-  const search = page.getByRole("combobox", { name: "Поиск файлов" });
-  await page.getByRole("button", { name: "Текст статей" }).click();
+  const search = page.getByRole("searchbox", { name: "Поиск файлов" });
+  await page.getByRole("button", { name: "По тексту" }).click();
   expect(await dialog.boundingBox()).toEqual(bounds);
   await search.fill("test");
-  await expect(page.getByRole("option")).toHaveCount(30);
+  await expect(page.getByRole("listitem")).toHaveCount(30);
   expect(await dialog.boundingBox()).toEqual(bounds);
-  const marks = page.getByRole("option").first().locator("mark");
+  const marks = page.getByRole("listitem").first().locator("mark");
   await expect(marks).toHaveText(["test", "TEST"]);
   expect(await marks.first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
     "rgb(255, 240, 163)",
   );
-  const results = page.getByRole("listbox");
+  const results = page.locator(".quick-open-results");
   expect(await results.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("search-highlighted-results.png") });
   await results.evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
   expect(await results.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(results.locator('.selected, [aria-selected="true"]')).toHaveCount(0);
+  await expect(dialog.getByText(/Поиск в импортированных статьях/)).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Закрыть", exact: true })).toHaveText("");
   await search.fill("no matches");
   await expect(page.getByText("Совпадений в статьях не найдено.")).toBeVisible();
   expect(await dialog.boundingBox()).toEqual(bounds);
-  await page.getByRole("button", { name: "Имя или название" }).click();
+  await page.getByRole("button", { name: "По названию" }).click();
   expect(await dialog.boundingBox()).toEqual(bounds);
+  await search.fill("docs");
+  await expect(page.getByRole("listitem")).toHaveCount(0);
+  await search.fill("article");
+  await expect(page.getByRole("listitem")).toHaveCount(30);
+  await expect(results.locator("mark")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("search-empty-fixed-size.png") });
 });
 
@@ -403,4 +411,173 @@ test("unread badge updates live, clears when opened and remembers reads across r
   await event(page, "comments.read");
   await expect(button.locator(".wb-comment-count")).toHaveCount(0);
   await second.close();
+});
+
+test("submission opens from the branch toolbar and blocks duplicate sends while pending", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`${baseURL}/?submit`);
+  const trigger = page.getByRole("button", { name: "Отправить изменения", exact: true });
+  const edit = page.getByRole("link", { name: "Редактировать ветку" });
+  expect(await trigger.evaluate((element) => element.nextElementSibling?.textContent)).toBe(
+    "Редактировать ветку",
+  );
+  await expect(edit).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Отправить изменения" });
+  await expect(dialog).toBeVisible();
+  const bounds = await dialog.boundingBox();
+  expect(bounds?.x).toBeGreaterThanOrEqual(0);
+  expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(
+    page.viewportSize()?.width ?? 0,
+  );
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page
+    .getByRole("textbox", { name: "Название MR и сообщение коммита" })
+    .fill("Update documentation");
+  await page.screenshot({ path: testInfo.outputPath("send-changes-dialog.png") });
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = page.waitForRequest("**/fixture-submit");
+  await page.route("**/fixture-submit", async (route) => {
+    await released;
+    await route.fulfill({ status: 204 });
+  });
+  await page.getByRole("button", { name: "Отправить и создать MR" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    projectId: "project",
+    changeSetId: "12345678-rest",
+    branch: "stable",
+    createReview: "on",
+    newBranch: "docs/update-12345678",
+    message: "Update documentation",
+  });
+  await expect(page.getByRole("button", { name: "Отправляем изменения…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Закрыть", exact: true })).toBeDisabled();
+  release();
+  await expect(page.getByRole("button", { name: "Отправить и создать MR" })).toBeEnabled();
+});
+
+test("failed submission can be retried from the modal without entering another commit message", async ({
+  page,
+}) => {
+  await page.goto(`${baseURL}/?submit&failed`);
+  await page.getByRole("button", { name: "Отправить изменения", exact: true }).click();
+  const retry = page.getByRole("button", { name: "Проверить результат и повторить" });
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/fixture-retry", async (route) => {
+    await released;
+    await route.fulfill({ status: 204 });
+  });
+  const request = page.waitForRequest("**/fixture-retry");
+  await retry.click();
+  expect((await request).postDataJSON()).toMatchObject({
+    projectId: "project",
+    changeSetId: "12345678-rest",
+    message: "",
+  });
+  await expect(retry).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Закрыть", exact: true })).toBeDisabled();
+  release();
+  await expect(retry).toBeEnabled();
+  await page.getByRole("button", { name: "Закрыть", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("media modal keeps maximum height and packs image actions into its card's bottom right corner", async ({
+  page,
+}, testInfo) => {
+  const paths = [
+    "static/favicon.svg",
+    "staticLocalized/ru/img/forms/a-long-image-name-that-wraps-over-several-lines.png",
+    "other/image.png",
+  ];
+  const assets = paths.map((path) => ({
+    path,
+    url: `/${path}`,
+    canDelete: true,
+    status: "clean",
+    size: null,
+    usages: [],
+  }));
+  await page.route("**/api/projects/p/assets?*", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="purple"/></svg>',
+    }),
+  );
+  const commands: Array<{ action: string; path: string; revision: number }> = [];
+  await page.route("**/api/projects/p/media*", (route) => {
+    if (route.request().method() === "POST") {
+      const command = route.request().postDataJSON();
+      commands.push(command);
+      const asset = assets.find((asset) => asset.path === command.path);
+      if (asset) asset.status = command.action === "delete" ? "delete" : "clean";
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({
+      json: { assets, revision: 7, role: "editor", status: "open", locale: "ru" },
+    });
+  });
+  await page.goto(`${baseURL}/?media`);
+  const dialog = page.getByRole("dialog", { name: "Вложения" });
+  await expect(page.locator(".media-card")).toHaveCount(3);
+  const bounds = await dialog.boundingBox();
+  expect(bounds?.height).toBe((page.viewportSize()?.height ?? 0) - 40);
+  const search = page.getByRole("searchbox", { name: "Найти файл" });
+  await search.fill("no-match");
+  await expect(page.locator(".media-card")).toHaveCount(0);
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await search.fill("favicon");
+  await expect(page.locator(".media-card")).toHaveCount(1);
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await search.fill("");
+  for (const card of await page.locator(".media-card").all()) {
+    const actions = card.locator(".media-actions");
+    const icons = await actions.locator(":scope > *").all();
+    expect(icons).toHaveLength(3);
+    const boxes = await Promise.all(icons.map((icon) => icon.boundingBox()));
+    expect(new Set(boxes.map((box) => box?.y)).size).toBe(1);
+    for (const icon of icons) {
+      await expect(icon).toHaveText("");
+      await expect(icon.locator("svg")).toHaveCount(1);
+    }
+    const cardBox = await card.boundingBox();
+    const actionBox = await actions.boundingBox();
+    expect(
+      Math.abs(
+        (cardBox?.y ?? 0) +
+          (cardBox?.height ?? 0) -
+          (actionBox?.y ?? 0) -
+          (actionBox?.height ?? 0) -
+          13,
+      ),
+    ).toBeLessThan(2);
+    expect(boxes.at(-1)?.x).toBeGreaterThan((cardBox?.x ?? 0) + (cardBox?.width ?? 0) / 2);
+  }
+  await page.screenshot({ path: testInfo.outputPath("media-icon-actions.png") });
+  await page.getByRole("button", { name: "Удалить static/favicon.svg", exact: true }).click();
+  expect(commands).toHaveLength(0);
+  await page.getByRole("button", { name: "Подтвердить удаление" }).click();
+  await expect(
+    page.getByRole("button", { name: "Отменить удаление static/favicon.svg", exact: true }),
+  ).toBeVisible();
+  expect(commands[0]).toMatchObject({ action: "delete", path: "static/favicon.svg", revision: 7 });
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await page
+    .getByRole("button", { name: "Отменить удаление static/favicon.svg", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Удалить static/favicon.svg", exact: true }),
+  ).toBeVisible();
+  expect(commands[1]).toMatchObject({ action: "revert", path: "static/favicon.svg", revision: 7 });
 });

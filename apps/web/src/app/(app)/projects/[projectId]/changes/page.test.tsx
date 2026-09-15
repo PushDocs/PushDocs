@@ -68,7 +68,10 @@ it("uses the selected branch's actual before/after content and distinguishes rep
   expect(html).toContain('aria-label="static/existing.png M"');
   expect(html).toContain('aria-label="static/new.png A"');
   expect(html).not.toContain("static/other.png");
-  expect(html).toContain("Отправить в MR");
+  expect(html).toContain("Отправить изменения");
+  expect(html.indexOf("Отправить изменения")).toBeLessThan(html.indexOf("Редактировать ветку"));
+  expect(html).not.toContain('class="submit-panel"');
+  expect(html).not.toContain('name="message"');
   expect(html).toContain("Открыть MR: Update docs");
   expect(html).toContain('<li class="active" aria-current="step"><span>1</span>Правки</li>');
 });

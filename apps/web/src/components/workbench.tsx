@@ -15,7 +15,6 @@ import {
   MoreHorizontal,
   Plus,
   Puzzle,
-  Save,
   Search,
   Table2,
   Trash2,
@@ -1514,13 +1513,6 @@ export function Workbench({
                         <MoreHorizontal size={18} />
                       </summary>
                       <div className="wb-popover">
-                        <button
-                          type="button"
-                          disabled={readOnly || busy || !dirty}
-                          onClick={() => void save()}
-                        >
-                          <Save size={16} /> Сохранить
-                        </button>
                         <button type="button" disabled={readOnly} onClick={() => setDialog("move")}>
                           Перенести
                         </button>
@@ -1874,10 +1866,12 @@ export function Workbench({
               </h2>
               <button
                 type="button"
+                className="wb-modal-close"
+                aria-label="Закрыть"
                 disabled={mediaBusy || (dialog === "branch" && busy)}
                 onClick={() => setDialog(null)}
               >
-                Закрыть
+                <X aria-hidden size={18} />
               </button>
             </header>
             {dialog === "deleteResult" ? (
@@ -1908,7 +1902,7 @@ export function Workbench({
               />
             ) : dialog === "search" ? (
               <QuickOpen
-                key={String(searchContent)}
+                key={`${projectId}:${branch}:${searchContent}`}
                 paths={explorerPaths}
                 files={state.files.map((file) =>
                   file.path === selected ? { ...file, content: text } : file,

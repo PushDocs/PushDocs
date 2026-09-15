@@ -140,3 +140,42 @@ it("uses the open article locale when no locale is explicitly chosen", async () 
   );
   expect((await response.json()).locale).toBe("en");
 });
+
+it.each(["static/favicon.svg", "staticLocalized/ru/img/forms/filter.gif", "other/image.png"])(
+  "deletes and restores existing media outside the upload directory: %s",
+  async (path) => {
+    const current = await mocks.context();
+    current.state.branch.repository_paths.push(path);
+    const request = (action: string) =>
+      new Request("https://cms.test/api", {
+        method: "POST",
+        headers: { Origin: "https://cms.test" },
+        body: JSON.stringify({ branch: "main", path, action, revision: 2 }),
+      });
+    expect((await POST(request("delete"), context)).status).toBe(200);
+    expect(mocks.stage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ files: [{ path, content: null }], expectedRevision: 2 }),
+    );
+    expect((await POST(request("revert"), context)).status).toBe(200);
+    expect(mocks.stage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ files: [{ path, revert: true }] }),
+    );
+  },
+);
+
+it("deletes current branch uploads but rejects uploads from another branch", async () => {
+  mocks.attachments.mockResolvedValue([
+    { change_set_id: "change", repository_path: "other/new.png" },
+    { change_set_id: "another", repository_path: "other/private.png" },
+  ]);
+  const request = (path: string) =>
+    new Request("https://cms.test/api", {
+      method: "POST",
+      headers: { Origin: "https://cms.test" },
+      body: JSON.stringify({ branch: "main", path, action: "delete", revision: 2 }),
+    });
+  expect((await POST(request("other/new.png"), context)).status).toBe(200);
+  const calls = mocks.stage.mock.calls.length;
+  expect((await POST(request("other/private.png"), context)).status).toBe(400);
+  expect(mocks.stage).toHaveBeenCalledTimes(calls);
+});

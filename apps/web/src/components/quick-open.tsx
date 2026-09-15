@@ -39,7 +39,7 @@ export function searchFiles(
         ? /\.mdx?$/i.test(path)
           ? (file?.content ?? "")
           : ""
-        : `${path}\n${file?.title ?? ""}`;
+        : (path.split("/").at(-1) ?? path);
       const index = haystack.toLocaleLowerCase().indexOf(needle);
       if ((content && !needle) || index < 0) return [];
       const line = content ? haystack.slice(0, index).split("\n").length : undefined;
@@ -77,7 +77,6 @@ export function QuickOpen({
 }) {
   const [query, setQuery] = useState("");
   const [content, setContent] = useState(initialContent);
-  const [selected, setSelected] = useState(0);
   const resultId = useId();
   const list = useRef<HTMLDivElement>(null);
   const localResults = useMemo(
@@ -87,21 +86,28 @@ export function QuickOpen({
   const hasUnloadedArticles = files.some(
     (file) => file.loaded === false && /\.mdx?$/i.test(file.path) && file.status !== "delete",
   );
+  const searchCallback = useRef(onSearchContent);
+  useEffect(() => {
+    searchCallback.current = onSearchContent;
+  }, [onSearchContent]);
+  const remoteSearch = hasUnloadedArticles && Boolean(onSearchContent);
   const [remoteResults, setRemoteResults] = useState<FileSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   useEffect(() => {
-    if (!content || !query.trim() || !hasUnloadedArticles || !onSearchContent) {
+    if (!content || !query.trim() || !remoteSearch) {
       setRemoteResults([]);
       setSearching(false);
       setSearchError("");
       return;
     }
+    setRemoteResults([]);
+    setSearching(true);
+    setSearchError("");
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      setSearching(true);
-      setSearchError("");
-      void onSearchContent(query, controller.signal)
+      void searchCallback
+        .current?.(query.trim(), controller.signal)
         .then((results) => {
           if (!controller.signal.aborted) {
             setRemoteResults(results);
@@ -122,13 +128,13 @@ export function QuickOpen({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [content, query, hasUnloadedArticles, onSearchContent]);
-  const results = content && hasUnloadedArticles ? remoteResults : localResults;
-  useEffect(() => {
-    list.current
-      ?.querySelector(`[data-index="${selected}"]`)
-      ?.scrollIntoView?.({ block: "nearest" });
-  }, [selected]);
+  }, [content, query, remoteSearch]);
+  const results = content && remoteSearch ? remoteResults : localResults;
+  const focusResult = (index: number) => {
+    const button = list.current?.querySelector<HTMLButtonElement>(`[data-index="${index}"]`);
+    button?.focus();
+    button?.scrollIntoView?.({ block: "nearest" });
+  };
   return (
     <div className="quick-open">
       <div className="quick-open-modes">
@@ -137,92 +143,84 @@ export function QuickOpen({
           aria-pressed={!content}
           onClick={() => {
             setContent(false);
-            setSelected(0);
           }}
         >
-          Имя или название
+          По названию
         </button>
         <button
           type="button"
           aria-pressed={content}
           onClick={() => {
             setContent(true);
-            setSelected(0);
           }}
         >
-          Текст статей
+          По тексту
         </button>
       </div>
       <input
         aria-label="Поиск файлов"
-        role="combobox"
-        aria-expanded="true"
+        type="search"
         aria-controls={resultId}
-        aria-activedescendant={results[selected] ? `${resultId}-${selected}` : undefined}
-        aria-autocomplete="list"
-        placeholder={content ? "Фраза из статьи…" : "Название статьи или имя файла…"}
+        placeholder={content ? "Фраза из статьи…" : "Имя файла…"}
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
-          setSelected(0);
         }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            setSelected((current) =>
-              Math.max(
-                0,
-                Math.min(results.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)),
-              ),
-            );
+            focusResult(event.key === "ArrowDown" ? 0 : results.length - 1);
           }
-          if (event.key === "Enter" && results[selected]) {
+          if (event.key === "Enter" && results[0]) {
             event.preventDefault();
-            onOpen(results[selected].path, results[selected].line);
+            onOpen(results[0].path, results[0].line);
           }
         }}
       />
-      {content ? (
-        <p className="muted">
-          Поиск в импортированных статьях Markdown и MDX текущей ветки. Код и другие файлы не входят
-          в поиск.
-        </p>
-      ) : null}
-      <div
-        ref={list}
-        id={resultId}
-        role="listbox"
-        className="quick-open-results"
-        aria-label="Результаты поиска"
-      >
-        {results.map((result, index) => (
-          <button
-            type="button"
-            role="option"
-            aria-selected={index === selected}
-            id={`${resultId}-${index}`}
-            data-index={index}
-            key={result.path}
-            className={index === selected ? "selected" : ""}
-            onClick={() => onOpen(result.path, result.line)}
-          >
-            <strong>
-              <HighlightMatches
-                text={result.title || result.path.split("/").at(-1) || result.path}
-                query={query}
-              />
-            </strong>
-            <small>
-              <HighlightMatches text={result.path} query={query} />
-              {result.line ? `:${result.line}` : ""}
-            </small>
-            {result.excerpt ? (
-              <span>
-                <HighlightMatches text={result.excerpt} query={query} />
-              </span>
-            ) : null}
-          </button>
-        ))}
+      <div ref={list} className="quick-open-results">
+        <ul id={resultId} aria-label="Результаты поиска">
+          {results.map((result, index) => (
+            <li key={result.path}>
+              <button
+                type="button"
+                id={`${resultId}-${index}`}
+                data-index={index}
+                onClick={() => onOpen(result.path, result.line)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    const next = index + (event.key === "ArrowDown" ? 1 : -1);
+                    if (next < 0)
+                      list.current?.parentElement
+                        ?.querySelector<HTMLInputElement>("input")
+                        ?.focus();
+                    else focusResult(Math.min(results.length - 1, next));
+                  }
+                }}
+              >
+                <strong>
+                  {content ? (
+                    <HighlightMatches
+                      text={result.title || result.path.split("/").at(-1) || result.path}
+                      query={query}
+                    />
+                  ) : (
+                    result.path.split("/").at(-1)
+                  )}
+                </strong>
+                <small>
+                  {content ? <HighlightMatches text={result.path} query={query} /> : result.path}
+                  {result.line ? `:${result.line}` : ""}
+                </small>
+                {result.excerpt ? (
+                  <span>
+                    <HighlightMatches text={result.excerpt} query={query} />
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ul>
         {searching ? <p role="status">Ищем по тексту статей…</p> : null}
         {searchError ? <p role="alert">{searchError}</p> : null}
         {!searching && !searchError && !results.length ? (

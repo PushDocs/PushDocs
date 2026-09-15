@@ -1,4 +1,4 @@
-import { assetLocation, isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
+import { isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { apiError, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
@@ -57,20 +57,22 @@ export async function POST(request: Request, context: Context) {
     assertSameOrigin(request);
     const { projectId } = await context.params;
     const input = command.parse(await readJsonBody(request));
-    const { config, store, user } = await localWorkbenchContext(projectId, input.branch);
+    const { state, store, user } = await localWorkbenchContext(projectId, input.branch);
     await store.requireProjectAccess(user.id, projectId, "document:write");
     const filePath = safePath(input.path);
-    const location = assetLocation(
-      config,
-      input.locale ?? config.defaultLocale,
-      input.document,
-      "placeholder",
-    );
-    if (
-      !isMediaFile(filePath) ||
-      !filePath.startsWith(location.path.slice(0, location.path.lastIndexOf("/") + 1))
-    )
-      throw new Error("Файл находится вне настроенного каталога медиа");
+    if (!isMediaFile(filePath)) throw new Error("Файл не относится к медиатеке");
+    const known =
+      state.branch.repository_paths.includes(filePath) ||
+      state.files.some((file) => file.path === filePath);
+    if (!known) {
+      const uploads = await store.listAttachments(projectId);
+      if (
+        !uploads.some(
+          (file) => file.change_set_id === state.changeSet?.id && file.repository_path === filePath,
+        )
+      )
+        throw new Error("Файл не найден в текущей ветке");
+    }
     await store.stageFiles({
       projectId,
       branch: input.branch,

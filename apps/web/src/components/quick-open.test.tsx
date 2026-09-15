@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QuickOpen, searchFiles } from "./quick-open";
 
@@ -40,12 +40,14 @@ it.each([
     expect(Array.from(container.querySelectorAll("mark"), (mark) => mark.textContent)).toEqual(
       matches,
     );
-    expect(screen.getByRole("option").textContent).toContain(text);
+    expect(within(screen.getByRole("list")).getByRole("button").textContent).toContain(text);
     expect(container.querySelector("img")).toBeNull();
   },
 );
-it("finds filenames and article titles, including unloaded files, without deleted drafts", () => {
-  expect(searchFiles(paths, files, "БЫСТРЫЙ", false).map((file) => file.path)).toEqual([
+it("finds only file basenames, excluding folders, article titles and deleted drafts", () => {
+  expect(searchFiles(paths, files, "БЫСТРЫЙ", false)).toEqual([]);
+  expect(searchFiles(paths, files, "docs", false)).toEqual([]);
+  expect(searchFiles(paths, files, "START", false).map((file) => file.path)).toEqual([
     "docs/start.mdx",
   ]);
   expect(searchFiles(paths, files, "logo", false).map((file) => file.path)).toEqual([
@@ -68,7 +70,9 @@ it("opens the keyboard-selected search result at its matching line", () => {
   const input = screen.getByLabelText("Поиск файлов");
   fireEvent.change(input, { target: { value: "письмо" } });
   fireEvent.keyDown(input, { key: "ArrowDown" });
-  fireEvent.keyDown(input, { key: "Enter" });
+  expect(document.activeElement).toBe(within(screen.getByRole("list")).getAllByRole("button")[0]);
+  fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
+  fireEvent.click(document.activeElement as HTMLElement);
   expect(open).toHaveBeenCalledWith("docs/archive.md", 2);
   fireEvent.change(input, { target: { value: "несуществующий" } });
   fireEvent.keyDown(input, { key: "Enter" });
@@ -103,7 +107,9 @@ it("searches unloaded article bodies on the server and opens the returned line",
       await vi.advanceTimersByTimeAsync(180);
     });
     expect(remote).toHaveBeenCalledWith("искомая", expect.any(AbortSignal));
-    expect(screen.getByRole("option").textContent).toContain("искомая фраза");
+    expect(within(screen.getByRole("list")).getByRole("button").textContent).toContain(
+      "искомая фраза",
+    );
     expect(screen.getByText("искомая").tagName).toBe("MARK");
     fireEvent.keyDown(input, { key: "Enter" });
     expect(open).toHaveBeenCalledWith("docs/archive.md", 27);
@@ -151,12 +157,12 @@ it("switches search modes, opens clicked results and caps broad matches", () => 
   const input = screen.getByLabelText("Поиск файлов");
   fireEvent.change(input, { target: { value: "file" } });
   expect(screen.getByText("Первые 100 результатов. Уточните запрос.")).toBeTruthy();
-  fireEvent.click(screen.getAllByRole("option")[1] as HTMLElement);
+  fireEvent.click(within(screen.getByRole("list")).getAllByRole("button")[1] as HTMLElement);
   expect(open).toHaveBeenCalledWith("docs/file-1.md", undefined);
-  fireEvent.click(screen.getByRole("button", { name: "Текст статей" }));
+  fireEvent.click(screen.getByRole("button", { name: "По тексту" }));
   expect(input.getAttribute("placeholder")).toContain("Фраза");
-  fireEvent.click(screen.getByRole("button", { name: "Имя или название" }));
-  expect(input.getAttribute("placeholder")).toContain("Название");
+  fireEvent.click(screen.getByRole("button", { name: "По названию" }));
+  expect(input.getAttribute("placeholder")).toContain("Имя файла");
   fireEvent.keyDown(input, { key: "ArrowUp" });
 });
 
@@ -188,8 +194,8 @@ it("falls back to a path basename and exposes pending remote search", async () =
     );
     const input = screen.getByLabelText("Поиск файлов");
     fireEvent.change(input, { target: { value: "logo" } });
-    expect(screen.getByRole("option").textContent).toContain("logo.png");
-    fireEvent.click(screen.getByRole("button", { name: "Текст статей" }));
+    expect(within(screen.getByRole("list")).getByRole("button").textContent).toContain("logo.png");
+    fireEvent.click(screen.getByRole("button", { name: "По тексту" }));
     fireEvent.change(input, { target: { value: "remote" } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(180);
@@ -200,4 +206,54 @@ it("falls back to a path basename and exposes pending remote search", async () =
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("does not restart a completed search when the parent recreates its callback", async () => {
+  vi.useFakeTimers();
+  try {
+    const remote = vi.fn().mockResolvedValue([]);
+    const data = {
+      paths,
+      files: files.map((file) => ({ ...file, loaded: false })),
+      onOpen: vi.fn(),
+      initialContent: true,
+    };
+    const view = render(
+      <QuickOpen {...data} onSearchContent={(query, signal) => remote(query, signal)} />,
+    );
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "missing" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(remote).toHaveBeenCalledTimes(1);
+    for (let index = 0; index < 3; index += 1) {
+      view.rerender(
+        <QuickOpen {...data} onSearchContent={(query, signal) => remote(query, signal)} />,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+    }
+    expect(remote).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("shows file names without highlights or selected rows, then opens a clicked result immediately", () => {
+  const open = vi.fn();
+  const { container } = render(<QuickOpen paths={paths} files={files} onOpen={open} />);
+  const list = screen.getByRole("list", { name: "Результаты поиска" });
+  expect(list.querySelector('[aria-selected="true"], .selected')).toBeNull();
+  fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "start" } });
+  expect(within(list).getByRole("button").querySelector("strong")?.textContent).toBe("start.mdx");
+  expect(container.querySelector("mark")).toBeNull();
+  fireEvent.click(within(list).getByRole("button"));
+  expect(open).toHaveBeenCalledWith("docs/start.mdx", undefined);
+  fireEvent.click(screen.getByRole("button", { name: "По тексту" }));
+  fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "письмо" } });
+  expect(list.querySelector('[aria-selected="true"], .selected')).toBeNull();
+  expect(container.querySelector("mark")).not.toBeNull();
+  expect(screen.queryByText(/Поиск в импортированных статьях/)).toBeNull();
 });

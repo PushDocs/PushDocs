@@ -1,7 +1,11 @@
 import { AlertTriangle, Check, FileText, GitBranch } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { resolveConflictAction, retryChangeSetSubmissionAction } from "@/app/actions";
+import {
+  resolveConflictAction,
+  retryChangeSetSubmissionAction,
+  submitChangeSetAction,
+} from "@/app/actions";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
 import { ProjectContext } from "@/components/project-context";
@@ -126,6 +130,40 @@ export default async function ChangesPage({
             Открыть {reviewLabel}: {review.title}
           </Link>
         ) : null}
+        {fileCount > 0 ? (
+          <SubmitChanges
+            action={submitChangeSetAction}
+            retryAction={
+              submission?.status === "failed" && access.role !== "reader"
+                ? retryChangeSetSubmissionAction
+                : undefined
+            }
+            projectId={projectId}
+            changeSetId={changeSetId ?? ""}
+            branch={branch}
+            defaultBranch={project.defaultBranch}
+            reviewTitle={review?.title}
+            reviewLabel={reviewLabel}
+            submitting={changeSetStatus === "submitting"}
+            disabled={
+              access.role === "reader" ||
+              !changeSetId ||
+              changeSetStatus === "submitting" ||
+              conflicts.length > 0
+            }
+          >
+            {submission && submission.status !== "done" ? (
+              <div role="status" className="panel-note">
+                <p>
+                  {submission.status === "failed"
+                    ? "Отправка остановлена. Результат записи в Git будет проверен при повторе."
+                    : "Отправка в очереди или выполняется. Черновики сохранены."}
+                </p>
+                {submission.last_error ? <p>{submission.last_error}</p> : null}
+              </div>
+            ) : null}
+          </SubmitChanges>
+        ) : null}
         <Link
           className="pd-button pd-button--secondary"
           href={`/projects/${projectId}/documents?${new URLSearchParams({ branch })}`}
@@ -192,43 +230,6 @@ export default async function ChangesPage({
               })),
             ]}
           />
-
-          <SubmitChanges
-            projectId={projectId}
-            changeSetId={changeSetId ?? ""}
-            branch={branch}
-            defaultBranch={project.defaultBranch}
-            reviewTitle={review?.title}
-            reviewLabel={reviewLabel}
-            submitting={changeSetStatus === "submitting"}
-            disabled={
-              access.role === "reader" ||
-              !changeSetId ||
-              changeSetStatus === "submitting" ||
-              conflicts.length > 0
-            }
-          >
-            {submission && submission.status !== "done" ? (
-              <div role="status" className="panel-note">
-                <p>
-                  {submission.status === "failed"
-                    ? "Отправка остановлена. Результат записи в Git будет проверен при повторе."
-                    : "Отправка в очереди или выполняется. Черновики сохранены."}
-                </p>
-                {submission.last_error ? <p>{submission.last_error}</p> : null}
-                {submission.status === "failed" && access.role !== "reader" ? (
-                  <button
-                    className="pd-button"
-                    type="submit"
-                    formAction={retryChangeSetSubmissionAction}
-                    formNoValidate
-                  >
-                    Проверить результат и повторить
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-          </SubmitChanges>
         </div>
       )}
       {conflicts.length > 0 ? (

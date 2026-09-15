@@ -34,17 +34,17 @@ it("provides insertable links beyond the upload directory, including localized m
       expect.objectContaining({
         path: "staticLocalized/ru/img/forms/filter.gif",
         url: "pathname:///img/forms/filter.gif",
-        canDelete: false,
+        canDelete: true,
       }),
       expect.objectContaining({
         path: "static/favicon.svg",
         url: "/favicon.svg",
-        canDelete: false,
+        canDelete: true,
       }),
       expect.objectContaining({
         path: "other/архив с данными.zip",
         url: "../../other/%D0%B0%D1%80%D1%85%D0%B8%D0%B2%20%D1%81%20%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D0%BC%D0%B8.zip",
-        canDelete: false,
+        canDelete: true,
       }),
     ]),
   );
@@ -69,7 +69,7 @@ it("combines repository media and uploads with branch-local deletions and possib
     {
       path: "other/archive.zip",
       url: "../other/archive.zip",
-      canDelete: false,
+      canDelete: true,
       status: "clean",
       size: null,
       usages: [],

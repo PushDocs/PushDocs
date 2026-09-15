@@ -27,7 +27,7 @@ beforeEach(() => {
   );
 });
 afterEach(cleanup);
-it("inserts existing media outside the upload directory without exposing an unsupported deletion", async () => {
+it("inserts and allows deleting existing media outside the upload directory", async () => {
   const insert = vi.fn();
   vi.mocked(fetch).mockResolvedValueOnce(
     Response.json({
@@ -37,7 +37,7 @@ it("inserts existing media outside the upload directory without exposing an unsu
           ...state.assets[0],
           path: "staticLocalized/ru/img/forms/filter.gif",
           url: "pathname:///img/forms/filter.gif",
-          canDelete: false,
+          canDelete: true,
         },
       ],
     }),
@@ -49,7 +49,12 @@ it("inserts existing media outside the upload directory without exposing an unsu
   });
   fireEvent.click(screen.getByRole("button", { name: "Вставить ссылку" }));
   expect(insert).toHaveBeenCalledWith("pathname:///img/forms/filter.gif");
-  expect(screen.queryByRole("button", { name: /Удалить/ })).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Удалить staticLocalized/ru/img/forms/filter.gif" }),
+  );
+  expect(
+    screen.getByRole("heading", { name: "Удалить staticLocalized/ru/img/forms/filter.gif?" }),
+  ).toBeTruthy();
   expect(screen.queryByText("Вне каталога вложений")).toBeNull();
 });
 it("replaces the selected asset at its exact path regardless of the uploaded filename", async () => {

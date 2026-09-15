@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
@@ -11,6 +12,7 @@ import {
   ReviewReadiness,
 } from "../../apps/web/src/components/review-information";
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
+import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
 import { SearchableSelect, Select } from "../../packages/ui/src";
 import { CollaborationFixture } from "./collaboration-fixture";
@@ -135,6 +137,46 @@ function CommentsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("submit"))
+    return (
+      <main className="page changes-page">
+        <h1>Изменения в ветке</h1>
+        <div className="branch-git-actions">
+          <SubmitChanges
+            action={async (data) => {
+              const response = await fetch("/fixture-submit", {
+                method: "POST",
+                body: JSON.stringify(Object.fromEntries(data)),
+              });
+              if (!response.ok) throw new Error("Submission failed");
+            }}
+            retryAction={
+              new URLSearchParams(window.location.search).has("failed")
+                ? async (data) => {
+                    await fetch("/fixture-retry", {
+                      method: "POST",
+                      body: JSON.stringify(Object.fromEntries(data)),
+                    });
+                  }
+                : undefined
+            }
+            projectId="project"
+            changeSetId="12345678-rest"
+            branch="stable"
+            defaultBranch="stable"
+            disabled={false}
+            submitting={false}
+            reviewLabel="MR"
+          />
+          <a className="pd-button pd-button--secondary" href="#editor">
+            Редактировать ветку
+          </a>
+        </div>
+        <div className="changes-layout">
+          <DiffViewer before="Before" after="After" />
+        </div>
+      </main>
+    );
   if (new URLSearchParams(window.location.search).has("comments")) return <CommentsFixture />;
   if (new URLSearchParams(window.location.search).has("reviews")) {
     const details = {
@@ -199,7 +241,9 @@ function App() {
         <section className="wb-modal wb-search-modal" role="dialog" aria-label="Поиск файлов">
           <header>
             <h2>Поиск файлов</h2>
-            <button type="button">Закрыть</button>
+            <button type="button" className="wb-modal-close" aria-label="Закрыть">
+              <X aria-hidden size={18} />
+            </button>
           </header>
           <QuickOpen paths={files.map((file) => file.path)} files={files} onOpen={() => {}} />
         </section>
@@ -219,7 +263,9 @@ function App() {
         <section className="wb-modal wb-media-modal" role="dialog" aria-label="Вложения">
           <header>
             <h2>Вложения</h2>
-            <button type="button">Закрыть</button>
+            <button type="button" className="wb-modal-close" aria-label="Закрыть">
+              <X aria-hidden size={18} />
+            </button>
           </header>
           <MediaLibrary
             projectId="p"

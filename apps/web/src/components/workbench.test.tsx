@@ -983,7 +983,8 @@ it("opens document tabs and inserts a selected component immediately", async () 
   expect(screen.queryByRole("button", { name: "Вставить компонент" })).toBeNull();
   await click("Widget");
   expect(componentMenu.open).toBe(false);
-  await click("Сохранить");
+  expect(screen.queryByRole("button", { name: "Сохранить" })).toBeNull();
+  await tick();
   expect(state.files[0]?.content).toContain('<Widget title="Hi" />');
 });
 

@@ -25,7 +25,6 @@ export function FileComments({
   return (
     <section className="wb-comments">
       <h2>Комментарии PushDocs</h2>
-      <p className="muted">Хранятся в PushDocs и не отправляются в PR или MR.</p>
       {comments.map((comment) => (
         <article key={comment.id}>
           <strong>{comment.author_name}</strong>
@@ -55,8 +54,8 @@ export function FileComments({
         }}
       >
         <label>
-          Новый комментарий
           <textarea
+            aria-label="Новый комментарий"
             required
             maxLength={20000}
             value={body}

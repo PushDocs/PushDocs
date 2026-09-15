@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@pushdocs/ui";
-import { FileText, Upload } from "lucide-react";
+import { ExternalLink, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -369,31 +369,44 @@ export function MediaLibrary({
                   href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
                   target="_blank"
                   rel="noreferrer"
+                  className="media-icon-action"
+                  aria-label={`Открыть ${asset.path}`}
+                  title="Открыть"
                 >
-                  Открыть
+                  <ExternalLink aria-hidden size={16} />
                 </a>
                 {asset.url && onInsert && asset.status !== "delete" ? (
                   <Button
                     type="button"
                     disabled={busy || readOnly}
+                    className="media-icon-action"
+                    aria-label="Вставить ссылку"
+                    title="Вставить ссылку"
                     onClick={() => {
                       if (asset.url) onInsert(asset.url);
                     }}
                   >
-                    Вставить ссылку
+                    <Link2 aria-hidden size={16} />
                   </Button>
                 ) : null}
                 {asset.canDelete ? (
                   <Button
                     type="button"
                     disabled={readOnly || busy}
+                    className="media-icon-action"
+                    tone={asset.status === "delete" ? "secondary" : "danger"}
+                    title={asset.status === "delete" ? "Отменить удаление" : "Удалить"}
                     aria-label={`${asset.status === "delete" ? "Отменить удаление" : "Удалить"} ${asset.path}`}
                     onClick={() => {
                       if (asset.status === "delete") void mutate(asset, "revert");
                       else setSelected(asset);
                     }}
                   >
-                    {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
+                    {asset.status === "delete" ? (
+                      <Undo2 aria-hidden size={16} />
+                    ) : (
+                      <Trash2 aria-hidden size={16} />
+                    )}
                   </Button>
                 ) : null}
               </div>
