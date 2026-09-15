@@ -1247,6 +1247,20 @@ describe("reviews and checks", () => {
             url: "https://ci.test/1",
           },
         ],
+        details: {
+          headSha: "head-1",
+          readiness: { state: "blocked", reason: "not_approved" },
+          labels: [{ name: "docs", color: "#abcdef" }],
+          approvals: {
+            required: 2,
+            remaining: 1,
+            reviewers: [{ name: "Anna", state: "approved" }],
+          },
+          comments: [
+            { id: "note", author: "Anna", body: "Please fix", createdAt: "2026-09-15T09:00:00Z" },
+          ],
+          commentsComplete: true,
+        },
         externalId: "1",
         headSha: "head-1",
         sourceBranch: "docs/update",
@@ -1257,7 +1271,18 @@ describe("reviews and checks", () => {
       },
     ]);
     const review = (await repository.listChangeRequests(fixture.projectId))[0];
-    expect(review).toMatchObject({ external_id: "1", state: "open", title: "Update" });
+    expect(review).toMatchObject({
+      external_id: "1",
+      state: "open",
+      title: "Update",
+      details: {
+        readiness: { state: "blocked", reason: "not_approved" },
+        labels: [{ name: "docs", color: "#abcdef" }],
+        approvals: { remaining: 1 },
+        comments: [{ body: "Please fix" }],
+        commentsComplete: true,
+      },
+    });
     await expect(repository.listChangeRequests(fixture.projectId, "open")).resolves.toHaveLength(1);
     await expect(repository.listChecks(review?.id ?? "")).resolves.toEqual([
       expect.objectContaining({ conclusion: "success", external_id: "check-1", required: true }),
@@ -1283,6 +1308,14 @@ describe("reviews and checks", () => {
           url: null,
         },
       ],
+      details: {
+        headSha: "head-1",
+        readiness: { state: "ready" as const, reason: null },
+        labels: [],
+        approvals: null,
+        comments: [],
+        commentsComplete: true,
+      },
       externalId: "2",
       headSha: "head-1",
       sourceBranch: "docs",
@@ -1293,10 +1326,22 @@ describe("reviews and checks", () => {
     };
     await repository.replaceChangeRequests(fixture.projectId, [initial]);
     await repository.replaceChangeRequests(fixture.projectId, [
-      { ...initial, checks: [], headSha: "head-2", state: "merged", title: "New title" },
+      {
+        ...initial,
+        details: null,
+        checks: [],
+        headSha: "head-2",
+        state: "merged",
+        title: "New title",
+      },
     ]);
     const review = (await repository.listChangeRequests(fixture.projectId))[0];
-    expect(review).toMatchObject({ head_sha: "head-2", state: "merged", title: "New title" });
+    expect(review).toMatchObject({
+      details: null,
+      head_sha: "head-2",
+      state: "merged",
+      title: "New title",
+    });
     await expect(repository.listChecks(review?.id ?? "")).resolves.toEqual([]);
   });
 });
@@ -2829,4 +2874,119 @@ it("does not accept malformed operations, deleted documents or edits during subm
   await expect(
     repository.exchangeDocument({ ...input, epoch: opened.epoch, update: opened.update }),
   ).rejects.toThrow("приостановлено");
+});
+
+describe("per-user unread comments", () => {
+  it("excludes own messages, persists exact read receipts and keeps simultaneous new comments unread", async () => {
+    const fixture = await synchronizedProject();
+    const reader = await repository.createUser({
+      displayName: "Reader",
+      email: "reader@example.test",
+      passwordHash: "hash",
+    });
+    await database
+      .insertInto("project_memberships")
+      .values({ project_id: fixture.projectId, user_id: reader.id, role: "reader" })
+      .execute();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      documentPath: "docs/intro.md",
+      anchorQuote: null,
+    };
+    const first = await repository.createComment({
+      ...input,
+      body: "First",
+      userId: fixture.operatorId,
+    });
+    await repository.createComment({ ...input, body: "My message", userId: reader.id });
+    const foreign = await repository.createComment({
+      ...input,
+      documentPath: "docs/other.md",
+      body: "Other file",
+      userId: fixture.operatorId,
+    });
+    expect(
+      (
+        await repository.listCommentReadState(reader.id, fixture.projectId, "main", "docs/intro.md")
+      ).map((comment) => [comment.body, comment.unread]),
+    ).toEqual([
+      ["First", true],
+      ["My message", false],
+    ]);
+    const arrived = await repository.createComment({
+      ...input,
+      body: "Arrived during read",
+      userId: fixture.operatorId,
+    });
+    const readInput = {
+      userId: reader.id,
+      projectId: fixture.projectId,
+      branch: "main",
+      documentPath: "docs/intro.md",
+      commentIds: [first.id, foreign.id],
+    };
+    expect(await repository.markCommentsRead(readInput)).toEqual([first.id]);
+    expect(await repository.markCommentsRead(readInput)).toEqual([first.id]);
+    const state = await new PushDocsRepository(database).listCommentReadState(
+      reader.id,
+      fixture.projectId,
+      "main",
+      "docs/intro.md",
+    );
+    expect(state.find((comment) => comment.id === first.id)?.unread).toBe(false);
+    expect(state.find((comment) => comment.id === arrived.id)?.unread).toBe(true);
+    expect(
+      (
+        await repository.listCommentReadState(reader.id, fixture.projectId, "main", "docs/other.md")
+      )[0]?.unread,
+    ).toBe(true);
+    expect(
+      (
+        await repository.listCommentReadState(
+          fixture.operatorId,
+          fixture.projectId,
+          "main",
+          "docs/intro.md",
+        )
+      ).find((comment) => comment.body === "My message")?.unread,
+    ).toBe(true);
+    const events = await database
+      .selectFrom("domain_events")
+      .selectAll()
+      .where("type", "=", "comments.read")
+      .execute();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      project_id: null,
+      recipient_user_id: reader.id,
+      payload: { projectId: fixture.projectId, branch: "main", documentPath: "docs/intro.md" },
+    });
+    expect(
+      await repository.markCommentsRead({
+        ...readInput,
+        branch: "missing",
+        commentIds: [arrived.id],
+      }),
+    ).toEqual([]);
+    expect(await repository.markCommentsRead({ ...readInput, commentIds: [] })).toEqual([]);
+  });
+
+  it("rejects marking comments by a user without project access", async () => {
+    const fixture = await synchronizedProject();
+    const outsider = await repository.createUser({
+      displayName: "Outsider",
+      email: "outsider@example.test",
+      passwordHash: "hash",
+    });
+    await expect(
+      repository.markCommentsRead({
+        userId: outsider.id,
+        projectId: fixture.projectId,
+        branch: "main",
+        documentPath: "docs/intro.md",
+        commentIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
 });

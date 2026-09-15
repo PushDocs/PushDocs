@@ -10,7 +10,7 @@ export async function startFixtureServer() {
     write: false,
     outfile: "fixture.js",
     jsx: "automatic",
-    define: { "process.env.NODE_ENV": '"development"' },
+    define: { "process.env.NODE_ENV": '"development"', "process.env": "{}" },
   });
   const js = result.outputFiles.find((file) => file.path.endsWith(".js"))?.text ?? "";
   const css = result.outputFiles.find((file) => file.path.endsWith(".css"))?.text ?? "";

@@ -11,6 +11,7 @@ import {
 import type { Metadata } from "next";
 import Link from "next/link";
 import { GitOperation } from "@/components/git-operation";
+import { ReviewInformation, ReviewReadiness } from "@/components/review-information";
 import { externalPreviewUrl } from "@/lib/external-preview";
 import { repository, requireUser } from "@/lib/server";
 
@@ -95,6 +96,7 @@ export default async function ReviewsPage({
                     {project.provider === "gitlab" ? "!" : "#"}
                     {review.external_id} {review.source_branch} → {review.target_branch}
                   </small>
+                  <ReviewReadiness details={review.details} />
                 </span>
               </Link>
             ))}
@@ -147,6 +149,7 @@ export default async function ReviewsPage({
                   </button>
                 ) : null}
               </nav>
+              <ReviewInformation details={selected.details} />
               <div className="checks-panel">
                 <div className="checks-title">
                   <div className="checks-heading">

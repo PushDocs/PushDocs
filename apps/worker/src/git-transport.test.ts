@@ -42,6 +42,39 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
+it("prepares and pushes a text change without downloading unrelated binary blobs", async () => {
+  const data = await fixture();
+  await git(data.remote, "config", "uploadpack.allowFilter", "true");
+  await writeFile(path.join(data.source, "large.bin"), Buffer.alloc(1024 * 1024, 7));
+  await git(data.source, "add", "large.bin");
+  await git(data.source, "commit", "-m", "Add media");
+  await git(data.source, "push", "origin", "main");
+  const binarySha = await git(data.source, "rev-parse", "HEAD:large.bin");
+  const operation = path.join(data.directory, "filtered");
+  const transport = new GitTransport({
+    directory: operation,
+    remote: data.remote,
+    allowLocal: true,
+  });
+  const prepared = await transport.prepare({
+    branch: "main",
+    baseSha: await git(data.source, "rev-parse", "HEAD"),
+    operationId: "filtered",
+    createdAt: "2026-09-15T00:00:00Z",
+    message: "Edit text",
+    changes: [{ path: "article.md", content: Buffer.from("# Updated\n"), operation: "update" }],
+  });
+  expect(
+    await git(operation, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"),
+  ).not.toContain(binarySha);
+  await transport.publish(prepared);
+  expect(
+    await git(operation, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"),
+  ).not.toContain(binarySha);
+  expect(await git(data.remote, "show", "main:article.md")).toBe("# Updated");
+  expect(await git(data.remote, "rev-parse", "main:large.bin")).toBe(binarySha);
+});
+
 it("rejects a prepared write if another author advances the remote ref", async () => {
   const data = await fixture();
   const transport = new GitTransport({

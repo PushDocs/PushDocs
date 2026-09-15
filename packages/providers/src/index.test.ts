@@ -771,3 +771,350 @@ it.each(["gitlab", "github"] as const)(
     );
   },
 );
+
+describe("read-only review details", () => {
+  it("flattens GitLab inline discussions, filters system notes and retains approval requirements and label colors", async () => {
+    const request = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/approvals"))
+        return json({
+          approvals_required: 2,
+          approvals_left: 1,
+          approved_by: [{ user: { name: "Anna" } }],
+        });
+      if (url.includes("/discussions"))
+        return json([
+          {
+            notes: [
+              {
+                id: 3,
+                body: "inline",
+                created_at: "2026-09-15T12:00:00Z",
+                author: { name: "Bob" },
+                system: false,
+                position: { new_path: "secret.md", new_line: 7 },
+              },
+              {
+                id: 1,
+                body: "general",
+                created_at: "2026-09-15T10:00:00Z",
+                author: { name: "Anna" },
+                system: false,
+              },
+              { id: 2, body: "system", system: true },
+            ],
+          },
+        ]);
+      return json({
+        sha: "new-head",
+        state: "opened",
+        detailed_merge_status: "mergeable",
+        labels: [{ name: "docs", color: "#ff0000" }],
+      });
+    });
+    const details = await new GitLabProvider(
+      "https://gitlab.test",
+      "token",
+      request,
+    ).getChangeRequestDetails("group/docs", "7");
+    expect(details).toMatchObject({
+      headSha: "new-head",
+      readiness: { state: "blocked", reason: "not_approved" },
+      approvals: { required: 2, remaining: 1, reviewers: [{ name: "Anna", state: "approved" }] },
+      labels: [{ name: "docs", color: "#ff0000" }],
+      commentsComplete: true,
+    });
+    expect(details.comments).toEqual([
+      { id: "1", author: "Anna", body: "general", createdAt: "2026-09-15T10:00:00Z" },
+      { id: "3", author: "Bob", body: "inline", createdAt: "2026-09-15T12:00:00Z" },
+    ]);
+    expect(
+      request.mock.calls.every(([url]) =>
+        String(url).includes("projects/group%2Fdocs/merge_requests/7"),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["mergeable", "ready"],
+    ["ci_still_running", "blocked"],
+    ["conflict", "blocked"],
+    ["not_approved", "blocked"],
+    ["discussions_not_resolved", "blocked"],
+    ["checking", "checking"],
+    [undefined, "unknown"],
+  ])(
+    "uses GitLab's complete merge status %s instead of the deprecated can_be_merged",
+    async (status, expected) => {
+      const request = async (input: string | URL) =>
+        String(input).includes("/discussions")
+          ? json([])
+          : String(input).includes("/approvals")
+            ? json({}, 403)
+            : json({
+                sha: "sha",
+                state: "opened",
+                merge_status: "can_be_merged",
+                detailed_merge_status: status,
+                labels: [],
+              });
+      expect(
+        (
+          await new GitLabProvider("https://gitlab.test", "token", request).getChangeRequestDetails(
+            "9",
+            "1",
+          )
+        ).readiness.state,
+      ).toBe(expected);
+    },
+  );
+
+  it("keeps unavailable GitLab sections distinct from empty ones and does not infer mergeability", async () => {
+    const request = async () => json({}, 403);
+    expect(
+      await new GitLabProvider("https://gitlab.test", "token", request).getChangeRequestDetails(
+        "9",
+        "1",
+      ),
+    ).toEqual({
+      headSha: null,
+      readiness: { state: "unknown", reason: null },
+      labels: null,
+      approvals: null,
+      comments: null,
+      commentsComplete: false,
+    });
+  });
+
+  it("uses the latest submitted GitHub decision per reviewer and combines all comment sources without file anchors", async () => {
+    const request = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/reviews?"))
+        return json([
+          {
+            id: 1,
+            user: { login: "alice" },
+            state: "APPROVED",
+            body: "Looks good",
+            submitted_at: "2026-09-15T10:00:00Z",
+          },
+          {
+            id: 2,
+            user: { login: "alice" },
+            state: "CHANGES_REQUESTED",
+            body: "Please fix",
+            submitted_at: "2026-09-15T12:00:00Z",
+          },
+          {
+            id: 3,
+            user: { login: "bob" },
+            state: "APPROVED",
+            body: "",
+            submitted_at: "2026-09-15T12:10:00Z",
+          },
+          {
+            id: 4,
+            user: { login: "alice" },
+            state: "COMMENTED",
+            body: "More info",
+            submitted_at: "2026-09-15T12:20:00Z",
+          },
+          {
+            id: 5,
+            user: { login: "carol" },
+            state: "APPROVED",
+            body: "",
+            submitted_at: "2026-09-15T12:30:00Z",
+          },
+          {
+            id: 6,
+            user: { login: "carol" },
+            state: "DISMISSED",
+            body: "",
+            submitted_at: "2026-09-15T12:40:00Z",
+          },
+          {
+            id: 7,
+            user: { login: "bob" },
+            state: "PENDING",
+            body: "Unpublished",
+            submitted_at: null,
+          },
+        ]);
+      if (url.includes("/comments?"))
+        return json([
+          {
+            id: 1,
+            user: null,
+            body: url.includes("/issues/") ? "General" : "Inline",
+            created_at: "2026-09-15T09:00:00Z",
+            path: "secret.ts",
+            line: 5,
+          },
+        ]);
+      return json({
+        head: { sha: "sha" },
+        state: "open",
+        draft: false,
+        mergeable: true,
+        mergeable_state: "blocked",
+        labels: [{ name: "bug", color: "d73a4a" }],
+      });
+    };
+    const details = await new GitHubProvider(
+      "https://github.com",
+      "token",
+      request,
+    ).getChangeRequestDetails("acme/docs", "42");
+    expect(details.readiness).toEqual({ state: "blocked", reason: "requested_changes" });
+    expect(details.approvals?.reviewers).toEqual([
+      { name: "alice", state: "changes_requested" },
+      { name: "bob", state: "approved" },
+    ]);
+    expect(details.labels).toEqual([{ name: "bug", color: "#d73a4a" }]);
+    expect(details.comments?.map((row) => row.body)).toEqual([
+      "Inline",
+      "General",
+      "Looks good",
+      "Please fix",
+      "More info",
+    ]);
+    expect(details.comments?.every((row) => !("path" in row))).toBe(true);
+    expect(details.comments?.slice(0, 2).map((row) => row.id)).toEqual(["inline-1", "issue-1"]);
+  });
+
+  it.each([
+    [true, "clean", false, "ready"],
+    [null, "unknown", false, "checking"],
+    [true, "blocked", false, "blocked"],
+    [false, "dirty", false, "blocked"],
+    [true, "clean", true, "blocked"],
+    [true, undefined, false, "unknown"],
+  ])(
+    "does not equate GitHub's mergeable=%s/%s/draft=%s with readiness",
+    async (mergeable, mergeableState, draft, state) => {
+      const request = async (input: string | URL) =>
+        String(input).includes("?per_page")
+          ? json([])
+          : json({
+              head: { sha: "sha" },
+              state: "open",
+              draft,
+              mergeable,
+              mergeable_state: mergeableState,
+              labels: [],
+            });
+      expect(
+        (
+          await new GitHubProvider("https://github.com", "token", request).getChangeRequestDetails(
+            "acme/docs",
+            "42",
+          )
+        ).readiness.state,
+      ).toBe(state);
+    },
+  );
+
+  it("preserves accessible GitHub comments when one source is forbidden, and marks the list incomplete", async () => {
+    const request = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/reviews?")) return json({}, 403);
+      if (url.includes("/comments?"))
+        return url.includes("/issues/")
+          ? json([
+              {
+                id: 1,
+                user: { login: "alice" },
+                body: "Visible",
+                created_at: "2026-09-15T09:00:00Z",
+              },
+            ])
+          : json([]);
+      return json({
+        head: { sha: "sha" },
+        state: "open",
+        draft: false,
+        mergeable: true,
+        mergeable_state: "clean",
+        labels: [],
+      });
+    };
+    const details = await new GitHubProvider(
+      "https://github.com",
+      "token",
+      request,
+    ).getChangeRequestDetails("acme/docs", "42");
+    expect(details).toMatchObject({
+      readiness: { state: "unknown" },
+      approvals: null,
+      comments: [{ body: "Visible" }],
+      commentsComplete: false,
+    });
+  });
+
+  it("paginates GitLab discussions instead of dropping comments after the first 100 threads", async () => {
+    const request = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/discussions"))
+        return json(
+          Array.from(
+            { length: new URL(url).searchParams.get("page") === "1" ? 100 : 1 },
+            (_, index) => ({
+              notes: [
+                {
+                  id: new URL(url).searchParams.get("page") === "1" ? index : 100,
+                  author: { name: "A" },
+                  body: "Comment",
+                  created_at: "2026-09-15T09:00:00Z",
+                  system: false,
+                },
+              ],
+            }),
+          ),
+        );
+      if (url.includes("/approvals")) return json({ approved_by: [] });
+      return json({ sha: "sha", state: "opened", detailed_merge_status: "mergeable", labels: [] });
+    });
+    expect(
+      (
+        await new GitLabProvider("https://gitlab.test", "token", request).getChangeRequestDetails(
+          "9",
+          "1",
+        )
+      ).comments,
+    ).toHaveLength(101);
+    expect(request.mock.calls.some(([url]) => String(url).includes("page=2"))).toBe(true);
+  });
+});
+
+it("does not turn a nonblocking GitHub review into a merge requirement when the provider reports clean", async () => {
+  const request = async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("/reviews?"))
+      return json([
+        {
+          id: 1,
+          user: { login: "alice" },
+          state: "CHANGES_REQUESTED",
+          body: "",
+          submitted_at: "2026-09-15T09:00:00Z",
+        },
+      ]);
+    if (url.includes("?per_page")) return json([]);
+    return json({
+      head: { sha: "sha" },
+      state: "open",
+      draft: false,
+      mergeable: true,
+      mergeable_state: "clean",
+      labels: [],
+    });
+  };
+  const details = await new GitHubProvider(
+    "https://github.com",
+    "token",
+    request,
+  ).getChangeRequestDetails("acme/docs", "42");
+  expect(details.readiness).toEqual({ state: "ready", reason: null });
+  expect(details.approvals?.reviewers).toEqual([{ name: "alice", state: "changes_requested" }]);
+});

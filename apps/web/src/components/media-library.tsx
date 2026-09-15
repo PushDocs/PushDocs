@@ -1,14 +1,14 @@
 "use client";
 
 import { Button } from "@pushdocs/ui";
-import { FileText, GitBranch, Upload } from "lucide-react";
+import { FileText, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FilePicker } from "./file-picker";
 
 interface Asset {
   path: string;
   url: string | null;
+  canDelete: boolean;
   status: string;
   size: number | null;
   usages: string[];
@@ -211,20 +211,6 @@ export function MediaLibrary({
   );
   return (
     <section className="media-library" aria-label="Медиатека">
-      <div className="media-context">
-        <span title={branch}>
-          <GitBranch size={14} />
-          {branch}
-        </span>
-        {document ? <span title={document}>{document}</span> : null}
-      </div>
-      <p className="media-change-link">
-        Загруженные файлы отправляются вместе со статьями через{" "}
-        <Link href={`/projects/${projectId}/changes?${new URLSearchParams({ branch })}`}>
-          «Изменения»
-        </Link>
-        .
-      </p>
       {replacePath ? (
         <p>
           Заменить файл: <strong>{replacePath}</strong>
@@ -239,13 +225,13 @@ export function MediaLibrary({
           void upload(Array.from(event.dataTransfer.files));
         }}
       >
-        {/* biome-ignore lint/a11y/noLabelWithoutControl: FilePicker renders the nested native input. */}
-        <label className="media-upload-picker">
+        <label className="media-upload-picker" aria-disabled={readOnly || busy}>
           <span>
             <Upload size={16} /> Загрузить файлы
           </span>
           <small>или перетащите сюда · до 64 МиБ</small>
-          <FilePicker
+          <input
+            type="file"
             aria-label="Загрузить файлы"
             multiple={!replacePath && !uploadOnly}
             disabled={readOnly || busy}
@@ -397,7 +383,7 @@ export function MediaLibrary({
                     Вставить ссылку
                   </Button>
                 ) : null}
-                {asset.url ? (
+                {asset.canDelete ? (
                   <Button
                     type="button"
                     disabled={readOnly || busy}
@@ -409,14 +395,7 @@ export function MediaLibrary({
                   >
                     {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
                   </Button>
-                ) : (
-                  <span
-                    className="media-scope"
-                    title="Вставка и удаление доступны в каталоге вложений, указанном в настройках проекта."
-                  >
-                    Вне каталога вложений
-                  </span>
-                )}
+                ) : null}
               </div>
             </article>
           ))}

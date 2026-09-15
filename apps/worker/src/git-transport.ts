@@ -133,6 +133,9 @@ export class GitTransport {
     if (this.initialized) return;
     await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
     await this.run(["init", "--bare", "--quiet"]);
+    await this.run(["config", "remote.origin.url", this.options.remote]);
+    await this.run(["config", "remote.origin.promisor", "true"]);
+    await this.run(["config", "remote.origin.partialclonefilter", "blob:none"]);
     this.initialized = true;
   }
 
@@ -162,7 +165,8 @@ export class GitTransport {
       "fetch",
       "--quiet",
       "--no-tags",
-      this.options.remote,
+      "--filter=blob:none",
+      "origin",
       `+refs/heads/${branch}:refs/pushdocs/current`,
     ]);
     return (await this.run(["rev-parse", "refs/pushdocs/current"])).toString().trim();
@@ -224,7 +228,7 @@ export class GitTransport {
         file.path,
       ]);
     }
-    const tree = (await this.run(["write-tree"])).toString().trim();
+    const tree = (await this.run(["write-tree", "--missing-ok"])).toString().trim();
     const originalTree = (await this.run(["rev-parse", `${input.baseSha}^{tree}`]))
       .toString()
       .trim();

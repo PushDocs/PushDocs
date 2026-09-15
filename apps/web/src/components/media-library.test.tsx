@@ -9,6 +9,7 @@ const state = {
     {
       path: "static/img/a.png",
       url: "/img/a.png",
+      canDelete: true,
       status: "clean",
       size: null,
       usages: ["docs/intro.md"],
@@ -26,6 +27,31 @@ beforeEach(() => {
   );
 });
 afterEach(cleanup);
+it("inserts existing media outside the upload directory without exposing an unsupported deletion", async () => {
+  const insert = vi.fn();
+  vi.mocked(fetch).mockResolvedValueOnce(
+    Response.json({
+      ...state,
+      assets: [
+        {
+          ...state.assets[0],
+          path: "staticLocalized/ru/img/forms/filter.gif",
+          url: "pathname:///img/forms/filter.gif",
+          canDelete: false,
+        },
+      ],
+    }),
+  );
+  await act(async () => {
+    render(
+      <MediaLibrary projectId="p" branch="main" document="docs/ecom/a.mdx" onInsert={insert} />,
+    );
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Вставить ссылку" }));
+  expect(insert).toHaveBeenCalledWith("pathname:///img/forms/filter.gif");
+  expect(screen.queryByRole("button", { name: /Удалить/ })).toBeNull();
+  expect(screen.queryByText("Вне каталога вложений")).toBeNull();
+});
 it("replaces the selected asset at its exact path regardless of the uploaded filename", async () => {
   let requestedUrl = "";
   class Request extends EventTarget {
@@ -278,14 +304,23 @@ it("keeps reader uploads disabled, shows out-of-scope media and reports refresh 
     Response.json({
       ...state,
       role: "reader",
-      assets: [{ path: "other/a.pdf", url: null, size: 120, usages: [], status: "clean" }],
+      assets: [
+        {
+          path: "other/a.pdf",
+          url: "../other/a.pdf",
+          canDelete: false,
+          size: 120,
+          usages: [],
+          status: "clean",
+        },
+      ],
     }),
   );
   await act(async () => {
     render(<MediaLibrary projectId="p" branch="main" document="docs/a.md" />);
   });
   expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("disabled", true);
-  expect(screen.getByText("Вне каталога вложений")).toBeTruthy();
+  expect(screen.queryByText("Вне каталога вложений")).toBeNull();
   vi.mocked(fetch).mockResolvedValueOnce(
     Response.json({ error: "Session expired" }, { status: 401 }),
   );
@@ -343,7 +378,7 @@ it("can recover from an initial network failure into an empty media library", as
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it("filters attachments by the article and keeps the changes link on the current branch", async () => {
+it("filters attachments by the article without redundant branch and changes captions", async () => {
   vi.mocked(fetch).mockResolvedValueOnce(
     Response.json({
       ...state,
@@ -359,7 +394,7 @@ it("filters attachments by the article and keeps the changes link on the current
   fireEvent.click(screen.getByLabelText("Только в этой статье"));
   expect(screen.getByText("static/img/a.png")).toBeTruthy();
   expect(screen.queryByText("static/img/other.png")).toBeNull();
-  expect(screen.getByRole("link", { name: "«Изменения»" }).getAttribute("href")).toBe(
-    "/projects/p/changes?branch=docs%2Ffix",
-  );
+  expect(screen.queryByRole("link", { name: "«Изменения»" })).toBeNull();
+  expect(screen.queryByText("docs/fix")).toBeNull();
+  expect(screen.queryByText("Выбрать файлы")).toBeNull();
 });

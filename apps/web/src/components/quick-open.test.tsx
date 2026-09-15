@@ -21,6 +21,29 @@ const files = [
   { path: "config.json", title: "Конфигурация", content: "Отправить письмо", status: "clean" },
 ];
 const paths = [...files.map((file) => file.path), "static/logo.png"];
+
+it.each([
+  { query: "ПИСЬМО", text: "Отправить письмо и Письмо повторно", matches: ["письмо", "Письмо"] },
+  {
+    query: "a+b (test)",
+    text: "<img> a+b (test) и A+B (TEST)",
+    matches: ["a+b (test)", "A+B (TEST)"],
+  },
+])(
+  "highlights every literal match in excerpts while preserving original text: $query",
+  ({ query, text, matches }) => {
+    const file = { path: "docs/example.md", title: "Article", content: text, status: "clean" };
+    const { container } = render(
+      <QuickOpen paths={[file.path]} files={[file]} onOpen={vi.fn()} initialContent />,
+    );
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: query } });
+    expect(Array.from(container.querySelectorAll("mark"), (mark) => mark.textContent)).toEqual(
+      matches,
+    );
+    expect(screen.getByRole("option").textContent).toContain(text);
+    expect(container.querySelector("img")).toBeNull();
+  },
+);
 it("finds filenames and article titles, including unloaded files, without deleted drafts", () => {
   expect(searchFiles(paths, files, "БЫСТРЫЙ", false).map((file) => file.path)).toEqual([
     "docs/start.mdx",
@@ -80,7 +103,8 @@ it("searches unloaded article bodies on the server and opens the returned line",
       await vi.advanceTimersByTimeAsync(180);
     });
     expect(remote).toHaveBeenCalledWith("искомая", expect.any(AbortSignal));
-    expect(screen.getByText("искомая фраза")).toBeTruthy();
+    expect(screen.getByRole("option").textContent).toContain("искомая фраза");
+    expect(screen.getByText("искомая").tagName).toBe("MARK");
     fireEvent.keyDown(input, { key: "Enter" });
     expect(open).toHaveBeenCalledWith("docs/archive.md", 27);
   } finally {

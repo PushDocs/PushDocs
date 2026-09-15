@@ -13,6 +13,149 @@ test.afterAll(async () => {
 test.beforeEach(async ({ page }) => {
   await page.goto(baseURL);
 });
+
+test("search modal keeps maximum size across modes and results, highlights matches and scrolls its list", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`${baseURL}/?quickopen`);
+  const dialog = page.getByRole("dialog", { name: "Поиск файлов" });
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds?.height).toBe((page.viewportSize()?.height ?? 0) - 40);
+  expect(bounds?.width).toBe(Math.min(1200, (page.viewportSize()?.width ?? 0) - 40));
+  const search = page.getByRole("combobox", { name: "Поиск файлов" });
+  await page.getByRole("button", { name: "Текст статей" }).click();
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await search.fill("test");
+  await expect(page.getByRole("option")).toHaveCount(30);
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  const marks = page.getByRole("option").first().locator("mark");
+  await expect(marks).toHaveText(["test", "TEST"]);
+  expect(await marks.first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    "rgb(255, 240, 163)",
+  );
+  const results = page.getByRole("listbox");
+  expect(await results.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("search-highlighted-results.png") });
+  await results.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  expect(await results.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await search.fill("no matches");
+  await expect(page.getByText("Совпадений в статьях не найдено.")).toBeVisible();
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await page.getByRole("button", { name: "Имя или название" }).click();
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await page.screenshot({ path: testInfo.outputPath("search-empty-fixed-size.png") });
+});
+
+test("diff layout is shared across comparisons, reloads and browser tabs", async ({
+  page,
+  context,
+}) => {
+  await page.goto(`${baseURL}/?diffs`);
+  const split = page.getByRole("button", { name: "Две колонки" });
+  await split.first().click();
+  await expect(split.nth(0)).toHaveAttribute("aria-pressed", "true");
+  await expect(split.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(split.nth(0)).toHaveAttribute("aria-pressed", "true");
+  await expect(split.nth(1)).toHaveAttribute("aria-pressed", "true");
+  const other = await context.newPage();
+  await other.goto(`${baseURL}/?diffs`);
+  await expect(other.getByRole("button", { name: "Две колонки" }).first()).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await other.getByRole("button", { name: "Единый" }).first().click();
+  await expect(page.getByRole("button", { name: "Единый" }).nth(0)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "Единый" }).nth(1)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await other.close();
+});
+
+test("media search focus fits its scroll container and upload row opens file selection", async ({
+  page,
+}, testInfo) => {
+  await page.route("**/api/projects/p/media?*", (route) =>
+    route.fulfill({
+      json: {
+        assets: [
+          {
+            path: "other/guide.pdf",
+            url: "../../other/guide.pdf",
+            canDelete: false,
+            status: "clean",
+            size: null,
+            usages: [],
+          },
+        ],
+        revision: 1,
+        status: "open",
+        role: "editor",
+        locale: "ru",
+      },
+    }),
+  );
+  await page.goto(`${baseURL}/?media`);
+  await expect(page.getByRole("button", { name: "Вставить ссылку" })).toBeEnabled();
+  await expect(page.getByText("Вне каталога вложений")).toHaveCount(0);
+  await expect(page.getByText("Выбрать файлы")).toHaveCount(0);
+  await expect(page.getByText("docs/test-pushdocs", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("docs/ecom/ecom-statistics.mdx", { exact: true })).toHaveCount(0);
+  const search = page.getByRole("searchbox", { name: "Найти файл" });
+  await search.focus();
+  await expect(search).toBeFocused();
+  const input = await search.boundingBox();
+  const refresh = await page.getByRole("button", { name: "Обновить" }).boundingBox();
+  const container = await page.getByRole("region", { name: "Медиатека" }).boundingBox();
+  expect(input).not.toBeNull();
+  expect(refresh).not.toBeNull();
+  expect(container).not.toBeNull();
+  expect((input?.x ?? 0) - 3).toBeGreaterThanOrEqual(container?.x ?? 0);
+  expect((input?.x ?? 0) + (input?.width ?? 0) + 3).toBeLessThanOrEqual(
+    (container?.x ?? 0) + (container?.width ?? 0),
+  );
+  expect(input?.height).toBe(refresh?.height);
+  if ((page.viewportSize()?.width ?? 0) > 600) expect(input?.y).toBe(refresh?.y);
+  await page.screenshot({ path: testInfo.outputPath("media-search-focus.png") });
+  const chooser = page.waitForEvent("filechooser");
+  await page.locator("label.media-upload-picker").click();
+  expect((await chooser).isMultiple()).toBe(true);
+});
+
+test("close icon aligns with the first title line, including wrapped titles", async ({
+  page,
+}, testInfo) => {
+  for (const title of ["Подключение", "Настройки подключения Sendsay для документации проекта"]) {
+    await page.goto(`${baseURL}/?title=${encodeURIComponent(title)}`);
+    await page.getByText("Открыть форму").click();
+    const heading = page.getByRole("heading", { name: title });
+    const headingBox = await heading.boundingBox();
+    const lineHeight = await heading.evaluate((el) =>
+      Number.parseFloat(getComputedStyle(el).lineHeight),
+    );
+    const close = page.getByRole("button", { name: "Закрыть", exact: true });
+    const iconBox = await close.locator("svg").boundingBox();
+    expect(headingBox).not.toBeNull();
+    expect(iconBox).not.toBeNull();
+    expect(
+      Math.abs(
+        (iconBox?.y ?? 0) + (iconBox?.height ?? 0) / 2 - ((headingBox?.y ?? 0) + lineHeight / 2),
+      ),
+    ).toBeLessThanOrEqual(1);
+    await page.screenshot({
+      path: testInfo.outputPath(`header-${title === "Подключение" ? "short" : "wrapped"}.png`),
+    });
+    await close.click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+  }
+});
 test("select remains interactive inside the modal and close preserves dirty input", async ({
   page,
 }, testInfo) => {
@@ -183,3 +326,81 @@ for (const tall of [false, true]) {
     }
   });
 }
+
+test("review details keep labels, approval decisions and read-only comments within the viewport", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`${baseURL}/?reviews`);
+  await expect(page.getByRole("navigation", { name: "Список MR" })).toContainText(
+    "Не готов к слиянию",
+  );
+  await expect(page.getByRole("region", { name: "Одобрения" })).toContainText(
+    "Получено: 1 · Требуется: 2 · Осталось: 1",
+  );
+  await expect(page.getByRole("region", { name: "Комментарии" })).toContainText(
+    "Read-only comment",
+  );
+  await expect(
+    page.locator(
+      ".review-information input, .review-information textarea, .review-information button, .review-information a",
+    ),
+  ).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: testInfo.outputPath("review-information.png"), fullPage: true });
+});
+
+test("unread badge updates live, clears when opened and remembers reads across reloads and tabs", async ({
+  page,
+  context,
+}, testInfo) => {
+  let comments = [
+    { id: "1", body: "Первый", author_name: "Анна", unread: true },
+    { id: "2", body: "Мой комментарий", author_name: "Alex", unread: false },
+  ];
+  await context.route("**/api/projects/project/comments*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const ids: string[] = route.request().postDataJSON().commentIds;
+      comments = comments.map((comment) =>
+        ids.includes(comment.id) ? { ...comment, unread: false } : comment,
+      );
+      await route.fulfill({ json: { readIds: ids } });
+    } else await route.fulfill({ json: comments });
+  });
+  const event = async (target: typeof page, type = "comment.created") =>
+    target.evaluate((eventType) => {
+      window.dispatchEvent(
+        new CustomEvent("pushdocs:refresh", {
+          detail: {
+            type: eventType,
+            projectId: "project",
+            payload: { branch: "main", documentPath: "docs/a.md" },
+          },
+        }),
+      );
+    }, type);
+  await page.goto(`${baseURL}/?comments`);
+  const button = page.getByRole("button", { name: /^Комментарии/ });
+  await expect(button.locator(".wb-comment-count")).toHaveText("1");
+  comments.push({ id: "3", body: "Новое сообщение", author_name: "Фёдор", unread: true });
+  await event(page);
+  await expect(button.locator(".wb-comment-count")).toHaveText("2");
+  await page.screenshot({ path: testInfo.outputPath("unread-comments.png") });
+  await button.click();
+  await expect(button.locator(".wb-comment-count")).toHaveCount(0);
+  await expect(page.getByText("Новое сообщение")).toBeVisible();
+  await page.reload();
+  await expect(button).toBeVisible();
+  await expect(button.locator(".wb-comment-count")).toHaveCount(0);
+  comments.push({ id: "4", body: "Ещё одно сообщение", author_name: "Фёдор", unread: true });
+  await event(page);
+  await expect(button.locator(".wb-comment-count")).toHaveText("1");
+  const second = await context.newPage();
+  await second.goto(`${baseURL}/?comments`);
+  await second.getByRole("button", { name: /^Комментарии/ }).click();
+  await expect(second.locator(".wb-comment-count")).toHaveCount(0);
+  await event(page, "comments.read");
+  await expect(button.locator(".wb-comment-count")).toHaveCount(0);
+  await second.close();
+});

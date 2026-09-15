@@ -48,10 +48,21 @@ it("supports installation setup without a project", async () => {
   expect(html).not.toContain('name="projectId"');
 });
 
-it("explains when VPN support is disabled", async () => {
+it("hides disabled VPN support without showing an installation notice", async () => {
   process.env.PUSHDOCS_VPN_ENABLED = "0";
+  mocks.connections.mockResolvedValueOnce([
+    {
+      base_url: "https://gitlab.internal.test",
+      id: "vpn-connection",
+      kind: "gitlab",
+      name: "Corporate GitLab",
+      vpn_slot: 2,
+    },
+  ]);
   const html = renderToStaticMarkup(await ConnectionSettings({}));
-  expect(html).toContain("VPN-шлюзы отключены для этой установки");
+  expect(html).not.toContain("VPN-шлюзы отключены для этой установки");
+  expect(html).not.toContain("шлюзы отключены");
+  expect(html).not.toContain("VPN настроен");
   expect(html).not.toContain('name="vpnProfile"');
 });
 

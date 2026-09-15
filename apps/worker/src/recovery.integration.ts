@@ -74,7 +74,7 @@ try {
   await writeFile(path.join(source, "intro.md"), "# Original\r\n");
   await git(source, "add", ".");
   await git(source, "commit", "-m", "Initial");
-  await git(source, "push", "origin", "HEAD:refs/heads/docs/update");
+  await git(source, "push", "origin", "HEAD:refs/heads/main", "HEAD:refs/heads/docs/update");
   const baseSha = await git(source, "rev-parse", "HEAD");
   await repository.replaceImportedDocuments(project.id, "docs/update", baseSha, [
     {
@@ -103,17 +103,47 @@ try {
     createReview: true,
   });
   let reviewUnavailable = true;
+  let reviewCreated = false;
+  const review = {
+    id: "fixture-review",
+    headSha: "",
+    sourceBranch: "docs/update",
+    targetBranch: "main",
+    state: "open" as const,
+    title: "Edit",
+    url: "https://fixture.invalid/review",
+  };
+  const markSubmitted = repository.markChangeSetSubmitted.bind(repository);
+  let acknowledgeUnavailable = true;
+  repository.markChangeSetSubmitted = async (input) => {
+    if (acknowledgeUnavailable)
+      throw new Error("Simulated journal outage after Git accepted the commit");
+    await markSubmitted(input);
+  };
   const provider = {
     kind: "gitlab",
     listBranches: async () => [
+      { name: "main", sha: baseSha },
       { name: "docs/update", sha: await git(remote, "rev-parse", "refs/heads/docs/update") },
     ],
-    listChangeRequests: async () => [],
+    listFiles: async () => ["intro.md"],
+    readFile: async (_repositoryId: string, ref: string, filePath: string) =>
+      (await exec("git", ["-C", remote, "show", `${ref}:${filePath}`])).stdout,
+    listChangeRequests: async () => (reviewCreated ? [review] : []),
+    getChangeRequestDetails: async () => ({
+      headSha: review.headSha,
+      readiness: { state: "ready", reason: null },
+      labels: [],
+      approvals: null,
+      comments: [],
+      commentsComplete: true,
+    }),
     listChecks: async () => [],
     ensureChangeRequest: async () => {
       if (reviewUnavailable)
         throw new Error("Simulated provider outage after Git accepted the commit");
-      return { id: "fixture-review" };
+      reviewCreated = true;
+      return review;
     },
   } as unknown as GitProvider;
   const makeWorker = (cache: string) =>
@@ -136,14 +166,42 @@ try {
   };
   await assert.rejects(
     makeWorker("first-cache").submitChangeSet(payload),
-    /Simulated provider outage/,
+    /Simulated journal outage/,
   );
   const interrupted = await repository.getChangeSetSubmission(draft.changeSetId);
   assert.equal(interrupted?.status, "submitting");
   assert.ok(interrupted?.prepared_commit);
   const accepted = await git(remote, "rev-parse", "refs/heads/docs/update");
+  acknowledgeUnavailable = false;
+  const restarted = makeWorker("fresh-cache");
+  await restarted.submitChangeSet(payload);
+  const retry = await database
+    .selectFrom("jobs")
+    .selectAll()
+    .where("kind", "=", "review.create")
+    .executeTakeFirstOrThrow();
+  assert.equal(retry.status, "queued");
+  assert.equal(reviewCreated, false);
   reviewUnavailable = false;
-  await makeWorker("fresh-cache").submitChangeSet(payload);
+  review.headSha = accepted;
+  // Drain project/branch synchronization, the original submission and review retries.
+  for (let index = 0; index < 10; index += 1) {
+    if (!(await restarted.runJob())) break;
+  }
+  const jobs = await database.selectFrom("jobs").selectAll().execute();
+  assert.equal(jobs.find((job) => job.id === retry.id)?.status, "done");
+  assert.ok(
+    jobs.every((job) => job.status === "done"),
+    JSON.stringify(
+      jobs.map((job) => ({
+        kind: job.kind,
+        status: job.status,
+        error: job.last_error,
+      })),
+    ),
+  );
+  assert.equal(reviewCreated, true);
+  assert.equal((await repository.listChangeRequests(project.id, "open")).length, 1);
   assert.equal((await repository.getChangeSetSubmission(draft.changeSetId))?.status, "submitted");
   assert.equal(await git(remote, "rev-parse", "refs/heads/docs/update"), accepted);
   assert.equal(await git(remote, "rev-list", "--count", "docs/update"), "2");
@@ -193,7 +251,7 @@ try {
   assert.equal(writes.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(writes.filter((result) => result.status === "rejected").length, 1);
   console.log(
-    "PASS: PostgreSQL journal recovery, exact Git bytes, no duplicate commit, cross-connection ref lock, upload limit and optimistic write race",
+    "PASS: PostgreSQL journal recovery, independent review retry, exact Git bytes, no duplicate commit, cross-connection ref lock, upload limit and optimistic write race",
   );
 } finally {
   await database.destroy();

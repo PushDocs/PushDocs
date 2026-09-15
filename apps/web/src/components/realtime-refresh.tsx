@@ -7,6 +7,7 @@ const localEvents = [
   "document.updated",
   "attachment.ready",
   "comment.created",
+  "comments.read",
   "document.created",
   "files.staged",
 ];
@@ -33,7 +34,12 @@ export function RealtimeRefresh() {
       projectId ? `/events?${new URLSearchParams({ projectId })}` : "/events",
     );
     let timer: number | undefined;
-    source.onopen = () => setDisconnected(false);
+    source.onopen = () => {
+      setDisconnected(false);
+      window.dispatchEvent(
+        new CustomEvent("pushdocs:realtime-connected", { detail: { projectId } }),
+      );
+    };
     source.onerror = () => setDisconnected(true);
     const dispatch = (event: Event) => {
       let detail: Record<string, unknown> = { type: event.type };

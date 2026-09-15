@@ -2,6 +2,7 @@
 
 import { Columns2, List, UnfoldVertical } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
+import { useDiffLayout } from "./diff-layout";
 import { MonacoDiff } from "./monaco-diff";
 import { useMonaco } from "./monaco-runtime";
 import { buildTextDiff, type DiffLine, foldDiff, pairDiffLines } from "./text-diff";
@@ -22,7 +23,7 @@ export function DiffViewer({
   diff?: ReturnType<typeof buildTextDiff>;
 }) {
   const monaco = useMonaco();
-  const [layout, setLayout] = useState<"unified" | "split">("unified");
+  const [layout, setLayout] = useDiffLayout();
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<{ before: string; after: string; ids: Set<number> }>({
     before,
@@ -110,10 +111,12 @@ export function DiffViewer({
           </fieldset>
         </div>
       </header>
-      <div className="wb-diff-labels" data-layout={layout}>
-        <span>{beforeLabel}</span>
-        <span>{afterLabel}</span>
-      </div>
+      {layout === "split" ? (
+        <div className="wb-diff-labels" data-layout={layout}>
+          <span>{beforeLabel}</span>
+          <span>{afterLabel}</span>
+        </div>
+      ) : null}
       {monaco && before.replace(/\r\n?/g, "\n") !== after.replace(/\r\n?/g, "\n") ? (
         <MonacoDiff
           monaco={monaco}

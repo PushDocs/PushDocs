@@ -401,6 +401,27 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               `.execute(database);
             },
           },
+          "015-comment-reads": {
+            async up(database) {
+              await sql`create table comment_reads (
+                user_id uuid not null references users(id) on delete cascade,
+                comment_id uuid not null references comments(id) on delete cascade,
+                read_at timestamptz not null default now(),
+                primary key (user_id, comment_id)
+              )`.execute(database);
+            },
+            async down(database) {
+              await database.schema.dropTable("comment_reads").execute();
+            },
+          },
+          "014-review-details": {
+            async up(database) {
+              await sql`alter table change_requests add column details jsonb`.execute(database);
+            },
+            async down(database) {
+              await sql`alter table change_requests drop column details`.execute(database);
+            },
+          },
           "013-collaborative-documents": {
             async up(database) {
               await sql`create table collaborative_documents (

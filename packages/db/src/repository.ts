@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type {
+  ChangeRequestDetails,
   DocumentSummary,
   ProjectRole,
   ProjectSummary,
@@ -1808,6 +1809,7 @@ export class PushDocsRepository extends SecurityRepository {
         "discussions.resolved_at",
         "comments.id",
         "comments.body",
+        "comments.author_user_id",
         "comments.created_at",
         "users.display_name as author_name",
       ])
@@ -1816,6 +1818,88 @@ export class PushDocsRepository extends SecurityRepository {
       .where("discussions.document_path", "=", documentPath)
       .orderBy("comments.created_at")
       .execute();
+  }
+
+  async listCommentReadState(
+    userId: string,
+    projectId: string,
+    branch: string,
+    documentPath: string,
+  ) {
+    const comments = await this.listComments(projectId, branch, documentPath);
+    if (!comments.length) return [];
+    const read = await this.database
+      .selectFrom("comment_reads")
+      .select("comment_id")
+      .where("user_id", "=", userId)
+      .where(
+        "comment_id",
+        "in",
+        comments.map((comment) => comment.id),
+      )
+      .execute();
+    const readIds = new Set(read.map((row) => row.comment_id));
+    return comments.map((comment) => ({
+      ...comment,
+      unread: comment.author_user_id !== userId && !readIds.has(comment.id),
+    }));
+  }
+
+  async markCommentsRead(input: {
+    userId: string;
+    projectId: string;
+    branch: string;
+    documentPath: string;
+    commentIds: string[];
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId);
+    if (!input.commentIds.length) return [];
+    return this.database.transaction().execute(async (transaction) => {
+      const scoped = await transaction
+        .selectFrom("comments")
+        .innerJoin("discussions", "discussions.id", "comments.discussion_id")
+        .innerJoin("branch_contexts", "branch_contexts.id", "discussions.branch_context_id")
+        .select("comments.id")
+        .where("discussions.project_id", "=", input.projectId)
+        .where("branch_contexts.full_ref", "=", normalizeBranchRef(input.branch))
+        .where("discussions.document_path", "=", input.documentPath)
+        .where("comments.id", "in", input.commentIds)
+        .execute();
+      if (!scoped.length) return [];
+      const existing = await transaction
+        .selectFrom("comment_reads")
+        .select("comment_id")
+        .where("user_id", "=", input.userId)
+        .where(
+          "comment_id",
+          "in",
+          scoped.map((comment) => comment.id),
+        )
+        .execute();
+      const readIds = new Set(existing.map((row) => row.comment_id));
+      const unread = scoped.filter((comment) => !readIds.has(comment.id));
+      if (unread.length) {
+        const inserted = await transaction
+          .insertInto("comment_reads")
+          .values(unread.map((comment) => ({ user_id: input.userId, comment_id: comment.id })))
+          .onConflict((conflict) => conflict.columns(["user_id", "comment_id"]).doNothing())
+          .returning("comment_id")
+          .execute();
+        if (inserted.length)
+          await appendEvent(transaction, {
+            entityId: input.userId,
+            recipientUserId: input.userId,
+            payload: {
+              projectId: input.projectId,
+              branch: input.branch,
+              documentPath: input.documentPath,
+            },
+            revision: 1,
+            type: "comments.read",
+          });
+      }
+      return scoped.map((comment) => comment.id);
+    });
   }
 
   async createComment(input: {
@@ -1888,6 +1972,7 @@ export class PushDocsRepository extends SecurityRepository {
   async replaceChangeRequests(
     projectId: string,
     requests: Array<{
+      details?: ChangeRequestDetails | null;
       checks: Array<{
         conclusion: "success" | "failure" | "neutral" | "skipped" | "running";
         durationMs: number | null;
@@ -1916,6 +2001,7 @@ export class PushDocsRepository extends SecurityRepository {
         const stored = await transaction
           .insertInto("change_requests")
           .values({
+            details: request.details ? JSON.stringify(request.details) : null,
             external_id: request.externalId,
             head_sha: request.headSha,
             project_id: projectId,
@@ -1927,6 +2013,7 @@ export class PushDocsRepository extends SecurityRepository {
           })
           .onConflict((conflict) =>
             conflict.columns(["project_id", "external_id"]).doUpdateSet({
+              details: request.details ? JSON.stringify(request.details) : null,
               head_sha: request.headSha,
               provider_url: request.url,
               source_branch: request.sourceBranch,

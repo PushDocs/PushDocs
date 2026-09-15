@@ -56,7 +56,13 @@ vi.mock("./replace-preview", async (importOriginal) => ({
   },
 }));
 vi.mock("./media-library", () => ({ MediaLibrary: () => <div data-testid="media" /> }));
-vi.mock("./file-comments", () => ({ FileComments: () => <div data-testid="comments" /> }));
+vi.mock("./use-file-comments", () => ({
+  useFileComments: () => ({ comments: [], unreadCount: 0, error: "", refresh: async () => {} }),
+}));
+vi.mock("./file-comments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./file-comments")>()),
+  FileComments: () => <div data-testid="comments" />,
+}));
 vi.mock("./source-editor", () => ({
   SourceEditor: ({ inputRef }: { inputRef: { current: unknown } }) => {
     inputRef.current = { replaceSelection: mocks.replaceSelection };

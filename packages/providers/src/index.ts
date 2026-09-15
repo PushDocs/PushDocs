@@ -1,4 +1,4 @@
-import type { CheckRunSummary, ProviderKind } from "@pushdocs/contracts";
+import type { ChangeRequestDetails, CheckRunSummary, ProviderKind } from "@pushdocs/contracts";
 
 export interface ProviderRepository {
   cloneUrl: string;
@@ -54,6 +54,7 @@ export interface GitProvider {
     targetBranch: string;
     title: string;
   }): Promise<ProviderChangeRequest>;
+  getChangeRequestDetails(repositoryId: string, id: string): Promise<ChangeRequestDetails>;
   getRepository(repositoryId: string): Promise<ProviderRepository>;
   listBranches(repositoryId: string): Promise<ProviderBranch[]>;
   listChangeRequests(
@@ -64,6 +65,20 @@ export interface GitProvider {
   listFiles(repositoryId: string, ref: string): Promise<string[]>;
   readFile(repositoryId: string, ref: string, path: string): Promise<string>;
   readBinary(repositoryId: string, ref: string, path: string): Promise<Uint8Array>;
+}
+
+async function available<T>(operation: () => Promise<T>): Promise<T | null> {
+  try {
+    return await operation();
+  } catch {
+    return null;
+  }
+}
+
+function orderedComments(comments: NonNullable<ChangeRequestDetails["comments"]>) {
+  return comments.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  );
 }
 
 export function validateBranchName(name: string): void {
@@ -351,6 +366,103 @@ export class GitLabProvider implements GitProvider {
       title: row.title,
       url: row.web_url,
     }));
+  }
+
+  async getChangeRequestDetails(repositoryId: string, id: string): Promise<ChangeRequestDetails> {
+    const path = `projects/${encodeURIComponent(repositoryId)}/merge_requests/${encodeURIComponent(id)}`;
+    type Note = {
+      id: number;
+      author: { name: string };
+      body: string;
+      created_at: string;
+      system: boolean;
+    };
+    const [review, approvals, discussions] = await Promise.all([
+      available(() =>
+        this.request(`${path}?with_labels_details=true`).then(
+          readJson<{
+            sha: string;
+            state: string;
+            draft?: boolean;
+            work_in_progress?: boolean;
+            has_conflicts?: boolean;
+            detailed_merge_status?: string;
+            labels: Array<string | { name: string; color: string }>;
+          }>,
+        ),
+      ),
+      available(() =>
+        this.request(`${path}/approvals`).then(
+          readJson<{
+            approvals_required?: number;
+            approvals_left?: number;
+            approved_by: Array<{ user: { id?: number; name: string } }>;
+          }>,
+        ),
+      ),
+      available(() =>
+        readPages<{ notes: Note[] }>((page) =>
+          this.request(`${path}/discussions?per_page=100&page=${page}`),
+        ),
+      ),
+    ]);
+    let state: ChangeRequestDetails["readiness"]["state"] = "unknown";
+    let reason: string | null = review?.detailed_merge_status ?? null;
+    if (review) {
+      if (review.state !== "opened") {
+        state = "blocked";
+        reason = "not_open";
+      } else if (review.draft || review.work_in_progress) {
+        state = "blocked";
+        reason = "draft_status";
+      } else if (review.has_conflicts) {
+        state = "blocked";
+        reason = "conflict";
+      } else if ((approvals?.approvals_left ?? 0) > 0) {
+        state = "blocked";
+        reason = "not_approved";
+      } else if (reason === "mergeable") {
+        state = "ready";
+        reason = null;
+      } else if (["checking", "unchecked", "preparing", "approvals_syncing"].includes(reason ?? ""))
+        state = "checking";
+      else if (reason) state = "blocked";
+    }
+    return {
+      headSha: review?.sha ?? null,
+      readiness: { state, reason },
+      labels:
+        review?.labels.map((label) =>
+          typeof label === "string"
+            ? { name: label, color: null }
+            : { name: label.name, color: label.color },
+        ) ?? null,
+      approvals: approvals
+        ? {
+            required: approvals.approvals_required ?? null,
+            remaining: approvals.approvals_left ?? null,
+            reviewers: approvals.approved_by.map(({ user }) => ({
+              ...(user.id !== undefined ? { id: String(user.id) } : {}),
+              name: user.name,
+              state: "approved",
+            })),
+          }
+        : null,
+      comments: discussions
+        ? orderedComments(
+            discussions
+              .flatMap(({ notes }) => notes)
+              .filter((note) => !note.system)
+              .map((note) => ({
+                id: String(note.id),
+                author: note.author.name,
+                body: note.body,
+                createdAt: note.created_at,
+              })),
+          )
+        : null,
+      commentsComplete: discussions !== null,
+    };
   }
 
   async listChecks(repositoryId: string, sha: string): Promise<CheckRunSummary[]> {
@@ -652,6 +764,114 @@ export class GitHubProvider implements GitProvider {
       title: row.title,
       url: row.html_url,
     }));
+  }
+
+  async getChangeRequestDetails(repositoryId: string, id: string): Promise<ChangeRequestDetails> {
+    const path = `repos/${repositoryId}/pulls/${encodeURIComponent(id)}`;
+    type Comment = { id: number; user: { login: string } | null; body: string; created_at: string };
+    const [review, reviews, issueComments, inlineComments] = await Promise.all([
+      available(() =>
+        this.request(path).then(
+          readJson<{
+            head: { sha: string };
+            state: string;
+            draft: boolean;
+            mergeable: boolean | null;
+            mergeable_state?: string;
+            labels: Array<{ name: string; color: string }>;
+          }>,
+        ),
+      ),
+      available(() =>
+        readPages<{
+          id: number;
+          user: { login: string } | null;
+          state: string;
+          body: string;
+          submitted_at: string | null;
+        }>((page) => this.request(`${path}/reviews?per_page=100&page=${page}`)),
+      ),
+      available(() =>
+        readPages<Comment>((page) =>
+          this.request(
+            `repos/${repositoryId}/issues/${encodeURIComponent(id)}/comments?per_page=100&page=${page}`,
+          ),
+        ),
+      ),
+      available(() =>
+        readPages<Comment>((page) => this.request(`${path}/comments?per_page=100&page=${page}`)),
+      ),
+    ]);
+    const latest = new Map<string, string>();
+    for (const row of reviews ?? []) {
+      if (row.user && ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(row.state))
+        latest.set(row.user.login, row.state);
+    }
+    const reviewers: NonNullable<ChangeRequestDetails["approvals"]>["reviewers"] = [...latest]
+      .filter(([, state]) => state !== "DISMISSED")
+      .map(([name, state]) => ({
+        name,
+        state: state === "APPROVED" ? "approved" : "changes_requested",
+      }));
+    let state: ChangeRequestDetails["readiness"]["state"] = "unknown";
+    let reason: string | null = review?.mergeable_state ?? null;
+    if (review) {
+      if (review.state !== "open") {
+        state = "blocked";
+        reason = "not_open";
+      } else if (review.draft) {
+        state = "blocked";
+        reason = "draft_status";
+      } else if (review.mergeable === false) {
+        state = "blocked";
+        reason = "conflict";
+      } else if (
+        reason === "blocked" &&
+        reviewers.some((reviewer) => reviewer.state === "changes_requested")
+      ) {
+        state = "blocked";
+        reason = "requested_changes";
+      } else if (review.mergeable === null || reason === "unknown") state = "checking";
+      else if (review.mergeable === true && reason === "clean" && reviews !== null) {
+        state = "ready";
+        reason = null;
+      } else if (["blocked", "behind", "dirty", "unstable", "draft"].includes(reason ?? ""))
+        state = "blocked";
+    }
+    const comments = [
+      ...(issueComments ?? []).map((row) => ({
+        id: `issue-${row.id}`,
+        author: row.user?.login ?? "Удалённый пользователь",
+        body: row.body,
+        createdAt: row.created_at,
+      })),
+      ...(inlineComments ?? []).map((row) => ({
+        id: `inline-${row.id}`,
+        author: row.user?.login ?? "Удалённый пользователь",
+        body: row.body,
+        createdAt: row.created_at,
+      })),
+      ...(reviews ?? [])
+        .filter((row) => row.body && row.submitted_at && row.state !== "PENDING")
+        .map((row) => ({
+          id: `review-${row.id}`,
+          author: row.user?.login ?? "Удалённый пользователь",
+          body: row.body,
+          createdAt: row.submitted_at as string,
+        })),
+    ];
+    return {
+      headSha: review?.head.sha ?? null,
+      readiness: { state, reason },
+      labels:
+        review?.labels.map((label) => ({ name: label.name, color: `#${label.color}` })) ?? null,
+      approvals: reviews ? { required: null, remaining: null, reviewers } : null,
+      comments:
+        issueComments !== null || inlineComments !== null || reviews !== null
+          ? orderedComments(comments)
+          : null,
+      commentsComplete: issueComments !== null && inlineComments !== null && reviews !== null,
+    };
   }
 
   async listChecks(repositoryId: string, sha: string): Promise<CheckRunSummary[]> {

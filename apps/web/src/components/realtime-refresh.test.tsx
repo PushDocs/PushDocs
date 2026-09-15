@@ -56,6 +56,7 @@ describe("RealtimeRefresh", () => {
     expect(source?.url).toBe("/events?projectId=project");
     expect(source?.listeners.has("document.updated")).toBe(true);
     expect(source?.listeners.has("files.staged")).toBe(true);
+    expect(source?.listeners.has("comments.read")).toBe(true);
     source?.dispatch("comment.created");
     source?.dispatch("document.created");
     source?.dispatch("document.updated");
@@ -71,6 +72,8 @@ describe("RealtimeRefresh", () => {
   });
 
   it("shows the connection state and clears it after reconnecting", () => {
+    const connected = vi.fn();
+    window.addEventListener("pushdocs:realtime-connected", connected);
     render(<RealtimeRefresh />);
     const source = FakeEventSource.instances[0];
     act(() => source?.onerror?.());
@@ -79,5 +82,9 @@ describe("RealtimeRefresh", () => {
     );
     act(() => source?.onopen?.());
     expect(document.querySelector('[role="status"]')).toBeNull();
+    expect(connected).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { projectId: "project" } }),
+    );
+    window.removeEventListener("pushdocs:realtime-connected", connected);
   });
 });

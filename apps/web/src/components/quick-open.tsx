@@ -1,5 +1,20 @@
 "use client";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+
+function HighlightMatches({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return text;
+  const expression = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+  const parts: ReactNode[] = [];
+  let end = 0;
+  for (const match of text.matchAll(expression)) {
+    parts.push(text.slice(end, match.index));
+    parts.push(<mark key={match.index}>{match[0]}</mark>);
+    end = match.index + match[0].length;
+  }
+  parts.push(text.slice(end));
+  return parts;
+}
 
 export interface FileSearchResult {
   path: string;
@@ -191,12 +206,21 @@ export function QuickOpen({
             className={index === selected ? "selected" : ""}
             onClick={() => onOpen(result.path, result.line)}
           >
-            <strong>{result.title || result.path.split("/").at(-1)}</strong>
+            <strong>
+              <HighlightMatches
+                text={result.title || result.path.split("/").at(-1) || result.path}
+                query={query}
+              />
+            </strong>
             <small>
-              {result.path}
+              <HighlightMatches text={result.path} query={query} />
               {result.line ? `:${result.line}` : ""}
             </small>
-            {result.excerpt ? <span>{result.excerpt}</span> : null}
+            {result.excerpt ? (
+              <span>
+                <HighlightMatches text={result.excerpt} query={query} />
+              </span>
+            ) : null}
           </button>
         ))}
         {searching ? <p role="status">Ищем по тексту статей…</p> : null}

@@ -58,6 +58,7 @@ function provider(): GitProvider {
     createBranch: vi.fn().mockResolvedValue({ name: "docs/update", sha: "base" }),
     commitFiles: vi.fn().mockResolvedValue({ sha: "commit-sha", url: "commit-url" }),
     ensureChangeRequest: vi.fn().mockResolvedValue({ id: "review" }),
+    getChangeRequestDetails: vi.fn().mockResolvedValue(null),
     getRepository: vi.fn(),
     kind: "gitlab",
     listBranches: vi.fn().mockResolvedValue([{ name: "main", sha: "head" }]),
@@ -76,6 +77,8 @@ function repository(): WorkerRepository {
     updateJobProgress: vi.fn(),
     completeJob: vi.fn(),
     ensureBranches: vi.fn(),
+    enqueueReviewCreation: vi.fn().mockResolvedValue("review-job"),
+    enqueueReviewsSync: vi.fn().mockResolvedValue("reviews-job"),
     ensureProjectComponents: vi.fn(),
     failJob: vi.fn(),
     getChangeSetSubmission: vi.fn(),
@@ -289,6 +292,7 @@ describe("branch and review synchronization", () => {
     expect(port.ensureBranches).toHaveBeenCalledWith("project", [{ name: "main", sha: "head" }]);
     expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
       {
+        details: null,
         checks: [expect.objectContaining({ id: "check" })],
         externalId: "7",
         headSha: "review-head",
@@ -303,6 +307,117 @@ describe("branch and review synchronization", () => {
 });
 
 describe("change set submission", () => {
+  it("records the pushed commit and retries review creation separately when the provider rejects it", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.ensureChangeRequest).mockRejectedValue(new Error("GitLab API failed: 403"));
+    const logger = { error: vi.fn() };
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      logger,
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Edit docs",
+      createReview: true,
+    });
+    expect(client.commitFiles).toHaveBeenCalledTimes(1);
+    expect(port.markChangeSetSubmitted).toHaveBeenCalledWith(
+      expect.objectContaining({ commitSha: "commit-sha" }),
+    );
+    expect(port.enqueueReviewCreation).toHaveBeenCalledWith(
+      "project",
+      "docs/update",
+      "Edit docs",
+      "actor",
+    );
+    expect(logger.error).toHaveBeenCalled();
+    expect(port.releaseChangeSetSubmission).not.toHaveBeenCalled();
+    expect(vi.mocked(port.markChangeSetSubmitted).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(client.ensureChangeRequest).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("finishes the submission job even when checking or creating a review fails", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.listChangeRequests).mockRejectedValue(new Error("Provider unavailable"));
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "submit-job",
+      kind: "change-set.submit",
+      attempts: 1,
+      payload: {
+        projectId: "project",
+        changeSetId: "change",
+        message: "Edit docs",
+        createReview: true,
+        userId: "actor",
+        operationId: "attempt",
+        createdAt: "2026-09-08T00:00:00Z",
+      },
+    } as never);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      logger: { error: vi.fn() },
+    }).runJob();
+    expect(port.completeJob).toHaveBeenCalledWith("submit-job", 1);
+    expect(port.failJob).not.toHaveBeenCalled();
+    expect(port.markChangeSetSubmitted).toHaveBeenCalled();
+    expect(port.enqueueReviewCreation).toHaveBeenCalled();
+  });
+
+  it("retries review creation for an already submitted change without committing again", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      status: "submitted",
+    } as never);
+    await createWorkerService({ repository: port, createProvider: () => client }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Edit docs\nDetails",
+      createReview: true,
+    });
+    expect(client.commitFiles).not.toHaveBeenCalled();
+    expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+    expect(port.enqueueReviewCreation).toHaveBeenCalledWith(
+      "project",
+      "docs/update",
+      "Edit docs",
+      "actor",
+    );
+  });
+
+  it("retries review synchronization separately after a commit without review creation", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.listChangeRequests).mockRejectedValue(new Error("Provider unavailable"));
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      logger: { error: vi.fn() },
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Edit docs",
+      createReview: false,
+    });
+    expect(port.markChangeSetSubmitted).toHaveBeenCalled();
+    expect(port.enqueueReviewsSync).toHaveBeenCalledWith("project");
+    expect(port.enqueueReviewCreation).not.toHaveBeenCalled();
+  });
   it("uses one VPN access path for provider requests and Git", async () => {
     const port = repository();
     const client = provider();
@@ -1507,4 +1622,49 @@ describe("vanishing worker targets", () => {
       }),
     ).rejects.toThrow("Change set is unavailable");
   });
+});
+
+it("caches read-only review details for open requests and obtains checks for the detail snapshot's head", async () => {
+  const port = repository();
+  const client = provider();
+  vi.mocked(client.listChangeRequests).mockResolvedValue([
+    {
+      id: "1",
+      headSha: "old-head",
+      sourceBranch: "docs",
+      targetBranch: "main",
+      state: "open",
+      title: "Docs",
+      url: "url",
+    },
+    {
+      id: "2",
+      headSha: "closed-head",
+      sourceBranch: "closed",
+      targetBranch: "main",
+      state: "closed",
+      title: "Closed",
+      url: "url",
+    },
+  ]);
+  const details = {
+    headSha: "current-head",
+    readiness: { state: "ready" as const, reason: null },
+    labels: [{ name: "docs", color: "#abcdef" }],
+    approvals: {
+      required: 1,
+      remaining: 0,
+      reviewers: [{ name: "Anna", state: "approved" as const }],
+    },
+    comments: [{ id: "note", author: "Anna", body: "LGTM", createdAt: "2026-09-15T09:00:00Z" }],
+    commentsComplete: true,
+  };
+  vi.mocked(client.getChangeRequestDetails).mockResolvedValue(details);
+  await createWorkerService({ repository: port }).synchronizeReviews("project", client, "42");
+  expect(client.getChangeRequestDetails).toHaveBeenCalledExactlyOnceWith("42", "1");
+  expect(client.listChecks).toHaveBeenCalledExactlyOnceWith("42", "current-head");
+  expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
+    expect.objectContaining({ details, headSha: "current-head", externalId: "1" }),
+    expect.objectContaining({ details: null, checks: [], headSha: "closed-head", externalId: "2" }),
+  ]);
 });

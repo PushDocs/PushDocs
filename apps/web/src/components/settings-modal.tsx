@@ -1,4 +1,5 @@
 "use client";
+import { X } from "lucide-react";
 import {
   createContext,
   type ReactNode,
@@ -89,7 +90,7 @@ export function SettingsModal({
             disabled={pending}
             onClick={close}
           >
-            ×
+            <X aria-hidden size={18} />
           </button>
         </header>
         <div className="settings-modal-content" hidden={confirm}>

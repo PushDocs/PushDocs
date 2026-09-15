@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   start: vi.fn(),
   status: vi.fn(),
+  comments: vi.fn(),
 }));
+vi.mock("./use-file-comments", () => ({ useFileComments: mocks.comments }));
 vi.mock("@/app/actions", () => ({
   startBackgroundBranchSyncAction: mocks.backgroundSync,
   startGitOperationAction: mocks.start,
@@ -115,13 +117,15 @@ vi.mock("@pushdocs/ui", async (importOriginal) => {
     ),
   };
 });
-vi.mock("./file-comments", () => ({
+vi.mock("./file-comments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./file-comments")>()),
   FileComments: ({ path }: { path: string }) => <div>Обсуждение {path}</div>,
 }));
 let state: WorkbenchState;
 let requests: Array<Record<string, unknown>>;
 beforeEach(() => {
   vi.useFakeTimers();
+  mocks.comments.mockReturnValue({ comments: [], unreadCount: 0, error: "", refresh: vi.fn() });
   mocks.start.mockResolvedValue("job");
   mocks.backgroundSync.mockResolvedValue(null);
   mocks.status.mockResolvedValue({ status: "done" });
@@ -276,6 +280,8 @@ it("requires merging a recovered draft if its server base changed, including aft
   writeDraft(key, "My old edit", "Earlier base");
   mount();
   await click("Восстановить текст");
+  expect(screen.queryByText("Текущая версия PushDocs")).toBeNull();
+  await click("Две колонки");
   expect(screen.getByText("Текущая версия PushDocs")).toBeTruthy();
   await tick();
   expect(requests).toHaveLength(0);
@@ -628,6 +634,8 @@ it("previews replacements without editing or saving until confirmation", async (
   fireEvent.change(screen.getByLabelText("Заменить на"), { target: { value: "Новый" } });
   await click("Просмотреть замены");
   expect(screen.getByRole("dialog", { name: "Предпросмотр замены" })).toBeTruthy();
+  expect(screen.queryByText("После замены")).toBeNull();
+  await click("Две колонки");
   expect(screen.getByText("После замены")).toBeTruthy();
   await tick();
   expect(requests).toHaveLength(0);
@@ -1696,4 +1704,40 @@ it("uses shared operations, receives live text and flushes them before switching
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Второй");
   expect(requests.filter((request) => request.action === "files")).toHaveLength(0);
   for (const doc of documents.values()) doc.destroy();
+});
+
+it("shows the selected document's unread count in the comments button and caps its visual badge at 99+", () => {
+  mocks.comments.mockReturnValue({ comments: [], unreadCount: 123, error: "", refresh: vi.fn() });
+  mount();
+  const button = screen.getByRole("button", { name: /Комментарии 123 непрочитанных/ });
+  expect(button.textContent).toContain("99+");
+  expect(mocks.comments).toHaveBeenCalledWith({
+    projectId: "project",
+    branch: "main",
+    path: "docs/a.mdx",
+    active: false,
+  });
+});
+
+it("updates comment state through its own controller without reloading the editor for comment events", async () => {
+  mount();
+  await act(async () => {});
+  vi.mocked(fetch).mockClear();
+  await act(async () => {
+    for (const type of ["comment.created", "comments.read"])
+      window.dispatchEvent(
+        new CustomEvent("pushdocs:refresh", {
+          detail: {
+            type,
+            projectId: "project",
+            payload: { branch: "main", documentPath: "docs/a.mdx" },
+          },
+        }),
+      );
+  });
+  expect(fetch).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    "# Первый\n<Widget />",
+  );
 });

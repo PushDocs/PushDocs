@@ -12,7 +12,6 @@ import {
   Columns2,
   GitBranch,
   Heading2,
-  MessageSquare,
   MoreHorizontal,
   Plus,
   Puzzle,
@@ -48,7 +47,7 @@ import {
   writeDraft,
 } from "./draft-storage";
 import { uploadExplorerFiles } from "./explorer-upload";
-import { FileComments } from "./file-comments";
+import { FileComments, FileCommentsButton } from "./file-comments";
 import { ExplorerFileIcon, FileExplorer } from "./file-explorer";
 import { mergeFileStatuses } from "./file-status";
 import { MediaLibrary } from "./media-library";
@@ -57,6 +56,7 @@ import { rememberProjectBranch } from "./project-context";
 import { QuickOpen } from "./quick-open";
 import { planReplacement, ReplacePreview } from "./replace-preview";
 import { SourceEditor, type SourceEditorHandle } from "./source-editor";
+import { useFileComments } from "./use-file-comments";
 
 export interface WorkingFile {
   path: string;
@@ -143,6 +143,7 @@ export function Workbench({
   const textArea = useRef<SourceEditorHandle>(null);
   const modal = useRef<HTMLElement>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const fileComments = useFileComments({ projectId, branch, path: selected, active: commentsOpen });
   const [createDirectory, setCreateDirectory] = useState("");
   const [revealDirectory, setRevealDirectory] = useState("");
   const [branchStatuses, setBranchStatuses] = useState<Record<string, string>>({});
@@ -668,6 +669,7 @@ export function Workbench({
   useEffect(() => {
     const refresh = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined;
+      if (detail?.type === "comment.created" || detail?.type === "comments.read") return;
       if (detail?.projectId && detail.projectId !== projectId) return;
       if (detail?.payload?.branch && detail.payload.branch !== branch) return;
       if (
@@ -1502,14 +1504,11 @@ export function Workbench({
                         <Columns2 size={16} />
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      aria-expanded={commentsOpen}
-                      aria-controls="wb-comment-panel"
-                      onClick={() => setCommentsOpen(!commentsOpen)}
-                    >
-                      <MessageSquare size={16} /> Комментарии
-                    </button>
+                    <FileCommentsButton
+                      open={commentsOpen}
+                      unreadCount={fileComments.unreadCount}
+                      onToggle={() => setCommentsOpen(!commentsOpen)}
+                    />
                     <details className="wb-disclosure wb-document-menu">
                       <summary aria-label="Действия с документом" title="Действия с документом">
                         <MoreHorizontal size={18} />
@@ -1834,7 +1833,14 @@ export function Workbench({
               >
                 <X size={16} />
               </button>
-              <FileComments key={selected} projectId={projectId} branch={branch} path={selected} />
+              <FileComments
+                key={selected}
+                projectId={projectId}
+                branch={branch}
+                path={selected}
+                active={commentsOpen}
+                state={fileComments}
+              />
             </aside>
           ) : null}
         </section>
@@ -1842,7 +1848,7 @@ export function Workbench({
       {dialog ? (
         <div className="wb-modal-backdrop">
           <section
-            className={`wb-modal${dialog === "media" ? " wb-media-modal" : dialog === "replace" ? " wb-replacement-modal" : ""}`}
+            className={`wb-modal${dialog === "media" ? " wb-media-modal" : dialog === "replace" ? " wb-replacement-modal" : dialog === "search" ? " wb-search-modal" : ""}`}
             ref={modal}
             role="dialog"
             aria-modal="true"

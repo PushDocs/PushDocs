@@ -243,3 +243,20 @@ export interface CheckRunSummary {
   required: boolean;
   url: string | null;
 }
+
+/** Read-only snapshot of the Git provider's review information. Null means unavailable. */
+export interface ChangeRequestDetails {
+  headSha: string | null;
+  readiness: {
+    state: "ready" | "blocked" | "checking" | "unknown";
+    reason: string | null;
+  };
+  labels: Array<{ name: string; color: string | null }> | null;
+  approvals: {
+    required: number | null;
+    remaining: number | null;
+    reviewers: Array<{ id?: string; name: string; state: "approved" | "changes_requested" }>;
+  } | null;
+  comments: Array<{ id: string; author: string; body: string; createdAt: string }> | null;
+  commentsComplete: boolean;
+}

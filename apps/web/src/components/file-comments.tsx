@@ -1,54 +1,27 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { MessageSquare } from "lucide-react";
+import { useState } from "react";
+import { type FileCommentsState, useFileComments } from "./use-file-comments";
 
 export function FileComments({
   projectId,
   branch,
   path,
+  active = true,
+  state,
 }: {
   projectId: string;
   branch: string;
   path: string;
+  active?: boolean;
+  state?: FileCommentsState;
 }) {
-  const [comments, setComments] = useState<
-    Array<{ id: string; body: string; author_name: string }>
-  >([]);
+  const localState = useFileComments({ projectId, branch, path, active, enabled: !state });
+  const { comments, refresh, error: loadError } = state ?? localState;
   const [body, setBody] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const endpoint = `/api/projects/${projectId}/comments`;
-  const refresh = useCallback(
-    async (signal?: AbortSignal) => {
-      const response = await fetch(`${endpoint}?${new URLSearchParams({ branch, path })}`, {
-        signal,
-      });
-      if (!response.ok) throw new Error("Не удалось получить комментарии");
-      const result = await response.json();
-      if (!signal?.aborted) setComments(result);
-    },
-    [endpoint, branch, path],
-  );
-  useEffect(() => {
-    const controller = new AbortController();
-    const update = (event?: Event) => {
-      const detail = event instanceof CustomEvent ? event.detail : undefined;
-      if (detail?.projectId && detail.projectId !== projectId) return;
-      if (detail?.payload?.branch && detail.payload.branch !== branch) return;
-      if (detail?.payload?.documentPath && detail.payload.documentPath !== path) return;
-      void refresh(controller.signal).catch(() => {
-        if (!controller.signal.aborted)
-          setError("Комментарии недоступны. Повторим загрузку автоматически.");
-      });
-    };
-    update();
-    window.addEventListener("pushdocs:refresh", update);
-    window.addEventListener("online", update);
-    return () => {
-      window.removeEventListener("pushdocs:refresh", update);
-      window.removeEventListener("online", update);
-      controller.abort();
-    };
-  }, [refresh, projectId, branch, path]);
   return (
     <section className="wb-comments">
       <h2>Комментарии PushDocs</h2>
@@ -59,7 +32,7 @@ export function FileComments({
           <p>{comment.body}</p>
         </article>
       ))}
-      {error ? <p role="alert">{error}</p> : null}
+      {error || loadError ? <p role="alert">{error || loadError}</p> : null}
       <form
         onSubmit={async (event) => {
           event.preventDefault();
@@ -95,5 +68,31 @@ export function FileComments({
         </button>
       </form>
     </section>
+  );
+}
+
+export function FileCommentsButton({
+  open,
+  unreadCount,
+  onToggle,
+}: {
+  open: boolean;
+  unreadCount: number;
+  onToggle: () => void;
+}) {
+  return (
+    <button type="button" aria-expanded={open} aria-controls="wb-comment-panel" onClick={onToggle}>
+      <MessageSquare size={16} aria-hidden /> Комментарии
+      {unreadCount > 0 ? (
+        <span
+          className="wb-comment-count"
+          role="status"
+          aria-live="polite"
+          aria-label={`${unreadCount} непрочитанных комментариев`}
+        >
+          {unreadCount > 99 ? "99+" : unreadCount}
+        </span>
+      ) : null}
+    </button>
   );
 }

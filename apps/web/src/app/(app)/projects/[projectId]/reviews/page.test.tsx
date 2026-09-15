@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -109,7 +109,7 @@ it("opens the selected review source branch, including URL special characters", 
   expect(mocks.project).toHaveBeenCalledWith("user", "project");
   expect(html).toContain("Открыть MR в GitLab");
   expect(html).not.toContain("Перейти к слиянию");
-  expect(html).not.toContain("Готовность к слиянию");
+  expect(html).toContain("Готовность к слиянию");
   expect(html).not.toContain("Обязательные проверки пройдены");
   expect(html.match(/href="https:\/\/git.example\/2"/g)).toHaveLength(1);
   expect(html).not.toContain("Отправить изменения");
@@ -210,4 +210,22 @@ it("does not claim readiness or a running preview when checks are absent", async
   expect(html).not.toContain("Готово");
   expect(html).not.toContain("Предпросмотр обновляется");
   expect(html).toContain("Нет данных");
+});
+
+it("shows readiness on every open review and keeps missing provider data unknown even when checks pass", async () => {
+  mocks.checks.mockResolvedValueOnce([
+    { id: "ci", name: "checks", conclusion: "success", required: true },
+  ]);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  const list = within(screen.getByRole("navigation", { name: "Список MR" }));
+  expect(list.getAllByText("Готовность неизвестна")).toHaveLength(2);
+  expect(screen.getByRole("region", { name: "Готовность к слиянию" }).textContent).toContain(
+    "Готовность неизвестна",
+  );
+  expect(screen.queryByText("Готов к слиянию")).toBeNull();
 });

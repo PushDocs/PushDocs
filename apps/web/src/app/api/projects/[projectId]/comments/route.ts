@@ -17,7 +17,12 @@ export async function GET(request: Request, context: Context) {
     await store.requireProjectAccess(user.id, projectId);
     const query = new URL(request.url).searchParams;
     return Response.json(
-      await store.listComments(projectId, query.get("branch") ?? "", query.get("path") ?? ""),
+      await store.listCommentReadState(
+        user.id,
+        projectId,
+        query.get("branch") ?? "",
+        query.get("path") ?? "",
+      ),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -41,6 +46,33 @@ export async function POST(request: Request, context: Context) {
       anchorQuote: null,
     });
     return Response.json({ saved: true });
+  } catch (error) {
+    return apiError(error);
+  }
+}
+
+const readSchema = z.object({
+  branch: z.string().min(1),
+  path: z.string().min(1),
+  commentIds: z.array(z.string().uuid()).max(1000),
+});
+
+export async function PATCH(request: Request, context: Context) {
+  try {
+    assertSameOrigin(request);
+    const user = await requireUser();
+    const { projectId } = await context.params;
+    const store = repository();
+    await store.requireProjectAccess(user.id, projectId);
+    const input = readSchema.parse(await readJsonBody(request, 100000));
+    const readIds = await store.markCommentsRead({
+      userId: user.id,
+      projectId,
+      branch: input.branch,
+      documentPath: input.path,
+      commentIds: input.commentIds,
+    });
+    return Response.json({ readIds }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return apiError(error);
   }

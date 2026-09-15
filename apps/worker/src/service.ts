@@ -27,6 +27,8 @@ export type WorkerRepository = Pick<
   | "updateJobProgress"
   | "completeJob"
   | "ensureBranches"
+  | "enqueueReviewCreation"
+  | "enqueueReviewsSync"
   | "ensureProjectComponents"
   | "failJob"
   | "getChangeSetSubmission"
@@ -168,19 +170,27 @@ export function createWorkerService(options: WorkerServiceOptions) {
     for (let offset = 0; offset < requests.length; offset += 8) {
       rows.push(
         ...(await Promise.all(
-          requests.slice(offset, offset + 8).map(async (request) => ({
-            checks:
+          requests.slice(offset, offset + 8).map(async (request) => {
+            const details =
               request.state === "open"
-                ? await provider.listChecks(providerRepositoryId, request.headSha)
-                : [],
-            externalId: request.id,
-            headSha: request.headSha,
-            sourceBranch: request.sourceBranch,
-            state: request.state,
-            targetBranch: request.targetBranch,
-            title: request.title,
-            url: request.url,
-          })),
+                ? await provider.getChangeRequestDetails(providerRepositoryId, request.id)
+                : null;
+            const headSha = details?.headSha ?? request.headSha;
+            return {
+              details,
+              checks:
+                request.state === "open"
+                  ? await provider.listChecks(providerRepositoryId, headSha)
+                  : [],
+              externalId: request.id,
+              headSha,
+              sourceBranch: request.sourceBranch,
+              state: request.state,
+              targetBranch: request.targetBranch,
+              title: request.title,
+              url: request.url,
+            };
+          }),
         )),
       );
     }
@@ -332,7 +342,16 @@ export function createWorkerService(options: WorkerServiceOptions) {
       throw new Error("Project sync target is unavailable or no longer granted");
     const target = await repository.getChangeSetSubmission(changeSetId);
     if (!target || target.project_id !== projectId) throw new Error("Change set is unavailable");
-    if (target.status === "submitted") return;
+    if (target.status === "submitted") {
+      if (createReview && target.branch !== target.default_branch)
+        await repository.enqueueReviewCreation(
+          projectId,
+          target.branch,
+          message.split("\n", 1)[0] || "Обновление документации",
+          userId,
+        );
+      return;
+    }
     if (target.status !== "submitting") throw new Error("Change set is not ready for submission");
     const { access, provider } = await providerAccessFor(target);
     const branches = await provider.listBranches(target.provider_repository_id);
@@ -522,25 +541,41 @@ export function createWorkerService(options: WorkerServiceOptions) {
       sha: published.sha,
       url: `${target.clone_url.replace(/\.git$/, "")}/${target.kind === "gitlab" ? "-/" : ""}commit/${published.sha}`,
     };
-    if (createReview && target.branch !== target.default_branch) {
-      const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
-        (review) => review.sourceBranch === target.branch && review.state === "open",
-      );
-      if (!existing)
-        await provider.ensureChangeRequest({
-          repositoryId: target.provider_repository_id,
-          sourceBranch: target.branch,
-          targetBranch: target.default_branch,
-          title: message.split("\n", 1)[0] || "Обновление документации",
-        });
-    }
     await repository.markChangeSetSubmitted({
       changeSetId,
       commitSha: commit.sha,
       commitUrl: commit.url,
       projectId,
     });
-    await synchronizeReviews(projectId, provider, target.provider_repository_id);
+    const reviewTitle = message.split("\n", 1)[0] || "Обновление документации";
+    const needsReview = createReview && target.branch !== target.default_branch;
+    try {
+      if (needsReview) {
+        const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
+          (review) => review.sourceBranch === target.branch && review.state === "open",
+        );
+        if (!existing)
+          await provider.ensureChangeRequest({
+            repositoryId: target.provider_repository_id,
+            sourceBranch: target.branch,
+            targetBranch: target.default_branch,
+            title: reviewTitle,
+          });
+      }
+      await synchronizeReviews(projectId, provider, target.provider_repository_id);
+    } catch (error) {
+      logger.error(
+        JSON.stringify({
+          projectId,
+          commitSha: commit.sha,
+          error: String(error),
+          stage: "review-after-push",
+        }),
+      );
+      if (needsReview)
+        await repository.enqueueReviewCreation(projectId, target.branch, reviewTitle, userId);
+      else await repository.enqueueReviewsSync(projectId);
+    }
   }
 
   async function runJob(): Promise<boolean> {

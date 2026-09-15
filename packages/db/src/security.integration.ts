@@ -63,6 +63,8 @@ try {
   // Recreate the schema immediately before 011-two-factor only in the disposable database.
   // Later migrations must be rolled back too, otherwise Kysely rejects the broken history.
   await sql`
+    drop table comment_reads;
+    alter table change_requests drop column details;
     drop table collaborative_documents;
     drop index if exists discussions_project_branch_path_idx;
     drop index if exists change_requests_project_state_updated_idx;
@@ -77,9 +79,7 @@ try {
   await sql`alter table sessions drop column purpose, drop column mfa_verified`.execute(db);
   await sql`update project_invitations set expires_at = created_at + interval '7 days'`.execute(db);
   await sql`delete from kysely_migration
-    where name in ('011-two-factor', '012-read-path-indexes', '013-collaborative-documents')`.execute(
-    db,
-  );
+    where name >= '011-two-factor'`.execute(db);
   await migrateToLatest(db);
   assert.ok(await repo.findUserBySessionHash("old-owner-session"));
   assert.equal(await repo.findUserBySessionHash("old-reader-session"), undefined);

@@ -59,10 +59,10 @@ export function ConnectionCard({
           <strong>{connection.name}</strong>
           <small>{connection.baseUrl}</small>
           <small>{projectsLabel(connection.projectCount)}</small>
-          {connection.vpnSlot ? (
+          {vpnEnabled && connection.vpnSlot ? (
             <small className="connection-vpn-status">
               <ShieldCheck aria-hidden size={14} />
-              {vpnEnabled ? "VPN настроен" : "VPN-профиль сохранён, шлюзы отключены"}
+              VPN настроен
             </small>
           ) : null}
         </span>
@@ -107,14 +107,6 @@ export function ConnectionCard({
           title={`Настройки подключения ${connection.name}`}
           onClose={() => setOpen(false)}
         >
-          <p>Общее подключение. Изменения затронут все использующие его проекты.</p>
-          {connection.projects?.length ? (
-            <ul>
-              {connection.projects.map((project) => (
-                <li key={project.id}>{project.name}</li>
-              ))}
-            </ul>
-          ) : null}
           <CriticalForm
             className="connection-edit-form"
             action={async (data) => {

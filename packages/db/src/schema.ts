@@ -1,3 +1,4 @@
+import type { ChangeRequestDetails } from "@pushdocs/contracts";
 import type { ColumnType, Generated } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -156,6 +157,12 @@ export interface DiscussionsTable {
   resolved_at: Timestamp | null;
 }
 
+export interface CommentReadsTable {
+  user_id: string;
+  comment_id: string;
+  read_at: GeneratedTimestamp;
+}
+
 export interface CommentsTable {
   author_user_id: string;
   body: string;
@@ -214,6 +221,7 @@ export interface ProjectComponentsTable {
 }
 
 export interface ChangeRequestsTable {
+  details: ColumnType<ChangeRequestDetails | null, string | null | undefined, string | null>;
   external_id: string;
   head_sha: string;
   id: Generated<string>;
@@ -296,6 +304,7 @@ export interface Database {
   change_sets: ChangeSetsTable;
   check_runs: CheckRunsTable;
   comments: CommentsTable;
+  comment_reads: CommentReadsTable;
   discussions: DiscussionsTable;
   domain_events: DomainEventsTable;
   draft_files: DraftFilesTable;

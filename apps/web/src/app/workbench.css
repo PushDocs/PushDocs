@@ -1788,25 +1788,7 @@
   overflow: auto;
   min-height: 0;
   overscroll-behavior: contain;
-}
-.media-context {
-  display: flex;
-  gap: 16px;
-  color: var(--ink-muted);
-  font-size: 12px;
-  min-width: 0;
-}
-.media-context span {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.media-change-link {
-  margin: 8px 0 16px;
-  color: var(--ink-muted);
+  padding: 4px;
 }
 .wb-media-modal .media-upload {
   padding: 16px;
@@ -1843,6 +1825,13 @@
   outline: 2px solid var(--violet);
   outline-offset: 6px;
 }
+.media-upload-picker[aria-disabled="true"] {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.media-upload-picker input:disabled {
+  cursor: not-allowed;
+}
 .wb-media-modal label.media-article-filter {
   display: flex;
   align-items: center;
@@ -1871,10 +1860,6 @@
   font-size: 12px;
   padding: 6px 8px;
   min-height: 30px;
-}
-.media-scope {
-  font-size: 11px;
-  color: var(--ink-muted);
 }
 
 .wb-layout {
@@ -1906,12 +1891,43 @@
   padding-top: 16px;
   min-width: 0;
 }
+.wb-search-modal {
+  width: min(1200px, 100%);
+  height: calc(100dvh - 40px);
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.wb-search-modal > header {
+  flex-shrink: 0;
+}
+.wb-search-modal .quick-open {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-inline: 4px;
+}
+.wb-search-modal .quick-open > input,
+.wb-search-modal .quick-open-modes,
+.wb-search-modal .quick-open > p {
+  flex-shrink: 0;
+}
+.wb-search-modal .quick-open-results {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  align-content: start;
+  overscroll-behavior: contain;
+}
 .quick-open > input {
   width: 100%;
   margin: 12px 0;
 }
 .quick-open-modes {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .quick-open-modes [aria-pressed="true"] {
@@ -1938,6 +1954,11 @@
 }
 .quick-open-results small {
   color: var(--ink-muted);
+}
+.quick-open-results mark {
+  background: #fff0a3;
+  color: inherit;
+  border-radius: 2px;
 }
 .wb-explorer-menu {
   position: fixed;
@@ -2150,4 +2171,20 @@
 .wb-branch-progress small {
   color: var(--ink-muted);
   line-height: 1.5;
+}
+
+.wb-comment-count {
+  display: inline-flex;
+  margin-left: 6px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--violet-deep);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
 }

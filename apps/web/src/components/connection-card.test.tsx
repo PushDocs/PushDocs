@@ -145,7 +145,7 @@ it("cancel uses the same unsaved-data confirmation as Escape", () => {
   expect(screen.getByLabelText("Название")).toHaveProperty("value", "Unsaved");
 });
 
-it("lists the projects affected by an installation-wide connection", () => {
+it("opens connection settings without the shared-connection note or project list", () => {
   render(
     <ConnectionCard
       connection={{
@@ -160,9 +160,9 @@ it("lists the projects affected by an installation-wide connection", () => {
     />,
   );
   fireEvent.click(screen.getByText("Редактировать"));
-  expect(screen.getByRole("dialog").textContent).toContain("Изменения затронут все");
-  expect(screen.getByText("Alpha docs")).toBeTruthy();
-  expect(screen.getByText("Beta docs")).toBeTruthy();
+  expect(screen.getByRole("dialog").textContent).not.toContain("Общее подключение");
+  expect(screen.queryByText("Alpha docs")).toBeNull();
+  expect(screen.queryByText("Beta docs")).toBeNull();
 });
 
 it("renders Russian project plurals and GitHub-specific settings", () => {

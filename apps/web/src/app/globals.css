@@ -1158,6 +1158,7 @@ textarea:where(:not(.monaco-editor *)):focus {
 
 .settings-modal > header h2 {
   font-size: 20px;
+  line-height: 28px;
   margin: 0 0 4px;
 }
 
@@ -1180,6 +1181,14 @@ textarea:where(:not(.monaco-editor *)):focus {
   height: 34px;
   justify-content: center;
   width: 34px;
+}
+
+.settings-modal > header > button {
+  flex-shrink: 0;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
 }
 
 .settings-modal > header > button:hover,
@@ -3080,6 +3089,12 @@ textarea:where(:not(.monaco-editor *)):focus {
   width: 100%;
   min-width: 0;
 }
+.media-toolbar input,
+.media-toolbar > button {
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+}
 .media-upload,
 .media-confirm {
   padding: 20px;
@@ -3935,4 +3950,78 @@ progress::-moz-progress-bar {
   .invitation-copy-controls button {
     align-self: flex-start;
   }
+}
+
+.review-list a > span > .pd-status {
+  display: inline-flex;
+  justify-self: start;
+  margin-top: 8px;
+  max-width: 100%;
+  white-space: normal;
+}
+.review-information > section {
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.review-information h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+.review-information p {
+  margin: 10px 0 0;
+}
+.review-labels,
+.review-approvals,
+.review-comments {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.review-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.review-labels li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.review-labels i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+  flex-shrink: 0;
+}
+.review-approvals li,
+.review-comments header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.review-approvals li + li {
+  margin-top: 10px;
+}
+.review-comments li {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.review-comments li + li {
+  margin-top: 10px;
+}
+.review-comments time {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+.review-comments p {
+  white-space: pre-wrap;
 }

@@ -5,18 +5,20 @@ const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  markRead: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/server", () => ({
   requireUser: mocks.user,
   repository: () => ({
     requireProjectAccess: mocks.access,
-    listComments: mocks.list,
+    listCommentReadState: mocks.list,
+    markCommentsRead: mocks.markRead,
     createComment: mocks.create,
   }),
 }));
 
-import { GET, POST } from "./route";
+import { GET, PATCH, POST } from "./route";
 
 const context = { params: Promise.resolve({ projectId: "project" }) };
 beforeEach(() => {
@@ -31,7 +33,7 @@ it("scopes comments to the project, branch and file", async () => {
   );
   expect(await response.json()).toEqual([{ body: "Comment" }]);
   expect(mocks.access).toHaveBeenCalledWith("user", "project");
-  expect(mocks.list).toHaveBeenCalledWith("project", "docs/new", "docs/a.md");
+  expect(mocks.list).toHaveBeenCalledWith("user", "project", "docs/new", "docs/a.md");
 });
 it("lets an authorised reader comment without permission to edit documents", async () => {
   const response = await POST(
@@ -65,5 +67,45 @@ it("rejects missing membership and cross-origin requests", async () => {
 
 it("does not broaden missing branch and file filters", async () => {
   expect((await GET(new Request("https://cms.test/api"), context)).status).toBe(200);
-  expect(mocks.list).toHaveBeenCalledWith("project", "", "");
+  expect(mocks.list).toHaveBeenCalledWith("user", "project", "", "");
+});
+
+it("marks exactly the displayed comments for the authenticated user, including readers", async () => {
+  const commentIds = ["00000000-0000-4000-8000-000000000001"];
+  mocks.markRead.mockResolvedValue(commentIds);
+  const response = await PATCH(
+    new Request("https://cms.test/api", {
+      method: "PATCH",
+      headers: { Origin: "https://cms.test" },
+      body: JSON.stringify({ branch: "main", path: "docs/a.md", commentIds, userId: "other" }),
+    }),
+    context,
+  );
+  expect(await response.json()).toEqual({ readIds: commentIds });
+  expect(mocks.markRead).toHaveBeenCalledWith({
+    userId: "user",
+    projectId: "project",
+    branch: "main",
+    documentPath: "docs/a.md",
+    commentIds,
+  });
+  expect(mocks.access).toHaveBeenCalledWith("user", "project");
+});
+
+it("rejects cross-origin and invalid read receipts before writing them", async () => {
+  for (const [origin, input] of [
+    ["https://evil.test", { branch: "main", path: "a", commentIds: [] }],
+    ["https://cms.test", { branch: "main", path: "a", commentIds: ["not-a-uuid"] }],
+  ] as const) {
+    const response = await PATCH(
+      new Request("https://cms.test/api", {
+        method: "PATCH",
+        headers: { Origin: origin },
+        body: JSON.stringify(input),
+      }),
+      context,
+    );
+    expect(response.status).toBe(400);
+  }
+  expect(mocks.markRead).not.toHaveBeenCalled();
 });

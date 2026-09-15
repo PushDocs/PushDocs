@@ -36,9 +36,6 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
         <SettingsNavigation active="connections" canManageConnections />
       )}
       {!projectId ? <SettingsProjectPicker projects={await settingsProjectChoices(user)} /> : null}
-      {!vpnEnabled ? (
-        <p className="settings-hint">VPN-шлюзы отключены для этой установки.</p>
-      ) : null}
       <section className="connections-layout">
         <div className="settings-list">
           <h2>Подключено</h2>
@@ -107,9 +104,7 @@ export async function ConnectionSettings({ projectId }: { projectId?: string }) 
                 />
                 <small>Необязательно.</small>
               </label>
-            ) : (
-              <small>VPN-шлюзы отключены для этой установки.</small>
-            )}
+            ) : null}
             <button className="pd-button pd-button--primary" type="submit">
               Сохранить подключение
             </button>
