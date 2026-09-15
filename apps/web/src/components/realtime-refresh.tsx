@@ -3,7 +3,13 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-const localEvents = ["attachment.ready", "comment.created", "document.created", "files.staged"];
+const localEvents = [
+  "document.updated",
+  "attachment.ready",
+  "comment.created",
+  "document.created",
+  "files.staged",
+];
 const routeEvents = [
   "branch.synchronized",
   "change-set.conflicted",

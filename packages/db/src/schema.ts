@@ -268,6 +268,14 @@ export interface InstanceStateTable {
 }
 
 export interface Database {
+  collaborative_documents: {
+    branch_context_id: string;
+    path: string;
+    epoch: string;
+    state: string;
+    materialized_content: string;
+    updated_at: GeneratedTimestamp;
+  };
   upload_leases: UploadLeasesTable;
   preview_builds: {
     id: Generated<string>;

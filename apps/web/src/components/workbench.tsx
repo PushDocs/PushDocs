@@ -31,6 +31,11 @@ import {
   startBackgroundBranchSyncAction,
   startGitOperationAction,
 } from "@/app/actions";
+import {
+  CollaborationError,
+  CollaborativeDocument,
+  hasSharedDraft,
+} from "./collaborative-document";
 import { DiffViewer } from "./diff-viewer";
 import { DocumentPreview } from "./document-preview";
 import { DocumentTabs } from "./document-tabs";
@@ -64,6 +69,7 @@ export interface WorkingFile {
   loaded?: boolean;
 }
 export interface WorkbenchState {
+  collaboration?: boolean;
   files: WorkingFile[];
   uploads?: Array<{ path: string }>;
   ownerId?: string;
@@ -158,6 +164,8 @@ export function Workbench({
   const saveCallback = useRef<() => Promise<boolean>>(async () => false);
   const [saveFailure, setSaveFailure] = useState<"network" | "permission" | "other" | null>(null);
   const [recovery, setRecovery] = useState<LocalDraft>();
+  const shared = useRef<CollaborativeDocument | null>(null);
+  const [sharedReadyPath, setSharedReadyPath] = useState("");
   const [searchContent, setSearchContent] = useState(false);
   const [jump, setJump] = useState<{ line: number; token: number }>();
   const [closedTabs, setClosedTabs] = useState<string[]>([]);
@@ -169,8 +177,12 @@ export function Workbench({
   useEffect(() => {
     recoveryBase.current = undefined;
     const draft = readDraft(draftId);
-    setRecovery(draft && draft.text !== saved.current ? draft : undefined);
-  }, [draftId]);
+    let sharedCache = false;
+    try {
+      sharedCache = !!state.collaboration && hasSharedDraft(sessionStorage, `${draftId}:shared`);
+    } catch {}
+    setRecovery(!sharedCache && draft && draft.text !== saved.current ? draft : undefined);
+  }, [draftId, state.collaboration]);
   useEffect(() => {
     try {
       const width = Number(localStorage.getItem("pushdocs:explorer-width"));
@@ -178,6 +190,7 @@ export function Workbench({
     } catch {}
   }, []);
   function editText(value: string) {
+    shared.current?.edit(value);
     if (!writeDraft(draftId, value, recoveryBase.current ?? saved.current))
       setNotice(
         "Не удалось сохранить резервную копию в браузере. Не закрывайте вкладку до сохранения на сервере.",
@@ -205,7 +218,20 @@ export function Workbench({
       : ([...tabs].reverse().find((path) => /\.mdx?$/i.test(path)) ??
         state.files.find((file) => /\.mdx?$/i.test(file.path) && file.status !== "delete")?.path ??
         "");
-  const readOnly = projectReadOnly || !active || !!recovery || saveFailure === "permission";
+  const collaborative =
+    !!state.collaboration &&
+    /\.mdx?$/i.test(selected) &&
+    !!active &&
+    active.loaded !== false &&
+    state.status === "open" &&
+    !recovery &&
+    !needsMerge;
+  const readOnly =
+    projectReadOnly ||
+    !active ||
+    !!recovery ||
+    saveFailure === "permission" ||
+    (collaborative && sharedReadyPath !== selected);
   const isArticle = !!active && /\.mdx?$/i.test(selected);
   const readOnlyReason =
     state.role === "reader"
@@ -426,6 +452,96 @@ export function Workbench({
     };
   }, [projectId, branch]);
 
+  useEffect(() => {
+    if (!collaborative) return;
+    let disposed = false;
+    setSharedReadyPath("");
+    const session = new CollaborativeDocument({
+      key: `${draftId}:shared`,
+      storage: sessionStorage,
+      exchange: async (payload) => {
+        const response = await fetch(`/api/projects/${projectId}/collaboration`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ branch, path: selected, ...payload }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new CollaborationError(result.error, response.status);
+        return result;
+      },
+      onText: (value, pending) => {
+        if (disposed) return;
+        latest.current = value;
+        setText(value);
+        if (pending) writeDraft(draftId, value, saved.current);
+      },
+      onSaved: (reply, pending) => {
+        if (disposed) return;
+        saved.current = reply.content;
+        setSharedReadyPath(selected);
+        setError("");
+        setSaveFailure(null);
+        const current = stateRef.current;
+        const next = {
+          ...current,
+          revision: reply.revision,
+          changeSetId: reply.changeSetId,
+          files: current.files.map((file) =>
+            file.path === selected
+              ? {
+                  ...file,
+                  content: reply.content,
+                  status:
+                    file.status === "add"
+                      ? "add"
+                      : reply.content === file.baseContent
+                        ? "clean"
+                        : "modify",
+                }
+              : file,
+          ),
+        };
+        stateRef.current = next;
+        setState(next);
+        if (!pending) clearDraft(draftId);
+      },
+      onError: (cause) => {
+        if (disposed) return;
+        if (cause instanceof CollaborationError && cause.status === 409) {
+          blocked.current = true;
+          setNeedsMerge(true);
+        } else
+          setSaveFailure(
+            cause instanceof CollaborationError && [401, 403].includes(cause.status)
+              ? "permission"
+              : "network",
+          );
+        setError(
+          cause instanceof CollaborationError
+            ? cause.message
+            : "Нет связи с сервером. Ваш текст остаётся в редакторе.",
+        );
+      },
+    });
+    shared.current = session;
+    if (session.isReady) setSharedReadyPath(selected);
+    void session.sync();
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") void session.sync();
+    }, 1000);
+    const synchronize = () => void session.sync();
+    window.addEventListener("online", synchronize);
+    window.addEventListener("focus", synchronize);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      window.removeEventListener("online", synchronize);
+      window.removeEventListener("focus", synchronize);
+      if (shared.current === session) shared.current = null;
+      session.stop();
+    };
+  }, [collaborative, projectId, branch, selected, draftId]);
+
   const command = useCallback(
     async (payload: Record<string, unknown>) => {
       const response = await fetch(endpoint, {
@@ -441,7 +557,9 @@ export function Workbench({
   );
 
   const save = useCallback(async (): Promise<boolean> => {
+    if (shared.current?.hasPendingChanges) return shared.current.sync();
     if (latest.current === saved.current) return true;
+    if (shared.current) return shared.current.sync();
     if (blocked.current || inFlight.current || readOnly || !selected) return false;
     inFlight.current = true;
     setBusy(true);
@@ -516,9 +634,9 @@ export function Workbench({
 
   useEffect(() => {
     if (text === saved.current || !dirty || error || busy || saving) return;
-    const timer = setTimeout(() => void save(), 1200);
+    const timer = setTimeout(() => void save(), collaborative ? 150 : 1200);
     return () => clearTimeout(timer);
-  }, [dirty, text, error, busy, saving, save]);
+  }, [dirty, text, error, busy, saving, save, collaborative]);
 
   useEffect(() => {
     const prevent = (event: BeforeUnloadEvent) => {
@@ -554,6 +672,14 @@ export function Workbench({
         detail.revision <= stateRef.current.revision
       )
         return;
+      if (shared.current && detail?.type === "document.updated") {
+        void shared.current.sync();
+        return;
+      }
+      if (shared.current && detail?.type === "files.staged") {
+        void shared.current.sync();
+        return;
+      }
       if (!inFlight.current && latest.current === saved.current) {
         void load(true)
           .then((next) => {
@@ -1007,6 +1133,10 @@ export function Workbench({
               disabled={busy}
               onClick={async () => {
                 try {
+                  if (shared.current) {
+                    await shared.current.sync();
+                    return;
+                  }
                   const next = await load();
                   if (needsMerge) {
                     setMode("diff");
@@ -1050,9 +1180,15 @@ export function Workbench({
             type="button"
             onClick={() => {
               blocked.current = false;
-              setNeedsMerge(false);
               setError("");
-              void save();
+              void save().then((success) => {
+                if (success) {
+                  try {
+                    sessionStorage.removeItem(`${draftId}:shared`);
+                  } catch {}
+                  setNeedsMerge(false);
+                }
+              });
             }}
           >
             Я объединил версии — сохранить
@@ -1077,7 +1213,7 @@ export function Workbench({
               recoveryBase.current = copy.base;
               setRecovery(undefined);
               editText(copy.text);
-              if (copy.base !== saved.current) {
+              if (state.collaboration || copy.base !== saved.current) {
                 blocked.current = true;
                 setNeedsMerge(true);
                 setMode("diff");
@@ -1281,15 +1417,17 @@ export function Workbench({
                         title="Черновик сохраняется в PushDocs. Для отправки в Git откройте «Изменения»."
                       >
                         {!busy && !dirty && !needsMerge ? <Check size={14} /> : null}
-                        {state.role === "reader" || saveFailure === "permission"
-                          ? "Только чтение"
-                          : needsMerge
-                            ? "Автосохранение остановлено"
-                            : saving
-                              ? "Сохраняем…"
-                              : dirty
-                                ? "Есть изменения"
-                                : "Черновик сохранён"}
+                        {collaborative && sharedReadyPath !== selected
+                          ? "Подключаем редактор…"
+                          : state.role === "reader" || saveFailure === "permission"
+                            ? "Только чтение"
+                            : needsMerge
+                              ? "Автосохранение остановлено"
+                              : saving
+                                ? "Сохраняем…"
+                                : dirty
+                                  ? "Есть изменения"
+                                  : "Черновик сохранён"}
                       </span>
                     </div>
                   ) : null}
@@ -1556,6 +1694,8 @@ export function Workbench({
                         value={text}
                         readOnly={readOnly}
                         onChange={editText}
+                        onUndo={collaborative ? () => shared.current?.undo() : undefined}
+                        onRedo={collaborative ? () => shared.current?.redo() : undefined}
                         onSave={() => {
                           void save();
                         }}

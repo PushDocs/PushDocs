@@ -401,6 +401,19 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               `.execute(database);
             },
           },
+          "013-collaborative-documents": {
+            async up(database) {
+              await sql`create table collaborative_documents (
+                branch_context_id uuid not null references branch_contexts(id) on delete cascade,
+                path text not null, epoch uuid not null, state text not null,
+                materialized_content text not null, updated_at timestamptz not null default now(),
+                primary key (branch_context_id, path)
+              )`.execute(database);
+            },
+            async down(database) {
+              await database.schema.dropTable("collaborative_documents").execute();
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

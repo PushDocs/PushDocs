@@ -17,6 +17,8 @@ interface SourceEditorProps {
   onChange: (value: string) => void;
   onSave: () => void;
   onIndent: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
   readOnly: boolean;
   inputRef: RefObject<SourceEditorHandle | null>;
   storageKey?: string;
@@ -59,6 +61,18 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
         current.current.onChange(applyEditorInput(current.current.value, model.getValue()));
     });
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => current.current.onSave());
+    const element = host.current;
+    const historyKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !current.current.onUndo || current.current.readOnly)
+        return;
+      const key = event.key.toLowerCase();
+      if (key !== "z" && key !== "y") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.shiftKey || key === "y") current.current.onRedo?.();
+      else current.current.onUndo();
+    };
+    element.addEventListener("keydown", historyKey, true);
     const handle: SourceEditorHandle = {
       get selectionStart() {
         const s = editor.getSelection();
@@ -114,13 +128,35 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
       if (model.getValue() === text) return;
       syncing = true;
       editor.pushUndoStop();
-      editor.executeEdits("external", [{ range: model.getFullModelRange(), text }]);
+      if (current.current.onUndo) {
+        const before = model.getValue();
+        let start = 0;
+        while (start < before.length && start < text.length && before[start] === text[start])
+          start++;
+        let end = 0;
+        while (
+          end < before.length - start &&
+          end < text.length - start &&
+          before[before.length - end - 1] === text[text.length - end - 1]
+        )
+          end++;
+        const from = model.getPositionAt(start);
+        const to = model.getPositionAt(before.length - end);
+        editor.executeEdits("collaboration", [
+          {
+            range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column),
+            text: text.slice(start, text.length - end),
+            forceMoveMarkers: true,
+          },
+        ]);
+      } else editor.executeEdits("external", [{ range: model.getFullModelRange(), text }]);
       editor.pushUndoStop();
       syncing = false;
     };
     syncValue.current = sync;
     return () => {
       remember();
+      element.removeEventListener("keydown", historyKey, true);
       change.dispose();
       position.dispose();
       scroll.dispose();

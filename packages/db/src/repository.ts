@@ -7,6 +7,14 @@ import type {
 } from "@pushdocs/contracts";
 import { assertCan, normalizeBranchRef, type ProjectAction } from "@pushdocs/domain";
 import { sql } from "kysely";
+import * as Y from "yjs";
+import {
+  type DocumentExchange,
+  type DocumentExchangeResult,
+  decodeDocumentUpdate,
+  encodeDocumentUpdate,
+  openSharedDocument,
+} from "./collaboration";
 import { appendEvent } from "./events";
 import type { PreparedGitCommit } from "./schema";
 import { SecurityRepository } from "./security";
@@ -1242,6 +1250,164 @@ export class PushDocsRepository extends SecurityRepository {
         payload: { branch: input.branch, paths: input.files.map((file) => file.path) },
       });
       return { changeSetId: changeSet.id, revision: changeSet.revision + 1 };
+    });
+  }
+
+  /** Merge operations and the Git-facing draft under the same branch lock as stageFiles. */
+  async exchangeDocument(input: DocumentExchange): Promise<DocumentExchangeResult> {
+    await this.requireProjectAccess(
+      input.userId,
+      input.projectId,
+      input.update ? "document:write" : "project:read",
+    );
+    if (
+      !input.path ||
+      input.path
+        .split("/")
+        .some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git") ||
+      input.path.includes("\\")
+    )
+      throw new Error("Invalid file path");
+    if (input.update && !input.epoch)
+      throw new Error("Откройте совместный документ перед редактированием");
+    return this.database.transaction().execute(async (transaction) => {
+      const branch = await transaction
+        .selectFrom("branch_contexts")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", normalizeBranchRef(input.branch))
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      let changeSet = await transaction
+        .selectFrom("change_sets")
+        .selectAll()
+        .where("branch_context_id", "=", branch.id)
+        .where("status", "in", ["open", "conflicted", "submitting"])
+        .forUpdate()
+        .executeTakeFirst();
+      if (changeSet && changeSet.status !== "open")
+        throw new RevisionConflictError(
+          "Редактирование приостановлено: набор изменений отправляется или содержит конфликт с Git.",
+        );
+      const imported = await transaction
+        .selectFrom("imported_documents")
+        .select("content")
+        .where("branch_context_id", "=", branch.id)
+        .where("path", "=", input.path)
+        .executeTakeFirst();
+      const draft = changeSet
+        ? await transaction
+            .selectFrom("draft_files")
+            .selectAll()
+            .where("change_set_id", "=", changeSet.id)
+            .where("path", "=", input.path)
+            .executeTakeFirst()
+        : undefined;
+      if (draft?.operation === "delete" || (!imported && !draft))
+        throw new RevisionConflictError(
+          "Документ удалён или перемещён. Ваш текст остаётся в редакторе.",
+        );
+      const current = draft ? (draft.content ?? "") : (imported?.content ?? "");
+      let room = await transaction
+        .selectFrom("collaborative_documents")
+        .selectAll()
+        .where("branch_context_id", "=", branch.id)
+        .where("path", "=", input.path)
+        .executeTakeFirst();
+      // Whole-file operations (revert, rename, Git rebase) start a new editing epoch.
+      if (room && room.materialized_content !== current) room = undefined;
+      const epoch = room?.epoch ?? randomUUID();
+      if (input.epoch && input.epoch !== epoch)
+        throw new RevisionConflictError(
+          "Документ изменён вне совместного редактора. Сравните версии перед сохранением.",
+        );
+      const doc = openSharedDocument(current, room?.state);
+      try {
+        if (input.update) Y.applyUpdate(doc, decodeDocumentUpdate(input.update));
+        const content = doc.getText("source").toString();
+        const state = encodeDocumentUpdate(Y.encodeStateAsUpdate(doc));
+        if (content.length > 5_000_000 || state.length > 16_000_000 || doc.share.size !== 1)
+          throw new Error("Документ или операции слишком большие");
+        let revision = changeSet?.revision ?? 0;
+        if (content !== current) {
+          changeSet ??= await transaction
+            .insertInto("change_sets")
+            .values({
+              project_id: input.projectId,
+              branch_context_id: branch.id,
+              base_commit_sha: branch.head_commit_sha,
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          revision = changeSet.revision + 1;
+          if (imported && content === imported.content) {
+            await transaction
+              .deleteFrom("draft_files")
+              .where("change_set_id", "=", changeSet.id)
+              .where("path", "=", input.path)
+              .execute();
+          } else {
+            const values = {
+              content,
+              operation: imported ? ("modify" as const) : ("add" as const),
+              author_user_id: input.userId,
+              revision: (draft?.revision ?? 0) + 1,
+              updated_at: new Date(),
+            };
+            await transaction
+              .insertInto("draft_files")
+              .values({ ...values, path: input.path, change_set_id: changeSet.id })
+              .onConflict((c) => c.columns(["change_set_id", "path"]).doUpdateSet(values))
+              .execute();
+          }
+          await transaction
+            .updateTable("change_sets")
+            .set({ revision, updated_at: new Date() })
+            .where("id", "=", changeSet.id)
+            .execute();
+          await appendEvent(transaction, {
+            projectId: input.projectId,
+            entityId: input.path,
+            type: "document.updated",
+            revision,
+            payload: { branch: input.branch, path: input.path },
+          });
+        }
+        if (!room || room.state !== state)
+          await transaction
+            .insertInto("collaborative_documents")
+            .values({
+              branch_context_id: branch.id,
+              path: input.path,
+              epoch,
+              state,
+              materialized_content: content,
+            })
+            .onConflict((c) =>
+              c.columns(["branch_context_id", "path"]).doUpdateSet({
+                epoch,
+                state,
+                materialized_content: content,
+                updated_at: new Date(),
+              }),
+            )
+            .execute();
+        return {
+          epoch,
+          content,
+          revision,
+          changeSetId: changeSet?.id,
+          update: encodeDocumentUpdate(
+            Y.encodeStateAsUpdate(
+              doc,
+              input.vector ? decodeDocumentUpdate(input.vector) : undefined,
+            ),
+          ),
+          vector: encodeDocumentUpdate(Y.encodeStateVector(doc)),
+        };
+      } finally {
+        doc.destroy();
+      }
     });
   }
 

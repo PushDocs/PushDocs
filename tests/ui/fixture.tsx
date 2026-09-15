@@ -4,6 +4,8 @@ import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
 import { FilePicker } from "../../apps/web/src/components/file-picker";
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
 import { SearchableSelect, Select } from "../../packages/ui/src";
+import { CollaborationFixture } from "./collaboration-fixture";
+import { WorkbenchScrollFixture } from "./workbench-scroll-fixture";
 import "../../packages/ui/src/styles.css";
 import "../../apps/web/src/app/globals.css";
 import "../../apps/web/src/app/workbench.css";
@@ -55,6 +57,10 @@ function SettingsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("collaboration"))
+    return <CollaborationFixture />;
+  if (new URLSearchParams(window.location.search).has("workbench"))
+    return <WorkbenchScrollFixture />;
   if (new URLSearchParams(window.location.search).has("branches"))
     return (
       <main className="workbench" style={{ padding: 24 }}>

@@ -120,7 +120,6 @@ export function AppShell({
         >
           <FolderGit2 aria-hidden size={18} />
           Все проекты
-          <span>{projects.length}</span>
         </Link>
 
         {activeProject ? (

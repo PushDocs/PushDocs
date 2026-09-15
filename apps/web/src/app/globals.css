@@ -518,14 +518,6 @@ textarea:where(:not(.monaco-editor *)):focus {
   padding: 0 11px;
 }
 
-.sidebar-all span {
-  background: var(--surface-strong);
-  border-radius: 999px;
-  font-size: 11px;
-  margin-left: auto;
-  padding: 3px 7px;
-}
-
 .sidebar-all.active,
 .sidebar-nav a.active {
   background: var(--violet-wash);
@@ -2833,7 +2825,6 @@ textarea:where(:not(.monaco-editor *)):focus {
 .sidebar-collapsed .sidebar-branch > span,
 .sidebar-collapsed .project-switcher > span:nth-child(2),
 .sidebar-collapsed .project-switcher > svg,
-.sidebar-collapsed .sidebar-all > span,
 .sidebar-collapsed .profile-copy,
 .sidebar-collapsed .sidebar-profile form {
   display: none;
@@ -2894,8 +2885,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   .sidebar-label,
   .sidebar-branch > span,
   .project-switcher > span:nth-child(2),
-  .project-switcher > svg,
-  .sidebar-all > span {
+  .project-switcher > svg {
     display: none;
   }
 

@@ -1610,3 +1610,55 @@ it("renders local and remote deletions plus an uploaded non-image", async () => 
   );
   expect(screen.getByText("Скачать файл").getAttribute("href")).toContain("/assets?");
 });
+
+it("uses shared operations, receives live text and flushes them before switching documents", async () => {
+  const Y = await import("yjs");
+  state.collaboration = true;
+  const originalFetch = vi.mocked(fetch).getMockImplementation();
+  if (!originalFetch) throw new Error("Missing fetch fixture");
+  const documents = new Map(
+    state.files.map((file) => {
+      const doc = new Y.Doc();
+      doc.getText("source").insert(0, file.content);
+      return [file.path, doc];
+    }),
+  );
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (!String(url).endsWith("/collaboration")) return originalFetch(url, options);
+    const input = JSON.parse(String(options?.body));
+    const doc = documents.get(input.path);
+    if (!doc) throw new Error("Unknown document");
+    if (input.update) {
+      Y.applyUpdate(doc, Buffer.from(input.update, "base64"));
+      state.revision++;
+    }
+    const file = state.files.find((file) => file.path === input.path);
+    if (file) file.content = doc.getText("source").toString();
+    return Response.json({
+      epoch: input.path,
+      content: doc.getText("source").toString(),
+      revision: state.revision,
+      vector: Buffer.from(Y.encodeStateVector(doc)).toString("base64"),
+      update: Buffer.from(
+        Y.encodeStateAsUpdate(doc, input.vector ? Buffer.from(input.vector, "base64") : undefined),
+      ).toString("base64"),
+    });
+  });
+  mount();
+  await tick();
+  const editor = screen.getByLabelText("Исходник документа");
+  expect(editor).toHaveProperty("readOnly", false);
+  fireEvent.change(editor, { target: { value: "Local\n# Первый\n<Widget />" } });
+  const remote = documents.get("docs/a.mdx");
+  remote?.getText("source").insert(remote.getText("source").length, "\nRemote");
+  await tick();
+  expect(editor).toHaveProperty("value", "Local\n# Первый\n<Widget />\nRemote");
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.change(editor, { target: { value: "Final\nLocal\n# Первый\n<Widget />\nRemote" } });
+  await click("b.md");
+  await tick();
+  expect(remote?.getText("source").toString()).toBe("Final\nLocal\n# Первый\n<Widget />\nRemote");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Второй");
+  expect(requests.filter((request) => request.action === "files")).toHaveLength(0);
+  for (const doc of documents.values()) doc.destroy();
+});

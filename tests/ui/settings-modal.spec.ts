@@ -1,38 +1,14 @@
-import { createServer, type Server } from "node:http";
 import { expect, test } from "@playwright/test";
-import { build } from "esbuild";
+import { startFixtureServer } from "./fixture-server";
 
-let server: Server;
+let fixture: Awaited<ReturnType<typeof startFixtureServer>>;
 let baseURL: string;
 test.beforeAll(async () => {
-  const result = await build({
-    entryPoints: ["tests/ui/fixture.tsx"],
-    bundle: true,
-    write: false,
-    outfile: "fixture.js",
-    jsx: "automatic",
-    define: { "process.env.NODE_ENV": '"development"' },
-  });
-  const js = result.outputFiles.find((file) => file.path.endsWith(".js"))?.text ?? "";
-  const css = result.outputFiles.find((file) => file.path.endsWith(".css"))?.text ?? "";
-  server = createServer((request, response) => {
-    const script = request.url === "/fixture.js";
-    response.setHeader("Content-Type", script ? "text/javascript" : "text/html");
-    response.end(
-      script
-        ? js
-        : `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style><div id="root"></div><script src="/fixture.js"></script></html>`,
-    );
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Fixture did not start");
-  baseURL = `http://127.0.0.1:${address.port}`;
+  fixture = await startFixtureServer();
+  baseURL = fixture.url;
 });
 test.afterAll(async () => {
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await fixture.close();
 });
 test.beforeEach(async ({ page }) => {
   await page.goto(baseURL);

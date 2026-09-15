@@ -62,6 +62,7 @@ export default async function DocumentsPage({
       initialPath={query.path ?? initialFilePath}
       initialPanel={query.panel === "files" ? "media" : undefined}
       initial={{
+        collaboration: true,
         ownerId: user.id,
         files: state.files.map((file) =>
           file.path === initialFilePath && selectedFile ? selectedFile : file,

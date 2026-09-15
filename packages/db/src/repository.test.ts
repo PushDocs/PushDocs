@@ -3,6 +3,7 @@ import { Kysely, PostgresDialect, sql } from "kysely";
 import type { Pool } from "pg";
 import { DataType, newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as Y from "yjs";
 import { decryptSecret } from "./crypto";
 import { checkDatabase, closeDatabase, createDatabase, getDatabase } from "./database";
 import { appendEvent } from "./events";
@@ -2554,4 +2555,179 @@ describe("repository edge projections", () => {
     expect(branch.repository_paths).not.toContain("docs/intro.md");
     expect(branch.repository_paths).toContain("static/asset.png");
   });
+});
+
+describe("collaborative documents", () => {
+  it("merges concurrent operations and stages the converged text for Git", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      path: "docs/intro.md",
+      userId: fixture.operatorId,
+    };
+    const opened = await repository.exchangeDocument(input);
+    const alice = new Y.Doc();
+    const bob = new Y.Doc();
+    Y.applyUpdate(alice, Buffer.from(opened.update, "base64"));
+    Y.applyUpdate(bob, Buffer.from(opened.update, "base64"));
+    const vector = Y.encodeStateVector(alice);
+    alice.getText("source").insert(0, "Alice\n");
+    bob.getText("source").insert(bob.getText("source").length, "Bob\n");
+    const first = await repository.exchangeDocument({
+      ...input,
+      epoch: opened.epoch,
+      update: Buffer.from(Y.encodeStateAsUpdate(alice, vector)).toString("base64"),
+    });
+    const second = await repository.exchangeDocument({
+      ...input,
+      epoch: opened.epoch,
+      update: Buffer.from(Y.encodeStateAsUpdate(bob, vector)).toString("base64"),
+    });
+    Y.applyUpdate(alice, Buffer.from(second.update, "base64"));
+    Y.applyUpdate(bob, Buffer.from(second.update, "base64"));
+    expect(alice.getText("source").toString()).toBe("Alice\n# Intro\nBob\n");
+    expect(bob.getText("source").toString()).toBe("Alice\n# Intro\nBob\n");
+    expect((await repository.listWorkingFiles(fixture.projectId, "main")).files[0]?.content).toBe(
+      "Alice\n# Intro\nBob\n",
+    );
+    expect(second.revision).toBe(first.revision + 1);
+    alice.destroy();
+    bob.destroy();
+  });
+});
+
+it("replays updates idempotently and ignores revisions changed by other files", async () => {
+  const fixture = await synchronizedProject();
+  const input = {
+    projectId: fixture.projectId,
+    branch: "main",
+    path: "docs/intro.md",
+    userId: fixture.operatorId,
+  };
+  const opened = await repository.exchangeDocument(input);
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, Buffer.from(opened.update, "base64"));
+  const vector = Y.encodeStateVector(doc);
+  doc.getText("source").insert(0, "Mine\n");
+  await repository.stageFiles({
+    ...input,
+    expectedRevision: 0,
+    files: [{ path: "docs/other.md", content: "Other" }],
+  });
+  const update = Buffer.from(Y.encodeStateAsUpdate(doc, vector)).toString("base64");
+  const saved = await repository.exchangeDocument({ ...input, epoch: opened.epoch, update });
+  const repeated = await repository.exchangeDocument({ ...input, epoch: opened.epoch, update });
+  expect(repeated.content).toBe("Mine\n# Intro\n");
+  expect(repeated.revision).toBe(saved.revision);
+  const restarted = new PushDocsRepository(database);
+  expect((await restarted.exchangeDocument(input)).content).toBe("Mine\n# Intro\n");
+  doc.destroy();
+});
+it("rejects an old editing epoch after an external revert without resurrecting the draft", async () => {
+  const fixture = await synchronizedProject();
+  const input = {
+    projectId: fixture.projectId,
+    branch: "main",
+    path: "docs/intro.md",
+    userId: fixture.operatorId,
+  };
+  const opened = await repository.exchangeDocument(input);
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, Buffer.from(opened.update, "base64"));
+  doc.getText("source").insert(0, "Mine\n");
+  const update = Buffer.from(Y.encodeStateAsUpdate(doc)).toString("base64");
+  const saved = await repository.exchangeDocument({ ...input, epoch: opened.epoch, update });
+  await repository.stageFiles({
+    ...input,
+    expectedRevision: saved.revision,
+    files: [{ path: input.path, revert: true }],
+  });
+  await expect(
+    repository.exchangeDocument({ ...input, epoch: opened.epoch, update }),
+  ).rejects.toThrow("вне совместного редактора");
+  expect((await repository.listWorkingFiles(input.projectId, input.branch)).files[0]?.content).toBe(
+    "# Intro\n",
+  );
+  const fresh = await repository.exchangeDocument(input);
+  expect(fresh.epoch).not.toBe(opened.epoch);
+  doc.destroy();
+});
+it("isolates branches and refuses operations from readers or unknown project users", async () => {
+  const fixture = await synchronizedProject();
+  await repository.replaceImportedDocuments(fixture.projectId, "docs/other", "head-2", [
+    {
+      content: "Other branch",
+      contentHash: "h2",
+      locale: "default",
+      path: "docs/intro.md",
+      title: "Intro",
+      version: "current",
+    },
+  ]);
+  const input = {
+    projectId: fixture.projectId,
+    branch: "main",
+    path: "docs/intro.md",
+    userId: fixture.operatorId,
+  };
+  const opened = await repository.exchangeDocument(input);
+  const other = await repository.exchangeDocument({ ...input, branch: "docs/other" });
+  expect(other.content).toBe("Other branch");
+  expect(other.epoch).not.toBe(opened.epoch);
+  await expect(
+    repository.exchangeDocument({
+      ...input,
+      branch: "docs/other",
+      epoch: opened.epoch,
+      update: opened.update,
+    }),
+  ).rejects.toThrow("вне совместного редактора");
+  await database
+    .updateTable("project_memberships")
+    .set({ role: "reader" })
+    .where("project_id", "=", fixture.projectId)
+    .where("user_id", "=", fixture.operatorId)
+    .execute();
+  expect((await repository.exchangeDocument(input)).content).toBe("# Intro\n");
+  await expect(
+    repository.exchangeDocument({ ...input, epoch: opened.epoch, update: opened.update }),
+  ).rejects.toThrow("document:write");
+  await expect(repository.exchangeDocument({ ...input, userId: randomUUID() })).rejects.toThrow(
+    "Project not found",
+  );
+});
+it("does not accept malformed operations, deleted documents or edits during submission", async () => {
+  const fixture = await synchronizedProject();
+  const input = {
+    projectId: fixture.projectId,
+    branch: "main",
+    path: "docs/intro.md",
+    userId: fixture.operatorId,
+  };
+  const opened = await repository.exchangeDocument(input);
+  await expect(
+    repository.exchangeDocument({ ...input, epoch: opened.epoch, update: "invalid!" }),
+  ).rejects.toThrow("Некорректные");
+  const staged = await repository.stageFiles({
+    ...input,
+    expectedRevision: 0,
+    files: [{ path: input.path, content: null }],
+  });
+  await expect(
+    repository.exchangeDocument({ ...input, epoch: opened.epoch, update: opened.update }),
+  ).rejects.toThrow("удалён");
+  await repository.stageFiles({
+    ...input,
+    expectedRevision: staged.revision,
+    files: [{ path: input.path, revert: true }],
+  });
+  await database
+    .updateTable("change_sets")
+    .set({ status: "submitting" })
+    .where("id", "=", staged.changeSetId)
+    .execute();
+  await expect(
+    repository.exchangeDocument({ ...input, epoch: opened.epoch, update: opened.update }),
+  ).rejects.toThrow("приостановлено");
 });

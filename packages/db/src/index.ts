@@ -1,3 +1,4 @@
+export type { DocumentExchange, DocumentExchangeResult } from "./collaboration";
 export { decryptSecret, encryptSecret } from "./crypto";
 export { checkDatabase, closeDatabase, createDatabase, getDatabase } from "./database";
 export { appendEvent, type EventInput } from "./events";

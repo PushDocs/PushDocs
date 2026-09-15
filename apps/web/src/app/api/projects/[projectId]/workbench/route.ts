@@ -130,6 +130,7 @@ export async function GET(request: Request, context: Context) {
     ]);
     return Response.json(
       {
+        collaboration: true,
         ownerId: user.id,
         files: state.files.map((file) =>
           file.path === selected && selectedFile ? selectedFile : file,

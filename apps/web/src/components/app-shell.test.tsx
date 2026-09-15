@@ -128,7 +128,7 @@ describe("AppShell", () => {
     );
     expect(screen.getByText("Page content")).toBeTruthy();
     expect(screen.queryByText("Администратор")).toBeNull();
-    expect(screen.getByRole("link", { name: /Все проекты/ }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Все проекты" }).getAttribute("href")).toBe(
       "/projects",
     );
     expect(screen.queryByRole("link", { name: "Файлы" })).toBeNull();

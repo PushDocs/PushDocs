@@ -31,6 +31,8 @@ export function FallbackSourceEditor({
   onChange,
   onSave,
   onIndent,
+  onUndo,
+  onRedo,
   readOnly,
   inputRef: handleRef,
   storageKey,
@@ -40,6 +42,8 @@ export function FallbackSourceEditor({
   onChange: (value: string) => void;
   onSave: () => void;
   onIndent: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
   readOnly: boolean;
   inputRef: RefObject<SourceEditorHandle | null>;
   storageKey?: string;
@@ -140,6 +144,16 @@ export function FallbackSourceEditor({
             if ((event.metaKey || event.ctrlKey) && event.key === "s") {
               event.preventDefault();
               onSave();
+            }
+            if (
+              (event.metaKey || event.ctrlKey) &&
+              !readOnly &&
+              onUndo &&
+              ["z", "y"].includes(event.key.toLowerCase())
+            ) {
+              event.preventDefault();
+              if (event.shiftKey || event.key.toLowerCase() === "y") onRedo?.();
+              else onUndo();
             }
             if (event.key === "Tab" && !readOnly) {
               event.preventDefault();

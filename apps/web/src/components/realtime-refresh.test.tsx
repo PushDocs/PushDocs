@@ -54,10 +54,11 @@ describe("RealtimeRefresh", () => {
     const mounted = render(<RealtimeRefresh />);
     const source = FakeEventSource.instances[0];
     expect(source?.url).toBe("/events?projectId=project");
-    expect(source?.listeners.size).toBe(13);
+    expect(source?.listeners.has("document.updated")).toBe(true);
     expect(source?.listeners.has("files.staged")).toBe(true);
     source?.dispatch("comment.created");
     source?.dispatch("document.created");
+    source?.dispatch("document.updated");
     act(() => vi.advanceTimersByTime(200));
     expect(mocks.refresh).not.toHaveBeenCalled();
     source?.dispatch("change-set.submitted");

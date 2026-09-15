@@ -1700,11 +1700,13 @@
 
 /* The workbench owns the viewport; each content pane owns its scrolling. */
 .app-frame:has(.workbench) {
+  grid-template-rows: minmax(0, 1fr);
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
 }
 .app-main:has(> .workbench) {
+  align-self: stretch;
   min-height: 0;
   overflow: hidden;
 }
