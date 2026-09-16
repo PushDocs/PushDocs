@@ -114,8 +114,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    expose:
-      - "43000-43019"
     tmpfs:
       - /tmp:rw,exec,mode=1777
     volumes:
