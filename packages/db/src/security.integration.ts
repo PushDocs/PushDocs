@@ -63,6 +63,8 @@ try {
   // Recreate the schema immediately before 011-two-factor only in the disposable database.
   // Later migrations must be rolled back too, otherwise Kysely rejects the broken history.
   await sql`
+    drop table preview_leases;
+    drop table preview_sessions;
     drop table comment_reads;
     alter table change_requests drop column details;
     drop table collaborative_documents;
