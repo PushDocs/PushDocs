@@ -51,6 +51,7 @@ for (const fallback of [false, true]) {
     await aliceEditor.click();
     for (let i = 0; i < 20; i++) await alice.keyboard.press("ArrowLeft");
     await alice.keyboard.type("X");
+    await expect.poll(() => content(bob)).toBe("Xabc");
     await bobEditor.click();
     for (let i = 0; i < 20; i++) await bob.keyboard.press("ArrowRight");
     await bob.keyboard.type("Y");
