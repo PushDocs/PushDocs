@@ -164,12 +164,6 @@ export default async function ChangesPage({
             ) : null}
           </SubmitChanges>
         ) : null}
-        <Link
-          className="pd-button pd-button--secondary"
-          href={`/projects/${projectId}/documents?${new URLSearchParams({ branch })}`}
-        >
-          Редактировать ветку
-        </Link>
       </div>
       {fileCount === 0 ? (
         <section className="empty-state">

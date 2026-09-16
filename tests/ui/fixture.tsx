@@ -168,9 +168,6 @@ function App() {
             submitting={false}
             reviewLabel="MR"
           />
-          <a className="pd-button pd-button--secondary" href="#editor">
-            Редактировать ветку
-          </a>
         </div>
         <div className="changes-layout">
           <DiffViewer before="Before" after="After" />

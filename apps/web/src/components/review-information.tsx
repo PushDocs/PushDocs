@@ -1,5 +1,7 @@
 import type { ChangeRequestDetails } from "@pushdocs/contracts";
 import { Status } from "@pushdocs/ui";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const reasons: Record<string, string> = {
   draft_status: "Черновик нужно перевести в готовый к проверке режим.",
@@ -19,6 +21,10 @@ const reasons: Record<string, string> = {
   merge_time: "Время, разрешённое для слияния, ещё не наступило.",
   not_open: "Запрос на слияние уже закрыт.",
 };
+
+function safeMarkdown(source: string) {
+  return source.replace(/<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>/g, "");
+}
 
 export function ReviewReadiness({ details }: { details: ChangeRequestDetails | null | undefined }) {
   const state = details?.readiness.state ?? "unknown";
@@ -134,7 +140,15 @@ export function ReviewInformation({
                         {new Date(comment.createdAt).toLocaleString("ru-RU")}
                       </time>
                     </header>
-                    <p>{comment.body}</p>
+                    <div className="review-comment-markdown">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        skipHtml
+                        disallowedElements={["img"]}
+                      >
+                        {safeMarkdown(comment.body)}
+                      </ReactMarkdown>
+                    </div>
                   </li>
                 ))}
               </ol>

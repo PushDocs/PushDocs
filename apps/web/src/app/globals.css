@@ -4054,6 +4054,57 @@ progress::-moz-progress-bar {
   color: var(--ink-muted);
   font-size: 11px;
 }
-.review-comments p {
-  white-space: pre-wrap;
+.review-comment-markdown {
+  margin-top: 10px;
+  overflow-x: auto;
+}
+.review-comment-markdown > :first-child {
+  margin-top: 0;
+}
+.review-comment-markdown > :last-child {
+  margin-bottom: 0;
+}
+.review-comment-markdown h1,
+.review-comment-markdown h2,
+.review-comment-markdown h3,
+.review-comment-markdown h4,
+.review-comment-markdown h5,
+.review-comment-markdown h6 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  line-height: 1.35;
+}
+.review-comment-markdown p,
+.review-comment-markdown ul,
+.review-comment-markdown ol,
+.review-comment-markdown blockquote,
+.review-comment-markdown pre,
+.review-comment-markdown table {
+  margin: 10px 0 0;
+}
+.review-comment-markdown table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+}
+.review-comment-markdown th,
+.review-comment-markdown td {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+.review-comment-markdown blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--ink-muted);
+}
+.review-comment-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.review-comment-markdown pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface);
 }

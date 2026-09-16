@@ -31,7 +31,7 @@ const details: ChangeRequestDetails = {
   commentsComplete: true,
 };
 
-it("displays merge blockers, colored labels, approval requirements and plain read-only comments", () => {
+it("displays merge blockers, colored labels, approval requirements and safe read-only comments", () => {
   const { container } = render(<ReviewInformation details={details} />);
   expect(screen.getByText("Не готов к слиянию")).toBeTruthy();
   expect(screen.getByText("Не хватает обязательных одобрений.")).toBeTruthy();
@@ -42,13 +42,52 @@ it("displays merge blockers, colored labels, approval requirements and plain rea
     "rgb(171, 205, 239)",
   );
   expect(labels.getByText("untrusted").querySelector("i")?.style.backgroundColor).toBe("");
-  expect(screen.getByText(/<img src=x/).textContent).toContain("\nPlease fix");
+  expect(screen.getByText("Please fix")).toBeTruthy();
+  expect(container.textContent).not.toContain("<img src=x");
   expect(
     container.querySelectorAll("img, form, textarea, input, button, a, [contenteditable]"),
   ).toHaveLength(0);
   expect(screen.getByRole("region", { name: "Комментарии" }).querySelectorAll("li")).toHaveLength(
     1,
   );
+});
+
+it("renders Git provider comments as safe GFM Markdown", () => {
+  const markdown = [
+    "<!-- preview-deploy -->",
+    "## Preview Deploy",
+    "",
+    "Pipeline: [Open pipeline](https://gitlab.example/pipelines/9624)",
+    "",
+    "| Status | Site | Preview |",
+    "| --- | --- | --- |",
+    "| ⏳ Pending | docs | — |",
+    "",
+    "_Preview is rebuilding._",
+  ].join("\n");
+  const { container } = render(
+    <ReviewInformation
+      details={{
+        ...details,
+        comments: [
+          {
+            id: "markdown-note",
+            author: "Anna",
+            body: markdown,
+            createdAt: "2026-09-15T09:00:00Z",
+          },
+        ],
+      }}
+    />,
+  );
+
+  expect(screen.getByRole("heading", { name: "Preview Deploy", level: 2 })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open pipeline" }).getAttribute("href")).toBe(
+    "https://gitlab.example/pipelines/9624",
+  );
+  expect(screen.getByRole("table")).toBeTruthy();
+  expect(screen.getByText("Preview is rebuilding.").tagName).toBe("EM");
+  expect(container.textContent).not.toContain("preview-deploy");
 });
 
 it("distinguishes unavailable details from known empty labels, approvals and comments", () => {
@@ -86,7 +125,7 @@ it("shows accessible comments with an incomplete notice and translates unknown b
     />,
   );
   expect(screen.getByText("Часть комментариев недоступна.")).toBeTruthy();
-  expect(screen.getByText(/<img src=x/)).toBeTruthy();
+  expect(screen.getByText("Please fix")).toBeTruthy();
   expect(
     screen.getByText("Git-провайдер сообщает, что условия слияния ещё не выполнены."),
   ).toBeTruthy();

@@ -418,11 +418,7 @@ test("submission opens from the branch toolbar and blocks duplicate sends while 
 }, testInfo) => {
   await page.goto(`${baseURL}/?submit`);
   const trigger = page.getByRole("button", { name: "Отправить изменения", exact: true });
-  const edit = page.getByRole("link", { name: "Редактировать ветку" });
-  expect(await trigger.evaluate((element) => element.nextElementSibling?.textContent)).toBe(
-    "Редактировать ветку",
-  );
-  await expect(edit).toBeVisible();
+  await expect(page.getByRole("link", { name: "Редактировать ветку" })).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Отправить изменения" });
