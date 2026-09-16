@@ -42,6 +42,8 @@ trap 'exit 143' TERM
 
 compose config --quiet
 compose up --no-build --wait --wait-timeout 180
+test -z "$(compose port preview 43000 2>/dev/null)"
+test -n "$(compose port caddy 43000)"
 if compose ps --services --status running | grep -q '^vpn-gateway-'; then
   echo "VPN gateways started in a direct-only installation" >&2
   exit 1
@@ -60,12 +62,15 @@ fi
 echo "$health_response"
 test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$PUSHDOCS_E2E_BASE_URL/events")" = 401
 test "$(compose exec -T worker id -u)" = 1001
+test "$(compose exec -T preview id -u)" = 0
+test "$(compose exec -T preview id -u preview-11000)" = 11000
 compose exec -T worker git --version
 compose exec -T worker sh -c 'test -w /app/apps/worker/data/git && test -w /data/attachments'
+compose exec -T preview sh -c 'test -w /data/previews && test -r /data/attachments'
 yarn e2e
 
 # Stop writers before backing up PostgreSQL and attachments; keep the key separately.
-compose stop caddy web worker realtime
+compose stop caddy web worker realtime preview
 fixture seed
 compose exec -T postgres pg_dump -U pushdocs -d pushdocs -Fc > "$backup/database.dump"
 compose run --rm --no-deps -T worker tar -C /data/attachments -cf - . > "$backup/attachments.tar"

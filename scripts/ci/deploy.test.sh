@@ -107,14 +107,15 @@ grep -qx 'PUSHDOCS_ENCRYPTION_KEY=existing-encryption-key' "$deployment_root/.en
 grep -qx 'PUSHDOCS_VPN_GATEWAY_TOKEN=0000000000000000000000000000000000000000000000000000000000000000' "$deployment_root/.env"
 [[ $(grep -c '^PUSHDOCS_VPN_GATEWAY_TOKEN=' "$deployment_root/.env") == 1 ]]
 grep -qx 'PUSHDOCS_VPN_ENABLED=0' "$deployment_root/.env"
+grep -qx 'PUSHDOCS_PREVIEW_PUBLIC_HOST=213.148.1.118' "$deployment_root/.env"
 
 grep -Fq 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log"
 grep -Fq -- '--profile vpn stop vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
 ! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
-grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
+grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
 
 migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
-application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
+application_line=$(grep -n -F 'web worker realtime preview' "$docker_log" | cut -d: -f1)
 (( migration_line < application_line ))
 
 : > "$docker_log"
@@ -123,11 +124,11 @@ application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
 
 grep -qx 'PUSHDOCS_VPN_ENABLED=1' "$deployment_root/.env"
 grep -Fq -- '--profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log"
-grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
+grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
 
 migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
 gateway_line=$(grep -n -F 'vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log" | cut -d: -f1)
-application_line=$(grep -n -F 'web worker realtime' "$docker_log" | cut -d: -f1)
+application_line=$(grep -n -F 'web worker realtime preview' "$docker_log" | cut -d: -f1)
 (( migration_line < gateway_line && gateway_line < application_line ))
 
 # Keep the latest two distinct images, containers and unrelated repositories.
@@ -147,7 +148,7 @@ if PUSHDOCS_TEST_MIGRATION_FAIL=1 "$deployment_root/scripts/deploy.sh" \
   echo "Deployment continued after a failed migration" >&2
   exit 1
 fi
-! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime' "$docker_log"
+! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
 [[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
 
 echo 'PASS: deploy retains current images and data, removes old images before pull, stops on migration failure and gates VPN gateways'

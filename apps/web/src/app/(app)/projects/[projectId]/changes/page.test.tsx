@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 
+const submitChangesProps = vi.hoisted(() => vi.fn());
 const repository = vi.hoisted(() => ({
   getProjectForUser: vi.fn().mockResolvedValue({
     id: "project",
@@ -52,6 +53,16 @@ vi.mock("@/app/actions", () => ({
   gitOperationStatusAction: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+vi.mock("@/components/submit-changes", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/components/submit-changes")>();
+  return {
+    ...original,
+    SubmitChanges: (props: Parameters<typeof original.SubmitChanges>[0]) => {
+      submitChangesProps(props);
+      return <original.SubmitChanges {...props} />;
+    },
+  };
+});
 
 import ChangesPage from "./page";
 
@@ -98,4 +109,22 @@ it.each([
   expect(html).toContain(
     `<li class="active" aria-current="step"><span>${stage}</span>${stage === 2 ? "Коммит в ветку" : "MR"}</li>`,
   );
+});
+
+it("does not reopen an already released failed submission in recovery mode", async () => {
+  repository.getSubmissionStatus.mockResolvedValueOnce({
+    status: "failed",
+    last_error: "Git fetch failed (null): fatal: early EOF",
+  });
+
+  renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ branch: "fix" }),
+    }),
+  );
+
+  const props = submitChangesProps.mock.calls.at(-1)?.[0];
+  expect(props.retryAction).toBeUndefined();
+  expect(props.children).toBeNull();
 });

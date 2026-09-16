@@ -7,6 +7,7 @@ RUN corepack enable
 
 COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json turbo.json biome.json ./
 COPY apps/realtime/package.json ./apps/realtime/package.json
+COPY apps/preview/package.json ./apps/preview/package.json
 COPY apps/vpn-gateway/package.json ./apps/vpn-gateway/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY apps/worker/package.json ./apps/worker/package.json
@@ -43,14 +44,15 @@ RUN mkdir /corepack \
   && corepack enable \
   && corepack prepare yarn@4.17.1 --activate \
   && useradd --create-home --uid 1001 pushdocs \
+  && for uid in $(seq 11000 11099); do groupadd --gid "$uid" "preview-$uid"; useradd --no-create-home --home-dir /tmp --uid "$uid" --gid "$uid" "preview-$uid"; done \
   && chown -R pushdocs:pushdocs /corepack
 
 COPY --from=build --chown=pushdocs:pushdocs /app /app
 
 RUN chmod 755 /app/apps/vpn-gateway/scripts/up.sh /app/apps/vpn-gateway/scripts/down.sh
 
-RUN mkdir -p /app/apps/worker/data/git /data/attachments \
-  && chown -R pushdocs:pushdocs /app/apps/worker/data /data/attachments
+RUN mkdir -p /app/apps/worker/data/git /data/attachments /data/previews \
+  && chown -R pushdocs:pushdocs /app/apps/worker/data /data/attachments /data/previews
 
 USER pushdocs
 EXPOSE 3000 4100

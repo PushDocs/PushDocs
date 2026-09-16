@@ -193,6 +193,28 @@ export interface UploadLeasesTable {
   expires_at: Timestamp;
 }
 
+export interface PreviewSessionsTable {
+  branch: string;
+  created_at: GeneratedTimestamp;
+  desired_state: Generated<"running" | "stopped">;
+  head_sha: string | null;
+  id: Generated<string>;
+  last_error: string | null;
+  log: Generated<string>;
+  port: number;
+  project_id: string;
+  revision: Generated<number>;
+  status: Generated<"queued" | "starting" | "ready" | "failed" | "stopped">;
+  updated_at: GeneratedTimestamp;
+}
+
+export interface PreviewLeasesTable {
+  client_id: string;
+  expires_at: Timestamp;
+  session_id: string;
+  user_id: string;
+}
+
 export interface ChangeSetConflictsTable {
   kind: Generated<"text" | "binary">;
   base_content: string | null;
@@ -297,6 +319,8 @@ export interface Database {
     created_at: GeneratedTimestamp;
     updated_at: GeneratedTimestamp;
   };
+  preview_leases: PreviewLeasesTable;
+  preview_sessions: PreviewSessionsTable;
   attachments: AttachmentsTable;
   branch_contexts: BranchContextsTable;
   change_requests: ChangeRequestsTable;

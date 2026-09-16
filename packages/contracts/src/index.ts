@@ -67,6 +67,20 @@ export const projectConfigSchema = z
           .default("default"),
         install: z.array(z.string()).min(1).default(["yarn", "install", "--frozen-lockfile"]),
         build: z.array(z.string()).min(1).default(["yarn", "build"]),
+        start: z
+          .array(z.string())
+          .min(1)
+          .default([
+            "yarn",
+            "start",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "{port}",
+            "--no-open",
+            "--poll",
+            "1000",
+          ]),
         output: z.string().default("build"),
       })
       .optional(),

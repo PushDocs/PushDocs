@@ -2092,6 +2092,77 @@ describe("job lifecycle", () => {
   });
 });
 
+describe("live preview lifecycle", () => {
+  it("shares one session and stops it only after the last browser lease is released", async () => {
+    const fixture = await synchronizedProject();
+    const first = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    });
+    const secondClient = randomUUID();
+    const second = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: secondClient,
+      portFrom: 43000,
+      portTo: 43001,
+    });
+    expect(second).toMatchObject({ id: first.id, port: 43000, desired_state: "running" });
+
+    const firstLease = await database
+      .selectFrom("preview_leases")
+      .select("client_id")
+      .where("session_id", "=", first.id)
+      .where("client_id", "!=", secondClient)
+      .executeTakeFirstOrThrow();
+    await repository.releasePreview(first.id, fixture.operatorId, firstLease.client_id);
+    expect(await repository.getPreviewSession(fixture.projectId, "main")).toMatchObject({
+      desired_state: "running",
+    });
+    await repository.releasePreview(first.id, fixture.operatorId, secondClient);
+    expect(await repository.getPreviewSession(fixture.projectId, "main")).toMatchObject({
+      desired_state: "stopped",
+    });
+  });
+
+  it("expires abandoned leases and allows a failed session to be queued again", async () => {
+    const fixture = await synchronizedProject();
+    const clientId = randomUUID();
+    const session = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId,
+      portFrom: 43000,
+      portTo: 43000,
+    });
+    await database
+      .updateTable("preview_leases")
+      .set({ expires_at: new Date(0) })
+      .where("session_id", "=", session.id)
+      .execute();
+    await repository.reconcilePreviewLeases();
+    expect(await repository.getPreviewSession(fixture.projectId, "main")).toMatchObject({
+      desired_state: "stopped",
+    });
+    await repository.updatePreviewSession(session.id, { status: "failed" });
+    const retried = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43000,
+    });
+    expect(retried).toMatchObject({ desired_state: "running", status: "queued" });
+  });
+});
+
 describe("working tree projection", () => {
   it("includes repository paths, draft additions, modifications and deletions", async () => {
     const fixture = await synchronizedProject();

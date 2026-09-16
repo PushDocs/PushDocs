@@ -17,3 +17,85 @@
 		Referrer-Policy same-origin
 	}
 }
+
+# Live branch previews stay on the Docker network. Caddy is the only service
+# that publishes their fixed HTTP port range on the host.
+http://:43000 {
+	reverse_proxy preview:43000
+}
+
+http://:43001 {
+	reverse_proxy preview:43001
+}
+
+http://:43002 {
+	reverse_proxy preview:43002
+}
+
+http://:43003 {
+	reverse_proxy preview:43003
+}
+
+http://:43004 {
+	reverse_proxy preview:43004
+}
+
+http://:43005 {
+	reverse_proxy preview:43005
+}
+
+http://:43006 {
+	reverse_proxy preview:43006
+}
+
+http://:43007 {
+	reverse_proxy preview:43007
+}
+
+http://:43008 {
+	reverse_proxy preview:43008
+}
+
+http://:43009 {
+	reverse_proxy preview:43009
+}
+
+http://:43010 {
+	reverse_proxy preview:43010
+}
+
+http://:43011 {
+	reverse_proxy preview:43011
+}
+
+http://:43012 {
+	reverse_proxy preview:43012
+}
+
+http://:43013 {
+	reverse_proxy preview:43013
+}
+
+http://:43014 {
+	reverse_proxy preview:43014
+}
+
+http://:43015 {
+	reverse_proxy preview:43015
+}
+
+http://:43016 {
+	reverse_proxy preview:43016
+}
+
+http://:43017 {
+	reverse_proxy preview:43017
+}
+
+http://:43018 {
+	reverse_proxy preview:43018
+}
+
+http://:43019 {
+	reverse_proxy preview:43019
+}

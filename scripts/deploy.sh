@@ -122,7 +122,7 @@ if [[ -n "$("${compose[@]}" ps --status running -q postgres 2>/dev/null)" ]]; th
   install -d -m 700 "$backup"
 
   echo "Stopping application writers before backup."
-  "${compose[@]}" stop caddy web worker realtime
+  "${compose[@]}" stop caddy web worker realtime preview
   "${compose[@]}" exec -T postgres pg_isready -U pushdocs -d pushdocs
 
   database_tmp="$backup/database.dump.tmp"
@@ -144,6 +144,7 @@ set_setting PUSHDOCS_HTTP_PORT 80
 set_setting PUSHDOCS_HTTPS_PORT 443
 set_setting PUSHDOCS_IMAGE "$image"
 set_setting PUSHDOCS_PREVIEW_URL "$preview_url"
+set_setting PUSHDOCS_PREVIEW_PUBLIC_HOST 213.148.1.118
 set_setting PUSHDOCS_VPN_ENABLED "$vpn_enabled"
 
 "${compose[@]}" config --quiet
@@ -157,7 +158,7 @@ else
   "${compose[@]}" --profile vpn stop \
     vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4
 fi
-"${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime
+"${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 caddy
 
 health_url="$public_origin/api/health"
@@ -190,6 +191,6 @@ for _ in {1..30}; do
 done
 
 "${compose[@]}" ps >&2
-"${compose[@]}" logs --no-color --tail 100 caddy web realtime >&2
+"${compose[@]}" logs --no-color --tail 100 caddy web realtime preview >&2
 echo "The containers started, but the public health endpoint is unavailable: $health_url" >&2
 exit 1

@@ -102,6 +102,9 @@ if [[ -f "$env_file" ]]; then
   elif ! grep -q '^PUSHDOCS_VPN_ENABLED=' "$env_file"; then
     set_setting PUSHDOCS_VPN_ENABLED 0
   fi
+  if ! grep -q '^PUSHDOCS_PREVIEW_PUBLIC_HOST=' "$env_file"; then
+    set_setting PUSHDOCS_PREVIEW_PUBLIC_HOST 213.148.1.118
+  fi
   chmod 600 "$env_file"
   echo "Using the existing $env_file. Secrets were not changed."
 else
@@ -174,6 +177,7 @@ else
     printf 'PUSHDOCS_ENCRYPTION_KEY=%s\n' "$encryption_key"
     printf 'PUSHDOCS_VPN_ENABLED=%s\n' "$vpn_enabled"
     printf 'PUSHDOCS_VPN_GATEWAY_TOKEN=%s\n' "$vpn_gateway_token"
+    printf 'PUSHDOCS_PREVIEW_PUBLIC_HOST=213.148.1.118\n'
     printf 'PUSHDOCS_ADDRESS=%s\n' "$caddy_address"
     printf 'PUSHDOCS_HTTP_PORT=%s\n' "$http_port"
     printf 'PUSHDOCS_HTTPS_PORT=%s\n' "$https_port"

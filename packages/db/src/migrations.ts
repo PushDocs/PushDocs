@@ -435,6 +435,39 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               await database.schema.dropTable("collaborative_documents").execute();
             },
           },
+          "016-live-preview-sessions": {
+            async up(database) {
+              await sql`create table preview_sessions (
+                id uuid primary key default gen_random_uuid(),
+                project_id uuid not null references projects(id) on delete cascade,
+                branch text not null,
+                port integer not null unique,
+                desired_state text not null default 'running' check (desired_state in ('running','stopped')),
+                status text not null default 'queued' check (status in ('queued','starting','ready','failed','stopped')),
+                head_sha text,
+                revision integer not null default 0,
+                log text not null default '',
+                last_error text,
+                created_at timestamptz not null default now(),
+                updated_at timestamptz not null default now(),
+                unique(project_id, branch)
+              );
+              create table preview_leases (
+                session_id uuid not null references preview_sessions(id) on delete cascade,
+                user_id uuid not null references users(id) on delete cascade,
+                client_id text not null,
+                expires_at timestamptz not null,
+                primary key(session_id, user_id, client_id)
+              );
+              create index preview_leases_expiry_idx on preview_leases(expires_at);
+              create index preview_sessions_desired_idx on preview_sessions(desired_state, updated_at)`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`drop table if exists preview_leases, preview_sessions`.execute(database);
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

@@ -59,6 +59,9 @@ services:
       HOSTNAME: "0.0.0.0"
       PUSHDOCS_PUBLIC_ORIGIN: ${PUSHDOCS_PUBLIC_ORIGIN:?Run ./scripts/install.sh first}
       PUSHDOCS_PREVIEW_URL: ${PUSHDOCS_PREVIEW_URL:-}
+      PUSHDOCS_PREVIEW_PUBLIC_HOST: ${PUSHDOCS_PREVIEW_PUBLIC_HOST:-213.148.1.118}
+      PUSHDOCS_PREVIEW_PORT_FROM: "43000"
+      PUSHDOCS_PREVIEW_PORT_TO: "43019"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -88,6 +91,36 @@ services:
     volumes:
       - attachments:/data/attachments
       - git_cache:/app/apps/worker/data/git
+    networks:
+      - default
+      - database
+      - vpn-control
+
+  preview:
+    <<: *app
+    user: root
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    command: ["yarn", "workspace", "@pushdocs/preview", "start"]
+    environment:
+      <<: *app-environment
+      PUSHDOCS_PREVIEW_DIR: /data/previews
+      PUSHDOCS_PREVIEW_RUNTIME_UID_FROM: 11000
+      PUSHDOCS_PREVIEW_PORT_FROM: "43000"
+      PUSHDOCS_PREVIEW_PORT_TO: "43019"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "43000-43019"
+    tmpfs:
+      - /tmp:rw,exec,mode=1777
+    volumes:
+      - attachments:/data/attachments:ro
+      - preview_workspaces:/data/previews
     networks:
       - default
       - database
@@ -166,6 +199,8 @@ services:
   caddy:
     image: caddy:2.10.2-alpine
     depends_on:
+      preview:
+        condition: service_started
       realtime:
         condition: service_healthy
       web:
@@ -175,6 +210,7 @@ services:
     ports:
       - "${PUSHDOCS_HTTP_PORT:-8080}:80"
       - "${PUSHDOCS_HTTPS_PORT:-8443}:443"
+      - "43000-43019:43000-43019"
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -194,6 +230,7 @@ volumes:
   attachments:
   caddy_data:
   postgres_data:
+  preview_workspaces:
 
 networks:
   database:

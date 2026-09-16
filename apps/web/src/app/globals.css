@@ -3322,6 +3322,31 @@ textarea:where(:not(.monaco-editor *)):focus {
   max-width: none;
   padding: 28px 24px;
 }
+.changes-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.live-preview-error {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  max-width: 360px;
+}
+.live-preview-error small {
+  color: var(--danger, #a43636);
+  text-align: right;
+}
+.spin {
+  animation: preview-spin 900ms linear infinite;
+}
+@keyframes preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .changes-page .changes-layout {
   gap: 20px;
   grid-template-columns: minmax(0, 1fr);

@@ -8,6 +8,7 @@ import {
 } from "@/app/actions";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
+import { LivePreviewButton } from "@/components/live-preview-button";
 import { ProjectContext } from "@/components/project-context";
 import { SubmitChanges } from "@/components/submit-changes";
 import { repository, requireUser } from "@/lib/server";
@@ -74,6 +75,8 @@ export default async function ChangesPage({
   const changeSetId = drafts[0]?.change_set_id ?? attachments[0]?.change_set_id;
   const changeSet = drafts[0];
   const changeSetStatus = changeSet?.status ?? attachments[0]?.change_set_status;
+  const submissionNeedsRecovery =
+    changeSetStatus === "submitting" && submission?.status === "failed";
   const fileCount = new Set([
     ...drafts.map((file) => file.path),
     ...attachments.map((file) => file.repository_path),
@@ -107,10 +110,13 @@ export default async function ChangesPage({
             </p>
           ) : null}
         </div>
-        <span className="branch-placeholder">
-          <GitBranch aria-hidden size={15} />
-          {branch}
-        </span>
+        <div className="changes-header-actions">
+          <LivePreviewButton projectId={projectId} branch={branch} />
+          <span className="branch-placeholder">
+            <GitBranch aria-hidden size={15} />
+            {branch}
+          </span>
+        </div>
       </header>
 
       <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
@@ -134,7 +140,7 @@ export default async function ChangesPage({
           <SubmitChanges
             action={submitChangeSetAction}
             retryAction={
-              submission?.status === "failed" && access.role !== "reader"
+              submissionNeedsRecovery && access.role !== "reader"
                 ? retryChangeSetSubmissionAction
                 : undefined
             }
@@ -152,7 +158,7 @@ export default async function ChangesPage({
               conflicts.length > 0
             }
           >
-            {submission && submission.status !== "done" ? (
+            {changeSetStatus === "submitting" && submission && submission.status !== "done" ? (
               <div role="status" className="panel-note">
                 <p>
                   {submission.status === "failed"

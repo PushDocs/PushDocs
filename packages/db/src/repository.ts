@@ -582,6 +582,7 @@ export class PushDocsRepository extends SecurityRepository {
         "projects.default_branch",
         "projects.root_path",
         "repositories.provider_repository_id",
+        "repositories.clone_url",
         "provider_connections.base_url",
         "provider_connections.id as connection_id",
         "provider_connections.kind",
@@ -954,6 +955,196 @@ export class PushDocsRepository extends SecurityRepository {
       progress: typeof progress === "string" ? progress : null,
       progressCounts,
     };
+  }
+
+  async acquirePreview(input: {
+    branch: string;
+    clientId: string;
+    portFrom: number;
+    portTo: number;
+    projectId: string;
+    userId: string;
+  }) {
+    const branch = normalizeBranchRef(input.branch);
+    return this.database.transaction().execute(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const now = new Date();
+      await transaction.deleteFrom("preview_leases").where("expires_at", "<", now).execute();
+      const leased = new Set(
+        (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
+          (row) => row.session_id,
+        ),
+      );
+      const orphaned = (
+        await transaction
+          .selectFrom("preview_sessions")
+          .select("id")
+          .where("desired_state", "=", "running")
+          .execute()
+      ).filter((row) => !leased.has(row.id));
+      if (orphaned.length > 0)
+        await transaction
+          .updateTable("preview_sessions")
+          .set({ desired_state: "stopped", updated_at: now })
+          .where(
+            "id",
+            "in",
+            orphaned.map((row) => row.id),
+          )
+          .execute();
+      let session = await transaction
+        .selectFrom("preview_sessions")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("branch", "=", branch)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!session) {
+        const occupied = new Set(
+          (
+            await transaction
+              .selectFrom("preview_sessions")
+              .select("port")
+              .where("desired_state", "=", "running")
+              .execute()
+          ).map((row) => row.port),
+        );
+        const port = Array.from(
+          { length: input.portTo - input.portFrom + 1 },
+          (_, index) => input.portFrom + index,
+        ).find((candidate) => !occupied.has(candidate));
+        if (!port) throw new Error("Нет свободного порта для предпросмотра");
+        await transaction
+          .deleteFrom("preview_sessions")
+          .where("port", "=", port)
+          .where("desired_state", "=", "stopped")
+          .execute();
+        session = await transaction
+          .insertInto("preview_sessions")
+          .values({ branch, port, project_id: input.projectId })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+      } else if (session.desired_state === "stopped" || session.status === "failed") {
+        session = await transaction
+          .updateTable("preview_sessions")
+          .set({
+            desired_state: "running",
+            last_error: null,
+            status: "queued",
+            updated_at: now,
+          })
+          .where("id", "=", session.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+      }
+      await transaction
+        .insertInto("preview_leases")
+        .values({
+          client_id: input.clientId,
+          expires_at: new Date(now.getTime() + 60_000),
+          session_id: session.id,
+          user_id: input.userId,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["session_id", "user_id", "client_id"]).doUpdateSet({
+            expires_at: new Date(now.getTime() + 60_000),
+          }),
+        )
+        .execute();
+      return session;
+    });
+  }
+
+  async heartbeatPreview(sessionId: string, userId: string, clientId: string): Promise<boolean> {
+    const result = await this.database
+      .updateTable("preview_leases")
+      .set({ expires_at: new Date(Date.now() + 60_000) })
+      .where("session_id", "=", sessionId)
+      .where("user_id", "=", userId)
+      .where("client_id", "=", clientId)
+      .executeTakeFirst();
+    return result.numUpdatedRows === 1n;
+  }
+
+  async releasePreview(sessionId: string, userId: string, clientId: string): Promise<void> {
+    await this.database.transaction().execute(async (transaction) => {
+      await transaction
+        .deleteFrom("preview_leases")
+        .where("session_id", "=", sessionId)
+        .where("user_id", "=", userId)
+        .where("client_id", "=", clientId)
+        .execute();
+      const lease = await transaction
+        .selectFrom("preview_leases")
+        .select("session_id")
+        .where("session_id", "=", sessionId)
+        .where("expires_at", ">", new Date())
+        .executeTakeFirst();
+      if (!lease)
+        await transaction
+          .updateTable("preview_sessions")
+          .set({ desired_state: "stopped", updated_at: new Date() })
+          .where("id", "=", sessionId)
+          .execute();
+    });
+  }
+
+  async getPreviewSession(projectId: string, branch: string) {
+    return this.database
+      .selectFrom("preview_sessions")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("branch", "=", normalizeBranchRef(branch))
+      .executeTakeFirst();
+  }
+
+  async reconcilePreviewLeases(): Promise<void> {
+    await this.database.transaction().execute(async (transaction) => {
+      await transaction.deleteFrom("preview_leases").where("expires_at", "<", new Date()).execute();
+      const leased = new Set(
+        (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
+          (row) => row.session_id,
+        ),
+      );
+      const orphaned = (
+        await transaction
+          .selectFrom("preview_sessions")
+          .select("id")
+          .where("desired_state", "=", "running")
+          .execute()
+      ).filter((row) => !leased.has(row.id));
+      if (orphaned.length > 0)
+        await transaction
+          .updateTable("preview_sessions")
+          .set({ desired_state: "stopped", updated_at: new Date() })
+          .where(
+            "id",
+            "in",
+            orphaned.map((row) => row.id),
+          )
+          .execute();
+    });
+  }
+
+  async listPreviewSessions() {
+    return this.database.selectFrom("preview_sessions").selectAll().execute();
+  }
+
+  async updatePreviewSession(
+    sessionId: string,
+    values: {
+      head_sha?: string | null;
+      last_error?: string | null;
+      log?: string;
+      revision?: number;
+      status?: "queued" | "starting" | "ready" | "failed" | "stopped";
+    },
+  ): Promise<void> {
+    await this.database
+      .updateTable("preview_sessions")
+      .set({ ...values, updated_at: new Date() })
+      .where("id", "=", sessionId)
+      .execute();
   }
 
   async listBranches(projectId: string) {
@@ -2134,6 +2325,25 @@ export class PushDocsRepository extends SecurityRepository {
       .where("branch_contexts.full_ref", "=", normalizeBranchRef(branch))
       .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
       .orderBy("attachments.created_at", "desc")
+      .execute();
+  }
+
+  async listPreviewAttachments(projectId: string, branch: string) {
+    return this.database
+      .selectFrom("attachments")
+      .innerJoin("change_sets", "change_sets.id", "attachments.change_set_id")
+      .innerJoin("branch_contexts", "branch_contexts.id", "change_sets.branch_context_id")
+      .select([
+        "attachments.id",
+        "attachments.repository_path",
+        "attachments.sha256",
+        "attachments.status",
+        "attachments.storage_key",
+      ])
+      .where("attachments.project_id", "=", projectId)
+      .where("branch_contexts.full_ref", "=", normalizeBranchRef(branch))
+      .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
+      .where("attachments.status", "=", "ready")
       .execute();
   }
 
