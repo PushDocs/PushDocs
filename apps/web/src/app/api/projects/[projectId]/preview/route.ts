@@ -36,11 +36,18 @@ function previewResponse(session: {
   port: number;
   status: string;
 }) {
+  const message = session.log
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1)
+    ?.slice(0, 240);
   return {
     sessionId: session.id,
     status: session.status,
     error: session.last_error,
     log: session.log,
+    message,
     url: `http://${previewSettings().host}:${session.port}/`,
   };
 }

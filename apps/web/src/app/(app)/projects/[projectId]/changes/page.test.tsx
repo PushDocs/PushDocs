@@ -84,6 +84,7 @@ it("uses the selected branch's actual before/after content and distinguishes rep
   expect(html).not.toContain('class="submit-panel"');
   expect(html).not.toContain('name="message"');
   expect(html).toContain("Открыть MR: Update docs");
+  expect(html).not.toContain("предпросмотр");
   expect(html).toContain('href="/projects/project/reviews?review=mr"');
   expect(html).toContain('<li class="active" aria-current="step"><span>1</span>Правки</li>');
 });

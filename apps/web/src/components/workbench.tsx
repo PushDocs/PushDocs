@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   gitOperationStatusAction,
   startBackgroundBranchSyncAction,
@@ -102,6 +102,7 @@ export function Workbench({
   initial,
   initialPath,
   initialPanel,
+  headerAction,
   components = [],
   metadataTabEnabled = false,
 }: {
@@ -112,6 +113,7 @@ export function Workbench({
   initial: WorkbenchState;
   initialPath?: string;
   initialPanel?: "media";
+  headerAction?: ReactNode;
   components?: Array<{ label: string; snippet: string }>;
   metadataTabEnabled?: boolean;
 }) {
@@ -1103,6 +1105,7 @@ export function Workbench({
           <h1>Документы</h1>
         </div>
         <div className="wb-actions">
+          {headerAction}
           <div className="wb-branch-tools">
             <SearchableSelect
               className="wb-branch-picker"

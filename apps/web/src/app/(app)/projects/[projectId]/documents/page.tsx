@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { BranchImport } from "@/components/branch-import";
+import { LivePreviewButton } from "@/components/live-preview-button";
 import { Workbench } from "@/components/workbench";
 import { repository, requireUser } from "@/lib/server";
 import { localWorkbenchIndexContext } from "@/lib/workbench";
@@ -56,6 +57,7 @@ export default async function DocumentsPage({
       key={`${projectId}:${branch}`}
       projectId={projectId}
       projectName={project.name}
+      headerAction={<LivePreviewButton projectId={projectId} branch={branch} />}
       defaultBranch={project.defaultBranch}
       components={components}
       branch={branch}

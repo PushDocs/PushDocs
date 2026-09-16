@@ -36,3 +36,27 @@ it("acquires a preview on mount, opens it in a new tab and releases it on unmoun
   await waitFor(() => expect(requests.some((request) => request.action === "release")).toBe(true));
   expect(requests.at(-1)).toEqual({ action: "release", keepalive: true });
 });
+
+it("shows the current startup stage instead of an indefinite spinner", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: "00000000-0000-4000-8000-000000000001",
+            status: "starting",
+            message: "Устанавливаем зависимости. Первый запуск может занять несколько минут.",
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+    ),
+  );
+
+  render(<LivePreviewButton projectId="project" branch="docs/update" />);
+  expect(
+    await screen.findByText(
+      "Устанавливаем зависимости. Первый запуск может занять несколько минут.",
+    ),
+  ).toBeTruthy();
+});

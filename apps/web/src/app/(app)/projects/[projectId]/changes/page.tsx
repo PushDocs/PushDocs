@@ -8,7 +8,6 @@ import {
 } from "@/app/actions";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
-import { LivePreviewButton } from "@/components/live-preview-button";
 import { ProjectContext } from "@/components/project-context";
 import { SubmitChanges } from "@/components/submit-changes";
 import { repository, requireUser } from "@/lib/server";
@@ -111,7 +110,6 @@ export default async function ChangesPage({
           ) : null}
         </div>
         <div className="changes-header-actions">
-          <LivePreviewButton projectId={projectId} branch={branch} />
           <span className="branch-placeholder">
             <GitBranch aria-hidden size={15} />
             {branch}

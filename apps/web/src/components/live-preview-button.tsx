@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 type PreviewState = {
   error?: string | null;
   log?: string;
+  message?: string;
   sessionId?: string;
   status: "queued" | "starting" | "ready" | "failed" | "stopped";
   url?: string;
@@ -95,7 +96,7 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
       </a>
     );
 
-  if (state.status === "failed")
+  if (state.status === "failed" || state.status === "stopped")
     return (
       <span className="live-preview-error" title={state.log || state.error || undefined}>
         <button
@@ -106,14 +107,19 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
           Повторить предпросмотр
           <RefreshCw aria-hidden size={15} />
         </button>
-        <small role="status">{state.error}</small>
+        <small role="status">
+          {state.error || "Предпросмотр остановлен. Запустите его снова."}
+        </small>
       </span>
     );
 
   return (
-    <button className="pd-button pd-button--secondary" type="button" disabled>
-      <LoaderCircle className="spin" aria-hidden size={15} />
-      Запуск предпросмотра…
-    </button>
+    <span className="live-preview-progress">
+      <button className="pd-button pd-button--secondary" type="button" disabled>
+        <LoaderCircle className="spin" aria-hidden size={15} />
+        Запуск предпросмотра…
+      </button>
+      <small role="status">{state.message || "Ставим запуск в очередь…"}</small>
+    </span>
   );
 }

@@ -3329,7 +3329,8 @@ textarea:where(:not(.monaco-editor *)):focus {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-.live-preview-error {
+.live-preview-error,
+.live-preview-progress {
   display: grid;
   justify-items: end;
   gap: 4px;
@@ -3337,6 +3338,11 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 .live-preview-error small {
   color: var(--danger, #a43636);
+  text-align: right;
+}
+.live-preview-progress small {
+  color: var(--ink-muted);
+  max-width: 300px;
   text-align: right;
 }
 .spin {

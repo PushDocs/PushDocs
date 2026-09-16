@@ -51,6 +51,32 @@ function commandArgs(command: string[], port?: number): [string, string[]] {
   return [expanded[0] ?? "", expanded.slice(1)];
 }
 
+const transientFetchError =
+  /early EOF|unexpected disconnect|invalid index-pack output|RPC failed|remote end hung up unexpectedly/i;
+
+export async function retryGitFetch<T>(
+  operation: () => Promise<T>,
+  options: {
+    attempts?: number;
+    delay?: (attempt: number) => Promise<void>;
+    onRetry?: (error: Error, attempt: number) => Promise<void> | void;
+  } = {},
+): Promise<T> {
+  const attempts = options.attempts ?? 3;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      if (attempt === attempts || !transientFetchError.test(error.message)) throw error;
+      await options.onRetry?.(error, attempt);
+      await (options.delay?.(attempt) ??
+        new Promise<void>((resolve) => setTimeout(resolve, attempt * 1000)));
+    }
+  }
+  throw new Error("Git fetch не был выполнен");
+}
+
 function childEnvironment(): NodeJS.ProcessEnv {
   const allowed = ["PATH", "HOME", "LANG", "LC_ALL", "TZ", "COREPACK_HOME", "NODE_EXTRA_CA_CERTS"];
   return Object.fromEntries(
@@ -256,20 +282,32 @@ export function createPreviewService(options: PreviewServiceOptions) {
       signal,
       timeoutMs: 30_000,
     });
-    await run(
-      [
-        "git",
-        "fetch",
-        "--quiet",
-        "--depth=1",
-        "origin",
-        `+refs/heads/${session.branch}:refs/pushdocs/preview`,
-      ],
+    await retryGitFetch(
+      () =>
+        run(
+          [
+            "git",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--depth=1",
+            "origin",
+            `+refs/heads/${session.branch}:refs/pushdocs/preview`,
+          ],
+          {
+            cwd: workspace,
+            env,
+            signal,
+            timeoutMs: 300_000,
+          },
+        ),
       {
-        cwd: workspace,
-        env,
-        signal,
-        timeoutMs: 300_000,
+        onRetry: async (_error, attempt) => {
+          await appendLog(
+            session.id,
+            `\nСоединение с Git оборвалось. Повторяем загрузку (${attempt + 1}/3)…`,
+          );
+        },
       },
     );
     await run(["git", "checkout", "--quiet", "--detach", "refs/pushdocs/preview"], {
@@ -364,10 +402,13 @@ export function createPreviewService(options: PreviewServiceOptions) {
     try {
       await repository.updatePreviewSession(session.id, {
         last_error: null,
-        log: "",
+        log: "Загружаем выбранную ветку из Git…",
         status: "starting",
       });
       const { target } = await checkout(session, workspace, controller.signal);
+      await repository.updatePreviewSession(session.id, {
+        log: "Подготавливаем черновики и вложения…",
+      });
       const draft = { appliedPaths: new Set<string>(), workspace };
       const state = await applyOverlay(session, draft);
       const rootPath = target.root_path === "." ? "." : safePath(target.root_path);
@@ -389,6 +430,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
         cwd: workspace,
         timeoutMs: 120_000,
       });
+      await repository.updatePreviewSession(session.id, {
+        log: "Устанавливаем зависимости. Первый запуск может занять несколько минут.",
+      });
       const installLog = await run(preview.install, {
         cwd,
         env: runtime.env,
@@ -399,6 +443,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       await appendLog(session.id, installLog);
       if (controller.signal.aborted) throw new Error("Запуск предпросмотра отменён");
+      await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
       const [executable, args] = commandArgs(preview.start, session.port);
       const child = spawn(executable, args, {
         cwd,

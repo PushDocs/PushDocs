@@ -29,6 +29,7 @@ vi.mock("@/components/workbench", () => ({ Workbench: () => null }));
 vi.mock("@/components/branch-import", () => ({ BranchImport: () => null }));
 
 import { BranchImport } from "@/components/branch-import";
+import { LivePreviewButton } from "@/components/live-preview-button";
 import { Workbench } from "@/components/workbench";
 import DocumentsPage from "./page";
 
@@ -72,6 +73,14 @@ it("opens existing branch drafts without importing over them", async () => {
   mocks.context.mockResolvedValue(context);
   expect((await page()).type).toBe(Workbench);
   expect(mocks.imported).not.toHaveBeenCalled();
+});
+
+it("starts the selected branch preview from the documents header", async () => {
+  mocks.imported.mockResolvedValue(true);
+  const view = await page();
+  expect(view.type).toBe(Workbench);
+  expect(view.props.headerAction.type).toBe(LivePreviewButton);
+  expect(view.props.headerAction.props).toEqual({ projectId: "project", branch: "docs/fix" });
 });
 
 it("renders the file tree from metadata and loads only the initially selected body", async () => {

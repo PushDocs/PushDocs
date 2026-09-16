@@ -33,7 +33,7 @@ The repository contains a working MVP:
 
 The web application and worker do not execute repository JavaScript. Quick preview renders Markdown without executing MDX; the repository's CI pipeline renders the complete site after changes are sent.
 
-The Changes page can also start a local Docusaurus preview for a trusted project. The preview runner checks out the selected branch, applies saved PushDocs drafts and attachments, installs the repository dependencies and starts its configured development command. The button opens the result on `http://213.148.1.118:<port>`. Leaving the Changes page releases the browser lease, and the runner stops the process after the last lease ends.
+The Documents page can also start a local Docusaurus preview for a trusted project. The preview runner checks out the selected branch, applies saved PushDocs drafts and attachments, installs the repository dependencies and starts its configured development command. Interrupted Git downloads are retried automatically. The button opens the result on `http://213.148.1.118:<port>`. Leaving the Documents page releases the browser lease, and the runner stops the process after the last lease ends.
 
 The local preview executes repository JavaScript. Enable it only for repositories whose code is trusted by the installation operator. Caddy automatically publishes and proxies the fixed HTTP range `43000` to `43019`; the preview runner itself is reachable only inside the Compose network. Preview endpoints do not use PushDocs session authentication.
 
