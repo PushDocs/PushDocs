@@ -90,6 +90,7 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
         href={state.url}
         target="_blank"
         rel="noreferrer"
+        title={`Открыть предпросмотр ветки ${branch}`}
       >
         Предпросмотр
         <ExternalLink aria-hidden size={15} />
@@ -98,28 +99,40 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
 
   if (state.status === "failed" || state.status === "stopped")
     return (
-      <span className="live-preview-error" title={state.log || state.error || undefined}>
+      <span className="live-preview-control">
         <button
           className="pd-button pd-button--secondary"
           type="button"
+          title={
+            state.error || state.log || "Предпросмотр остановлен. Нажмите, чтобы запустить снова."
+          }
+          aria-label={`Повторить предпросмотр ветки ${branch}`}
           onClick={() => setAttempt((value) => value + 1)}
         >
-          Повторить предпросмотр
+          Предпросмотр
           <RefreshCw aria-hidden size={15} />
         </button>
-        <small role="status">
+        <span className="sr-only" role="status">
           {state.error || "Предпросмотр остановлен. Запустите его снова."}
-        </small>
+        </span>
       </span>
     );
 
   return (
-    <span className="live-preview-progress">
-      <button className="pd-button pd-button--secondary" type="button" disabled>
+    <span className="live-preview-control">
+      <button
+        className="pd-button pd-button--secondary"
+        type="button"
+        disabled
+        title={`${branch}: ${state.message || "Готовим предпросмотр"}`}
+        aria-label={`Предпросмотр ветки ${branch} запускается`}
+      >
         <LoaderCircle className="spin" aria-hidden size={15} />
-        Запуск предпросмотра…
+        Предпросмотр
       </button>
-      <small role="status">{state.message || "Ставим запуск в очередь…"}</small>
+      <span className="sr-only" role="status">
+        {state.message || "Ставим запуск в очередь…"}
+      </span>
     </span>
   );
 }

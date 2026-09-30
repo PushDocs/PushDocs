@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createPreviewService, retryGitFetch } from "./service";
+import { canReuseWorkspace, createPreviewService, retryGitFetch } from "./service";
 
 const service = createPreviewService({ repository: {} as never });
 
@@ -45,4 +45,12 @@ it("retries an interrupted Git fetch but does not retry permanent failures", asy
     ),
   ).rejects.toThrow("authentication failed");
   expect(permanentCalls).toBe(1);
+});
+
+it("reuses an installed checkout only for the same branch revision", () => {
+  const cache = { appliedPaths: ["docs/draft.md"], headSha: "abc123", installed: true, uid: 11000 };
+  expect(canReuseWorkspace(cache, "abc123")).toBe(true);
+  expect(canReuseWorkspace(cache, "new-sha")).toBe(false);
+  expect(canReuseWorkspace({ ...cache, installed: false }, "abc123")).toBe(false);
+  expect(canReuseWorkspace(null, "abc123")).toBe(false);
 });

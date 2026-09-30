@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmod, cp, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseProjectConfig, safePath } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
@@ -25,6 +26,18 @@ type RunningPreview = {
   stopping: boolean;
   workspace: string;
 };
+
+type CachedWorkspace = {
+  appliedPaths: string[];
+  headSha: string;
+  installed: boolean;
+  installHash?: string;
+  uid: number;
+};
+
+export function canReuseWorkspace(cache: CachedWorkspace | null, headSha: string): boolean {
+  return cache?.headSha === headSha && cache.installed;
+}
 
 export interface PreviewServiceOptions {
   attachmentsRoot?: string;
@@ -199,6 +212,64 @@ export function createPreviewService(options: PreviewServiceOptions) {
   };
   const running = new Map<string, RunningPreview>();
   const starting = new Map<string, AbortController>();
+  let lastPruneAt = 0;
+
+  const cachePath = (session: PreviewSession) => path.join(workspaceRoot, `${session.id}.json`);
+  const readCache = async (session: PreviewSession): Promise<CachedWorkspace | null> => {
+    try {
+      const value = JSON.parse(await readFile(cachePath(session), "utf8")) as CachedWorkspace;
+      if (!(await lstat(path.join(workspaceRoot, session.id, ".git"))).isDirectory()) return null;
+      return typeof value.headSha === "string" &&
+        Array.isArray(value.appliedPaths) &&
+        value.appliedPaths.every((item) => typeof item === "string") &&
+        value.installed === true &&
+        Number.isInteger(value.uid)
+        ? value
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const writeCache = async (
+    session: PreviewSession,
+    active: Pick<RunningPreview, "appliedPaths">,
+    headSha: string,
+    installHash: string,
+    uid: number,
+  ) => {
+    await writeFile(
+      cachePath(session),
+      JSON.stringify({
+        appliedPaths: [...active.appliedPaths],
+        headSha,
+        installed: true,
+        installHash,
+        uid,
+      } satisfies CachedWorkspace),
+      { mode: 0o600 },
+    );
+  };
+
+  async function installFingerprint(workspace: string, cwd: string, install: string[]) {
+    const hash = createHash("sha256").update(JSON.stringify(install));
+    for (const filename of [
+      "package.json",
+      "yarn.lock",
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      ".yarnrc.yml",
+    ]) {
+      for (const directory of new Set([workspace, cwd])) {
+        try {
+          hash.update(path.join(directory, filename));
+          hash.update(await readFile(path.join(directory, filename)));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
+    return hash.digest("hex");
+  }
 
   const appendLog = async (sessionId: string, value: string) => {
     const session = (await repository.listPreviewSessions()).find((item) => item.id === sessionId);
@@ -268,6 +339,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     if (!target) throw new Error("Подключение проекта недоступно");
     const { remote, env } = await gitEnvironment(target);
     await rm(workspace, { recursive: true, force: true });
+    await rm(cachePath(session), { force: true });
     await mkdir(workspace, { recursive: true, mode: 0o700 });
     await run(["git", "init", "--quiet"], { cwd: workspace, env, signal, timeoutMs: 30_000 });
     await run(["git", "config", "core.hooksPath", "/dev/null"], {
@@ -400,16 +472,24 @@ export function createPreviewService(options: PreviewServiceOptions) {
     starting.set(session.id, controller);
     const workspace = path.join(workspaceRoot, session.id);
     try {
+      const current = await repository.listChangedWorkingFiles(session.project_id, session.branch);
+      const cached = await readCache(session);
+      const reuse = canReuseWorkspace(cached, current.branch.head_commit_sha);
       await repository.updatePreviewSession(session.id, {
         last_error: null,
-        log: "Загружаем выбранную ветку из Git…",
+        log: reuse
+          ? "Обновляем документы в локальном предпросмотре…"
+          : "Загружаем файлы выбранной ветки…",
         status: "starting",
       });
-      const { target } = await checkout(session, workspace, controller.signal);
+      const target = reuse
+        ? await repository.getProjectSyncTarget(session.project_id)
+        : (await checkout(session, workspace, controller.signal)).target;
+      if (!target) throw new Error("Подключение проекта недоступно");
       await repository.updatePreviewSession(session.id, {
         log: "Подготавливаем черновики и вложения…",
       });
-      const draft = { appliedPaths: new Set<string>(), workspace };
+      const draft = { appliedPaths: new Set(reuse ? cached?.appliedPaths : []), workspace };
       const state = await applyOverlay(session, draft);
       const rootPath = target.root_path === "." ? "." : safePath(target.root_path);
       const configPath = path.join(workspace, rootPath, ".pushdocs/config.json");
@@ -424,24 +504,30 @@ export function createPreviewService(options: PreviewServiceOptions) {
       if (!cwd.startsWith(`${workspace}${path.sep}`) && cwd !== workspace)
         throw new Error("Корень проекта выходит за checkout");
       const runtime = runtimeIdentity(session, workspace);
+      const installHash = await installFingerprint(workspace, cwd, preview.install);
       await mkdir(runtime.env.HOME, { recursive: true, mode: 0o700 });
       await mkdir(runtime.env.COREPACK_HOME, { recursive: true, mode: 0o700 });
-      await run(["chown", "-R", `${runtime.uid}:${runtime.gid}`, workspace], {
-        cwd: workspace,
-        timeoutMs: 120_000,
-      });
-      await repository.updatePreviewSession(session.id, {
-        log: "Устанавливаем зависимости. Первый запуск может занять несколько минут.",
-      });
-      const installLog = await run(preview.install, {
-        cwd,
-        env: runtime.env,
-        gid: runtime.gid,
-        signal: controller.signal,
-        timeoutMs: 10 * 60_000,
-        uid: runtime.uid,
-      });
-      await appendLog(session.id, installLog);
+      if (!reuse || cached?.uid !== runtime.uid) {
+        await run(["chown", "-R", `${runtime.uid}:${runtime.gid}`, workspace], {
+          cwd: workspace,
+          timeoutMs: 120_000,
+        });
+      }
+      if (!reuse || cached?.installHash !== installHash) {
+        await repository.updatePreviewSession(session.id, {
+          log: "Устанавливаем зависимости. Это может занять несколько минут.",
+        });
+        const installLog = await run(preview.install, {
+          cwd,
+          env: runtime.env,
+          gid: runtime.gid,
+          signal: controller.signal,
+          timeoutMs: 10 * 60_000,
+          uid: runtime.uid,
+        });
+        await appendLog(session.id, installLog);
+      }
+      await writeCache(session, draft, state.headSha, installHash, runtime.uid);
       if (controller.signal.aborted) throw new Error("Запуск предпросмотра отменён");
       await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
       const [executable, args] = commandArgs(preview.start, session.port);
@@ -469,7 +555,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
       child.on("exit", (code, signal) => {
         if (running.get(session.id) === active) running.delete(session.id);
         if (!active.stopping) {
-          void rm(active.workspace, { force: true, recursive: true });
           void repository.updatePreviewSession(session.id, {
             last_error: `Процесс завершился: ${signal ?? code ?? "unknown"}`,
             status: "failed",
@@ -485,7 +570,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
     } catch (error) {
       const active = running.get(session.id);
       if (active) await stopProcess(session.id, active);
-      else await rm(workspace, { force: true, recursive: true });
       const message = error instanceof Error ? error.message : String(error);
       await repository.updatePreviewSession(session.id, { last_error: message, status: "failed" });
       logger.error(JSON.stringify({ error: message, previewSessionId: session.id }));
@@ -515,13 +599,30 @@ export function createPreviewService(options: PreviewServiceOptions) {
         }
     }
     running.delete(sessionId);
-    await rm(active.workspace, { force: true, recursive: true });
   }
 
   async function tick(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
     await repository.reconcilePreviewLeases();
     const sessions = await repository.listPreviewSessions();
+    if (Date.now() - lastPruneAt > 60 * 60_000) {
+      lastPruneAt = Date.now();
+      const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+      const byId = new Map(sessions.map((session) => [session.id, session]));
+      for (const filename of await readdir(workspaceRoot)) {
+        const id = /^([0-9a-f-]{36})\.json$/.exec(filename)?.[1];
+        if (!id || running.has(id) || starting.has(id)) continue;
+        const session = byId.get(id);
+        if (
+          session &&
+          (session.desired_state !== "stopped" || session.updated_at.getTime() > cutoff)
+        )
+          continue;
+        if (!session && (await stat(path.join(workspaceRoot, filename))).mtimeMs > cutoff) continue;
+        await rm(path.join(workspaceRoot, id), { recursive: true, force: true });
+        await rm(path.join(workspaceRoot, filename), { force: true });
+      }
+    }
     for (const session of sessions) {
       try {
         const active = running.get(session.id);
@@ -547,6 +648,15 @@ export function createPreviewService(options: PreviewServiceOptions) {
         if (revision !== active.revision) {
           const updated = await applyOverlay(session, active);
           active.revision = updated.revision;
+          const cache = await readCache(session);
+          if (cache?.installHash)
+            await writeCache(
+              session,
+              active,
+              updated.headSha,
+              cache.installHash,
+              runtimeIdentity(session, active.workspace).uid,
+            );
           await repository.updatePreviewSession(session.id, { revision: updated.revision });
         }
       } catch (error) {
