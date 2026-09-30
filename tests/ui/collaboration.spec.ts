@@ -61,7 +61,8 @@ for (const fallback of [false, true]) {
     await expect.poll(() => content(bob)).toBe("abcY");
     await aliceContext.setOffline(true);
     for (let i = 0; i < 20; i++) await alice.keyboard.press("ArrowLeft");
-    await alice.keyboard.type("offline-");
+    await alice.keyboard.insertText("offline-");
+    await expect.poll(() => content(alice)).toBe("offline-abcY");
     await expect(alice.getByRole("status")).toHaveText("Нет связи");
     for (let i = 0; i < 20; i++) await bob.keyboard.press("ArrowRight");
     await bob.keyboard.type("!");
