@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import {
   canReuseWorkspace,
   createPreviewService,
+  leafCheckoutDirectories,
   previewEndpointReady,
   retryGitFetch,
   run,
@@ -19,6 +20,14 @@ it("reports a subprocess timeout instead of an exit code of null", async () => {
       timeoutMs: 30,
     }),
   ).rejects.toThrow("превысил время ожидания");
+});
+
+it("splits a tree into leaf directories so large checkouts can fetch smaller packs", () => {
+  expect(
+    leafCheckoutDirectories(
+      "docs\0staticLocalized\0staticLocalized/ru\0staticLocalized/ru/img\0staticLocalized/ru/img/a\0staticLocalized/ru/img/b\0staticLocalized/en\0",
+    ),
+  ).toEqual(["docs", "staticLocalized/en", "staticLocalized/ru/img/a", "staticLocalized/ru/img/b"]);
 });
 
 it("expands only whole preview command placeholders", () => {

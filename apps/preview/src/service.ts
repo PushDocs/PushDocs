@@ -101,6 +101,13 @@ export async function retryGitFetch<T>(
   throw new Error("Git fetch не был выполнен");
 }
 
+export function leafCheckoutDirectories(treeOutput: string): string[] {
+  const directories = treeOutput.split("\0").filter(Boolean);
+  return directories
+    .filter((directory) => !directories.some((other) => other.startsWith(`${directory}/`)))
+    .sort();
+}
+
 function childEnvironment(): NodeJS.ProcessEnv {
   const allowed = ["PATH", "HOME", "LANG", "LC_ALL", "TZ", "COREPACK_HOME", "NODE_EXTRA_CA_CERTS"];
   return Object.fromEntries(
@@ -139,6 +146,7 @@ export async function run(
     cwd: string;
     env?: NodeJS.ProcessEnv;
     gid?: number;
+    maxOutput?: number;
     signal?: AbortSignal;
     timeoutMs: number;
     uid?: number;
@@ -167,7 +175,7 @@ export async function run(
       }
     };
     const append = (chunk: Buffer) => {
-      output = (output + chunk.toString()).slice(-32_000);
+      output = (output + chunk.toString()).slice(-(options.maxOutput ?? 32_000));
     };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
@@ -375,6 +383,18 @@ export function createPreviewService(options: PreviewServiceOptions) {
       signal,
       timeoutMs: 30_000,
     });
+    await run(["git", "config", "remote.origin.promisor", "true"], {
+      cwd: workspace,
+      env,
+      signal,
+      timeoutMs: 30_000,
+    });
+    await run(["git", "config", "remote.origin.partialclonefilter", "blob:none"], {
+      cwd: workspace,
+      env,
+      signal,
+      timeoutMs: 30_000,
+    });
     await retryGitFetch(
       () =>
         run(
@@ -384,6 +404,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             "--quiet",
             "--no-tags",
             "--depth=1",
+            "--filter=blob:none",
             "origin",
             `+refs/heads/${session.branch}:refs/pushdocs/preview`,
           ],
@@ -403,11 +424,50 @@ export function createPreviewService(options: PreviewServiceOptions) {
         },
       },
     );
+    await run(["git", "sparse-checkout", "set", "--cone", "--no-sparse-index"], {
+      cwd: workspace,
+      env,
+      signal,
+      timeoutMs: 30_000,
+    });
     await run(["git", "checkout", "--quiet", "--detach", "refs/pushdocs/preview"], {
       cwd: workspace,
       env,
       signal,
       timeoutMs: 120_000,
+    });
+    const tree = await run(
+      ["git", "ls-tree", "-r", "-d", "--name-only", "-z", "refs/pushdocs/preview"],
+      { cwd: workspace, env, signal, timeoutMs: 30_000, maxOutput: 1_000_000 },
+    );
+    const directories = leafCheckoutDirectories(tree);
+    for (const [index, directory] of directories.entries()) {
+      await repository.updatePreviewSession(session.id, {
+        log: `Загружаем файлы ветки по частям (${index + 1}/${directories.length})…`,
+      });
+      await retryGitFetch(
+        () =>
+          run(["git", "sparse-checkout", "add", "--", directory], {
+            cwd: workspace,
+            env,
+            signal,
+            timeoutMs: 10 * 60_000,
+          }),
+        {
+          onRetry: async (_error, attempt) => {
+            await appendLog(
+              session.id,
+              `\nСоединение с Git оборвалось. Повторяем часть (${attempt + 1}/3)…`,
+            );
+          },
+        },
+      );
+    }
+    await run(["git", "sparse-checkout", "disable"], {
+      cwd: workspace,
+      env,
+      signal,
+      timeoutMs: 10 * 60_000,
     });
     return { target };
   }
