@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { LivePreviewButton } from "./live-preview-button";
 
@@ -59,4 +59,42 @@ it("shows the current startup stage instead of an indefinite spinner", async () 
       "Устанавливаем зависимости. Первый запуск может занять несколько минут.",
     ),
   ).toBeTruthy();
+});
+
+it("shows the preview startup failure in a visible dismissible alert", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        status: "failed",
+        error: "git fetch: early EOF",
+      }),
+    ),
+  );
+
+  render(<LivePreviewButton projectId="project" branch="stable" />);
+  expect((await screen.findByRole("alert")).textContent).toContain("git fetch: early EOF");
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть уведомление" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("reacquires the preview when a deployment expires the tab lease", async () => {
+  let acquisitions = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      const action = init?.body
+        ? (JSON.parse(String(init.body)) as { action: string }).action
+        : "status";
+      if (action === "acquire") acquisitions++;
+      return Response.json({
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        status: action === "status" ? "stopped" : "queued",
+      });
+    }),
+  );
+
+  render(<LivePreviewButton projectId="project" branch="stable" />);
+  await waitFor(() => expect(acquisitions).toBeGreaterThanOrEqual(2), { timeout: 3000 });
 });

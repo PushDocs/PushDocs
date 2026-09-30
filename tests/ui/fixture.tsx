@@ -5,6 +5,7 @@ import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
 import { DiffViewer } from "../../apps/web/src/components/diff-viewer";
 import { FileComments, FileCommentsButton } from "../../apps/web/src/components/file-comments";
 import { FilePicker } from "../../apps/web/src/components/file-picker";
+import { LivePreviewButton } from "../../apps/web/src/components/live-preview-button";
 import { MediaLibrary } from "../../apps/web/src/components/media-library";
 import { QuickOpen } from "../../apps/web/src/components/quick-open";
 import {
@@ -137,6 +138,35 @@ function CommentsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("preview-header"))
+    return (
+      <div className="workbench">
+        <header className="wb-header">
+          <div>
+            <small>Проект</small>
+            <h1>Документы</h1>
+          </div>
+          <div className="wb-actions">
+            <LivePreviewButton projectId="project" branch="stable" />
+            <div className="wb-branch-tools">
+              <SearchableSelect
+                className="wb-branch-picker"
+                label="Текущая ветка"
+                value="stable"
+                options={[{ label: "stable", value: "stable" }]}
+                onValueChange={() => {}}
+              />
+              <button className="wb-new-branch" type="button">
+                Новая ветка
+              </button>
+            </div>
+            <a className="wb-primary" href="#changes">
+              К изменениям (0)
+            </a>
+          </div>
+        </header>
+      </div>
+    );
   if (new URLSearchParams(window.location.search).has("submit"))
     return (
       <main className="page changes-page">

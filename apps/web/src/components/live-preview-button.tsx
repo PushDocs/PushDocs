@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, LoaderCircle, RefreshCw } from "lucide-react";
+import { CircleAlert, ExternalLink, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type PreviewState = {
@@ -15,12 +15,14 @@ type PreviewState = {
 export function LivePreviewButton({ projectId, branch }: { projectId: string; branch: string }) {
   const [state, setState] = useState<PreviewState>({ status: "queued" });
   const [attempt, setAttempt] = useState(0);
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
 
   useEffect(() => {
     const endpoint = `/api/projects/${projectId}/preview?attempt=${attempt}`;
     const clientId = crypto.randomUUID();
     let sessionId: string | undefined;
     let disposed = false;
+    let queuedSince = Date.now();
     let statusTimer: ReturnType<typeof setInterval> | undefined;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     const command = async (action: "acquire" | "heartbeat" | "release", keepalive = false) => {
@@ -44,6 +46,7 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
       try {
         setState({ status: "queued" });
         const acquired = await command("acquire");
+        queuedSince = Date.now();
         if (disposed) return;
         setState(acquired);
         statusTimer = setInterval(async () => {
@@ -54,7 +57,23 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
             );
             const result = (await response.json()) as PreviewState & { error?: string };
             if (!response.ok) throw new Error(result.error ?? "Не удалось получить статус");
-            if (!disposed) setState(result);
+            if (result.status === "stopped") {
+              const reacquired = await command("acquire");
+              queuedSince = Date.now();
+              if (!disposed) setState(reacquired);
+            } else if (!disposed) {
+              if (result.status === "queued" && Date.now() - queuedSince > 30_000)
+                setState({
+                  ...result,
+                  status: "failed",
+                  error:
+                    "Сервис предпросмотра не начал запуск за 30 секунд. Повторите попытку или проверьте его работу на сервере.",
+                });
+              else {
+                if (result.status !== "queued") queuedSince = Date.now();
+                setState(result);
+              }
+            }
           } catch (error) {
             if (!disposed)
               setState({
@@ -97,26 +116,49 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
       </a>
     );
 
-  if (state.status === "failed" || state.status === "stopped")
+  if (state.status === "failed" || state.status === "stopped") {
+    const error = state.error || "Предпросмотр остановлен. Запустите его снова.";
     return (
-      <span className="live-preview-control">
-        <button
-          className="pd-button pd-button--secondary"
-          type="button"
-          title={
-            state.error || state.log || "Предпросмотр остановлен. Нажмите, чтобы запустить снова."
-          }
-          aria-label={`Повторить предпросмотр ветки ${branch}`}
-          onClick={() => setAttempt((value) => value + 1)}
-        >
-          Предпросмотр
-          <RefreshCw aria-hidden size={15} />
-        </button>
-        <span className="sr-only" role="status">
-          {state.error || "Предпросмотр остановлен. Запустите его снова."}
+      <>
+        <span className="live-preview-control">
+          <button
+            className="pd-button pd-button--secondary"
+            type="button"
+            title={
+              state.error || state.log || "Предпросмотр остановлен. Нажмите, чтобы запустить снова."
+            }
+            aria-label={`Повторить предпросмотр ветки ${branch}`}
+            onClick={() => {
+              setDismissedError(null);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Предпросмотр
+            <RefreshCw aria-hidden size={15} />
+          </button>
         </span>
-      </span>
+        {dismissedError !== error ? (
+          <div
+            className="settings-notification settings-notification--error live-preview-notification"
+            role="alert"
+          >
+            <CircleAlert aria-hidden size={18} />
+            <div className="live-preview-notification-content">
+              <strong>Предпросмотр недоступен</strong>
+              <p>{error}</p>
+            </div>
+            <button
+              type="button"
+              aria-label="Закрыть уведомление"
+              onClick={() => setDismissedError(error)}
+            >
+              <X aria-hidden size={16} />
+            </button>
+          </div>
+        ) : null}
+      </>
     );
+  }
 
   return (
     <span className="live-preview-control">

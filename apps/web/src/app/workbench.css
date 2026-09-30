@@ -926,6 +926,16 @@
   background: var(--violet);
   border-color: var(--violet);
 }
+.workbench .wb-actions .live-preview-control > :is(a, button),
+.workbench .wb-actions > a.pd-button,
+.workbench .wb-actions .wb-branch-picker,
+.workbench .wb-actions .wb-new-branch,
+.workbench .wb-actions > a.wb-primary {
+  box-sizing: border-box;
+  height: 42px;
+  min-height: 42px;
+  padding-block: 0;
+}
 .wb-editor {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

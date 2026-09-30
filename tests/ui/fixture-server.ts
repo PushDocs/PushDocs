@@ -17,6 +17,25 @@ export async function startFixtureServer() {
   const shared = new Y.Doc();
   shared.getText("source").insert(0, "abc");
   const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/api/projects/project/preview")) {
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify(
+          request.headers.referer?.includes("preview-error")
+            ? {
+                sessionId: "00000000-0000-4000-8000-000000000001",
+                status: "failed",
+                error: "git fetch: early EOF",
+              }
+            : {
+                sessionId: "00000000-0000-4000-8000-000000000001",
+                status: "ready",
+                url: "http://213.148.1.118:43000/",
+              },
+        ),
+      );
+      return;
+    }
     if (request.url === "/collaboration") {
       const chunks: Uint8Array[] = [];
       for await (const chunk of request) chunks.push(chunk);

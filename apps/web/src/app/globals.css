@@ -3334,6 +3334,22 @@ textarea:where(:not(.monaco-editor *)):focus {
   flex: none;
   white-space: nowrap;
 }
+.live-preview-notification-content {
+  min-width: 0;
+  color: var(--ink);
+}
+.live-preview-notification-content strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+.live-preview-notification-content p {
+  margin: 4px 0 0;
+  max-height: min(40vh, 240px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
 .spin {
   animation: preview-spin 900ms linear infinite;
 }

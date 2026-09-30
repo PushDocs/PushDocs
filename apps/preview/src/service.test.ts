@@ -1,5 +1,13 @@
-import { expect, it } from "vitest";
-import { canReuseWorkspace, createPreviewService, retryGitFetch } from "./service";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { expect, it, vi } from "vitest";
+import {
+  canReuseWorkspace,
+  createPreviewService,
+  previewEndpointReady,
+  retryGitFetch,
+} from "./service";
 
 const service = createPreviewService({ repository: {} as never });
 
@@ -53,4 +61,44 @@ it("reuses an installed checkout only for the same branch revision", () => {
   expect(canReuseWorkspace(cache, "new-sha")).toBe(false);
   expect(canReuseWorkspace({ ...cache, installed: false }, "abc123")).toBe(false);
   expect(canReuseWorkspace(null, "abc123")).toBe(false);
+});
+
+it("requeues a persisted ready session when its runner process has restarted", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "pushdocs-preview-test-"));
+  const updatePreviewSession = vi.fn(async () => undefined);
+  try {
+    const preview = createPreviewService({
+      workspaceRoot,
+      repository: {
+        reconcilePreviewLeases: async () => undefined,
+        listPreviewSessions: async () => [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            desired_state: "running",
+            status: "ready",
+            updated_at: new Date(),
+          },
+        ],
+        updatePreviewSession,
+      } as never,
+    });
+    await preview.tick();
+    expect(updatePreviewSession).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000001", {
+      status: "queued",
+    });
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+it("does not mark a preview ready when its HTTP endpoint returns an error", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = vi.fn(async () => new Response("Build failed", { status: 500 }));
+    expect(await previewEndpointReady(43000)).toBe(false);
+    globalThis.fetch = vi.fn(async () => new Response("OK", { status: 200 }));
+    expect(await previewEndpointReady(43000)).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

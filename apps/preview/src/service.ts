@@ -39,6 +39,17 @@ export function canReuseWorkspace(cache: CachedWorkspace | null, headSha: string
   return cache?.headSha === headSha && cache.installed;
 }
 
+export async function previewEndpointReady(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface PreviewServiceOptions {
   attachmentsRoot?: string;
   decryptSecret?: (value: string) => string;
@@ -456,13 +467,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
   async function waitUntilReady(child: ChildProcess, port: number): Promise<void> {
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error("Процесс предпросмотра завершился при запуске");
-      try {
-        await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500) });
-        return;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error("Процесс предпросмотра завершился при запуске");
+      if (await previewEndpointReady(port)) return;
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error("Предпросмотр не открыл порт за 180 секунд");
   }
@@ -471,6 +479,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     const controller = new AbortController();
     starting.set(session.id, controller);
     const workspace = path.join(workspaceRoot, session.id);
+    let startupOutput = "";
     try {
       const current = await repository.listChangedWorkingFiles(session.project_id, session.branch);
       const cached = await readCache(session);
@@ -548,8 +557,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
         stopping: false,
       };
       running.set(session.id, active);
-      const onOutput = (chunk: Buffer) =>
+      const onOutput = (chunk: Buffer) => {
+        startupOutput = `${startupOutput}${chunk.toString()}`.slice(-2000);
         void appendLog(session.id, chunk.toString()).catch(() => undefined);
+      };
       child.stdout?.on("data", onOutput);
       child.stderr?.on("data", onOutput);
       child.on("exit", (code, signal) => {
@@ -570,7 +581,13 @@ export function createPreviewService(options: PreviewServiceOptions) {
     } catch (error) {
       const active = running.get(session.id);
       if (active) await stopProcess(session.id, active);
-      const message = error instanceof Error ? error.message : String(error);
+      const reason = error instanceof Error ? error.message : String(error);
+      const message =
+        (reason === "Процесс предпросмотра завершился при запуске" ||
+          reason.startsWith("Предпросмотр не открыл порт")) &&
+        startupOutput
+          ? `${reason}: ${startupOutput}`
+          : reason;
       await repository.updatePreviewSession(session.id, { last_error: message, status: "failed" });
       logger.error(JSON.stringify({ error: message, previewSessionId: session.id }));
     } finally {
@@ -633,11 +650,14 @@ export function createPreviewService(options: PreviewServiceOptions) {
             await repository.updatePreviewSession(session.id, { status: "stopped" });
           continue;
         }
-        if (!active && !starting.has(session.id) && session.status === "queued") {
-          void start(session);
+        if (!active) {
+          if (!starting.has(session.id)) {
+            if (session.status === "queued") void start(session);
+            else if (session.status === "ready" || session.status === "starting")
+              await repository.updatePreviewSession(session.id, { status: "queued" });
+          }
           continue;
         }
-        if (!active) continue;
         const state = await previewState(session);
         const revision = state.working.changeSet?.revision ?? 0;
         if (state.working.branch.head_commit_sha !== active.headSha) {
