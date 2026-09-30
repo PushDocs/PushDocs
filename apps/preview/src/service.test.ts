@@ -7,9 +7,19 @@ import {
   createPreviewService,
   previewEndpointReady,
   retryGitFetch,
+  run,
 } from "./service";
 
 const service = createPreviewService({ repository: {} as never });
+
+it("reports a subprocess timeout instead of an exit code of null", async () => {
+  await expect(
+    run([process.execPath, "-e", "setTimeout(() => {}, 10000)"], {
+      cwd: process.cwd(),
+      timeoutMs: 30,
+    }),
+  ).rejects.toThrow("превысил время ожидания");
+});
 
 it("expands only whole preview command placeholders", () => {
   expect(service.commandArgs(["yarn", "start", "--port", "{port}"], 43000)).toEqual([

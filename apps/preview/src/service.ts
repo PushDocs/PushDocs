@@ -133,7 +133,7 @@ async function assertNoSymlink(root: string, relativePath: string): Promise<stri
   return destination;
 }
 
-async function run(
+export async function run(
   command: string[],
   options: {
     cwd: string;
@@ -157,6 +157,7 @@ async function run(
     });
     let output = "";
     let settled = false;
+    let timedOut = false;
     const terminate = (signal: NodeJS.Signals) => {
       if (!child.pid) return;
       try {
@@ -170,7 +171,10 @@ async function run(
     };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
-    const timeout = setTimeout(() => terminate("SIGKILL"), options.timeoutMs);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate("SIGKILL");
+    }, options.timeoutMs);
     const abort = () => terminate("SIGTERM");
     options.signal?.addEventListener("abort", abort, { once: true });
     child.on("error", (error) => {
@@ -185,6 +189,12 @@ async function run(
       if (settled) return;
       settled = true;
       if (options.signal?.aborted) reject(new Error("Запуск предпросмотра отменён"));
+      else if (timedOut)
+        reject(
+          new Error(
+            `${executable} превысил время ожидания (${Math.ceil(options.timeoutMs / 60_000)} мин). ${output.slice(-4000)}`,
+          ),
+        );
       else if (code === 0) resolve(output);
       else reject(new Error(`${executable} завершился с кодом ${code}: ${output.slice(-4000)}`));
     });
@@ -381,7 +391,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             cwd: workspace,
             env,
             signal,
-            timeoutMs: 300_000,
+            timeoutMs: 30 * 60_000,
           },
         ),
       {
@@ -488,7 +498,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
         last_error: null,
         log: reuse
           ? "Обновляем документы в локальном предпросмотре…"
-          : "Загружаем файлы выбранной ветки…",
+          : "Загружаем файлы выбранной ветки. Для большого проекта первая загрузка может занять более 10 минут…",
         status: "starting",
       });
       const target = reuse
