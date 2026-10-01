@@ -78,8 +78,12 @@ export function createWorkspaceManager(options: {
   function initialize() {
     if (initialization) return initialization;
     initialization = (async () => {
-      // Runtime users can traverse to their workspace; repositories and metadata stay private.
-      await mkdir(worktrees, { recursive: true, mode: 0o711 });
+      // Webpack snapshots ancestor directories. Listing opaque workspace names is allowed;
+      // each workspace's contents, repositories and metadata remain private.
+      await mkdir(options.root, { recursive: true, mode: 0o755 });
+      await chmod(options.root, 0o755);
+      await mkdir(worktrees, { recursive: true, mode: 0o755 });
+      await chmod(worktrees, 0o755);
       await mkdir(repositories, { recursive: true, mode: 0o711 });
       await mkdir(metadata, { recursive: true, mode: 0o700 });
       if (process.platform === "linux" && process.getuid?.() === 0) {

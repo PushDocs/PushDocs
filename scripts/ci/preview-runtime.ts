@@ -31,6 +31,21 @@ try {
   const one = await manager.ensure(branch, new AbortController().signal);
   await manager.grantReadAccess(branch, uid);
   await run(["chown", "-R", `${uid}:${uid}`, one.workspace], { cwd: root, timeoutMs: 10_000 });
+  await run(
+    [
+      process.execPath,
+      "-e",
+      "const fs=require('node:fs');for(const directory of process.argv.slice(1)) fs.readdirSync(directory)",
+      root,
+      path.dirname(one.workspace),
+    ],
+    {
+      cwd: root,
+      uid,
+      gid: uid,
+      timeoutMs: 10_000,
+    },
+  );
   const env = {
     PATH: process.env.PATH,
     GIT_CONFIG_COUNT: "1",
