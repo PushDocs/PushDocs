@@ -102,6 +102,7 @@ services:
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
+      - FOWNER
       - SETGID
       - SETUID
     command: ["yarn", "workspace", "@pushdocs/preview", "start"]

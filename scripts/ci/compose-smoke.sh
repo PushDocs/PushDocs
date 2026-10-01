@@ -67,6 +67,7 @@ test "$(compose exec -T preview id -u preview-11000)" = 11000
 compose exec -T worker git --version
 compose exec -T worker sh -c 'test -w /app/apps/worker/data/git && test -w /data/attachments'
 compose exec -T preview sh -c 'test -w /data/previews && test -r /data/attachments'
+compose exec -T preview sh -c 'set -eu; probe=$(mktemp /data/previews/ci-chmod.XXXXXX); trap '\''rm -f "$probe"'\'' EXIT; chown 11000:11000 "$probe"; chmod 644 "$probe"'
 yarn e2e
 
 # Stop writers before backing up PostgreSQL and attachments; keep the key separately.
