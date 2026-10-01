@@ -18,6 +18,15 @@ function preview(source: string) {
   return <DocumentPreview {...context} source={source} />;
 }
 
+it("opens document links in a new tab", () => {
+  render(preview("[Внешняя](https://example.test) и [внутренняя](/docs/guide)"));
+  for (const name of ["Внешняя", "внутренняя"]) {
+    const link = screen.getByRole("link", { name });
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  }
+});
+
 it("renders the Sendsay draft pattern including text immediately before the import", () => {
   render(
     preview(

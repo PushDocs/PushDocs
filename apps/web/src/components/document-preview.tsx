@@ -53,6 +53,9 @@ export function DocumentPreview({
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMdx, remarkDirective, plugin]}
           components={{
+            a: ({ node: _node, ...props }) => (
+              <a {...props} target="_blank" rel="noopener noreferrer" />
+            ),
             span: ({ node: _node, children, className, ...props }) => (
               <span className={className} {...props}>
                 {children}
