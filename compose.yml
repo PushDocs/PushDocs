@@ -103,6 +103,7 @@ services:
       - CHOWN
       - DAC_OVERRIDE
       - FOWNER
+      - KILL
       - SETGID
       - SETUID
     command: ["yarn", "workspace", "@pushdocs/preview", "start"]
