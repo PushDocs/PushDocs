@@ -48,6 +48,8 @@ function previewResponse(session: {
     error: session.last_error,
     log: session.log,
     message,
+    waitingForCapacity:
+      session.status === "queued" && session.log.startsWith("Ожидаем свободное место"),
     url: `http://${previewSettings().host}:${session.port}/`,
   };
 }

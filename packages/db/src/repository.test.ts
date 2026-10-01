@@ -79,6 +79,24 @@ beforeEach(async () => {
   repository = new PushDocsRepository(database);
 });
 
+it("prepares only imported branches of available projects", async () => {
+  const fixture = await synchronizedProject();
+  await repository.ensureBranches(fixture.projectId, [{ name: "not-imported", sha: "never" }]);
+  expect(await repository.listPreviewWorkspaces()).toEqual([
+    expect.objectContaining({
+      project_id: fixture.projectId,
+      full_ref: "main",
+      head_commit_sha: "head-1",
+    }),
+  ]);
+  await database
+    .updateTable("projects")
+    .set({ status: "archived" })
+    .where("id", "=", fixture.projectId)
+    .execute();
+  expect(await repository.listPreviewWorkspaces()).toEqual([]);
+});
+
 async function projectFixture() {
   const operator = await repository.createOperator({
     displayName: "Admin",

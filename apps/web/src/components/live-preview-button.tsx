@@ -10,6 +10,7 @@ type PreviewState = {
   sessionId?: string;
   status: "queued" | "starting" | "ready" | "failed" | "stopped";
   url?: string;
+  waitingForCapacity?: boolean;
 };
 
 export function LivePreviewButton({ projectId, branch }: { projectId: string; branch: string }) {
@@ -62,7 +63,11 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
               queuedSince = Date.now();
               if (!disposed) setState(reacquired);
             } else if (!disposed) {
-              if (result.status === "queued" && Date.now() - queuedSince > 30_000)
+              if (
+                result.status === "queued" &&
+                !result.waitingForCapacity &&
+                Date.now() - queuedSince > 30_000
+              )
                 setState({
                   ...result,
                   status: "failed",
@@ -170,7 +175,7 @@ export function LivePreviewButton({ projectId, branch }: { projectId: string; br
         aria-label={`Предпросмотр ветки ${branch} запускается`}
       >
         <LoaderCircle className="spin" aria-hidden size={15} />
-        Предпросмотр
+        {state.waitingForCapacity ? "Предпросмотр: очередь" : "Предпросмотр"}
       </button>
       <span className="sr-only" role="status">
         {state.message || "Ставим запуск в очередь…"}

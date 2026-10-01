@@ -1,12 +1,36 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { LivePreviewButton } from "./live-preview-button";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("keeps a capacity queue visible without reporting the runner as broken after 30 seconds", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        status: "queued",
+        waitingForCapacity: true,
+        message: "Ожидаем свободное место для предпросмотра.",
+      }),
+    ),
+  );
+  render(<LivePreviewButton projectId="project" branch="stable" />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(32_000);
+  });
+  expect(
+    screen.getByRole("button", { name: "Предпросмотр ветки stable запускается" }).textContent,
+  ).toContain("очередь");
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("acquires a preview on mount, opens it in a new tab and releases it on unmount", async () => {

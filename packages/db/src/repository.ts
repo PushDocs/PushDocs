@@ -1130,6 +1130,26 @@ export class PushDocsRepository extends SecurityRepository {
     return this.database.selectFrom("preview_sessions").selectAll().execute();
   }
 
+  async listPreviewWorkspaces() {
+    return this.database
+      .selectFrom("branch_contexts")
+      .innerJoin("projects", "projects.id", "branch_contexts.project_id")
+      .select([
+        "branch_contexts.project_id",
+        "branch_contexts.full_ref",
+        "branch_contexts.head_commit_sha",
+      ])
+      .where("projects.status", "!=", "archived")
+      .where("branch_contexts.updated_at", ">", new Date(Date.now() - 7 * 24 * 60 * 60_000))
+      .where(
+        "branch_contexts.id",
+        "in",
+        this.database.selectFrom("imported_documents").select("branch_context_id").distinct(),
+      )
+      .orderBy("branch_contexts.updated_at", "desc")
+      .execute();
+  }
+
   async updatePreviewSession(
     sessionId: string,
     values: {

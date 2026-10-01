@@ -99,6 +99,11 @@ services:
   preview:
     <<: *app
     user: root
+    init: true
+    cpus: ${PUSHDOCS_PREVIEW_CPUS:-2}
+    mem_limit: ${PUSHDOCS_PREVIEW_CONTAINER_MEMORY:-5g}
+    memswap_limit: ${PUSHDOCS_PREVIEW_CONTAINER_MEMORY:-5g}
+    pids_limit: 512
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
@@ -111,6 +116,8 @@ services:
       <<: *app-environment
       PUSHDOCS_PREVIEW_DIR: /data/previews
       PUSHDOCS_PREVIEW_RUNTIME_UID_FROM: 11000
+      PUSHDOCS_PREVIEW_MAX_ACTIVE: ${PUSHDOCS_PREVIEW_MAX_ACTIVE:-1}
+      PUSHDOCS_PREVIEW_MEMORY_MB: ${PUSHDOCS_PREVIEW_MEMORY_MB:-4096}
       PUSHDOCS_PREVIEW_PORT_FROM: "43000"
       PUSHDOCS_PREVIEW_PORT_TO: "43019"
     depends_on:

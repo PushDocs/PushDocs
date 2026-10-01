@@ -2,14 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import {
-  canReuseWorkspace,
-  createPreviewService,
-  leafCheckoutDirectories,
-  previewEndpointReady,
-  retryGitFetch,
-  run,
-} from "./service";
+import { createPreviewService, previewEndpointReady, retryGitFetch, run } from "./service";
+import { leafCheckoutDirectories } from "./workspaces";
 
 const service = createPreviewService({ repository: {} as never });
 
@@ -72,14 +66,6 @@ it("retries an interrupted Git fetch but does not retry permanent failures", asy
     ),
   ).rejects.toThrow("authentication failed");
   expect(permanentCalls).toBe(1);
-});
-
-it("reuses an installed checkout only for the same branch revision", () => {
-  const cache = { appliedPaths: ["docs/draft.md"], headSha: "abc123", installed: true, uid: 11000 };
-  expect(canReuseWorkspace(cache, "abc123")).toBe(true);
-  expect(canReuseWorkspace(cache, "new-sha")).toBe(false);
-  expect(canReuseWorkspace({ ...cache, installed: false }, "abc123")).toBe(false);
-  expect(canReuseWorkspace(null, "abc123")).toBe(false);
 });
 
 it("requeues a persisted ready session when its runner process has restarted", async () => {

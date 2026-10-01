@@ -33,7 +33,7 @@ The repository contains a working MVP:
 
 The web application and worker do not execute repository JavaScript. Quick preview renders Markdown without executing MDX; the repository's CI pipeline renders the complete site after changes are sent.
 
-The Documents page can also start a local Docusaurus preview for a trusted project. The preview runner checks out the selected branch, applies saved PushDocs drafts and attachments, installs the repository dependencies and starts its configured development command. Interrupted Git downloads are retried automatically. The button opens the result on `http://213.148.1.118:<port>`. Leaving the Documents page releases the browser lease, and the runner stops the process after the last lease ends.
+The Documents page can also start a local Docusaurus preview for a trusted project. The runner prepares persistent Git worktrees for imported branches in the background. Branches of one project share a Git object cache. Saved drafts and attachments are copied into their branch workspace, and unchanged files are left untouched. The runner installs dependencies when installation inputs change and starts the configured development command. It retains dependencies and build caches when the branch commit changes. The button opens the result on `http://213.148.1.118:<port>`. Leaving the Documents page releases the browser lease, and the runner stops the process after the last lease ends. The workspace remains available for subsequent starts.
 
 The local preview executes repository JavaScript. Enable it only for repositories whose code is trusted by the installation operator. Caddy automatically publishes and proxies the fixed HTTP range `43000` to `43019`; the preview runner itself is reachable only inside the Compose network. Preview endpoints do not use PushDocs session authentication.
 
@@ -91,7 +91,9 @@ yarn dev:all
 The web application listens on port 3000, and the realtime process listens on port 4100.
 Set `PUSHDOCS_REALTIME_ORIGIN=http://127.0.0.1:4100` for direct local development. Compose routes `/events` through Caddy. Set `PUSHDOCS_PUBLIC_ORIGIN` to the exact public CMS origin when using a reverse proxy.
 
-Caddy publishes ports `43000` to `43019` and proxies each port to the preview runner over the Compose network. Set `PUSHDOCS_PREVIEW_PUBLIC_HOST` to the IP address that browsers use to reach the installation. A project can set `preview.install` and `preview.start` in `.pushdocs/config.json`. The default start command is `yarn start --host 0.0.0.0 --port {port} --no-open --poll 1000`.
+Caddy publishes ports `43000` to `43019` and proxies each port to the preview runner over the Compose network. Set `PUSHDOCS_PREVIEW_PUBLIC_HOST` to the IP address that browsers use to reach the installation. A project can set `preview.install` and `preview.start` in `.pushdocs/config.json`. The default start command is `yarn start --host 0.0.0.0 --port {port} --no-open`; it uses native filesystem watching.
+
+By default, one site can run at a time (`PUSHDOCS_PREVIEW_MAX_ACTIVE=1`). Additional sites wait in a visible queue. The preview container has a hard limit of 5 GiB of memory, no additional swap, 2 CPU cores and 512 processes. Set `PUSHDOCS_PREVIEW_CONTAINER_MEMORY` and `PUSHDOCS_PREVIEW_CPUS` to adjust the container limits. Each runtime user is monitored against `PUSHDOCS_PREVIEW_MEMORY_MB=4096` MiB, including installation processes and descendants. Node's heap limit reserves 1024 MiB of that budget for other allocations. Exceeding the runtime budget stops the process and produces a notification. Keep the combined runtime budgets below the container limit with room for the controller and Git preparation; increasing concurrency requires adjusting the container budget as well. PostgreSQL remains the durable source of drafts, and the workspace can be reconstructed from it and Git.
 
 ## CI preview
 
