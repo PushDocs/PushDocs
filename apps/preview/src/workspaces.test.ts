@@ -151,3 +151,18 @@ it("migrates a prepared legacy checkout without losing its installed dependencie
     await run(["git", "rev-parse", "HEAD"], { cwd: prepared.workspace, timeoutMs: 10_000 }),
   ).toContain(first);
 });
+
+it("ignores an interrupted legacy checkout with no HEAD and prepares the imported commit", async () => {
+  const { root, first, manager } = await fixture();
+  const id = "00000000-0000-4000-8000-000000000002";
+  const legacy = path.join(root, "preview", id);
+  await mkdir(legacy);
+  await run(["git", "init", "--quiet"], { cwd: legacy, timeoutMs: 10_000 });
+  const prepared = await manager.ensure(
+    { projectId: "one", branch: "docs/new", headSha: first },
+    new AbortController().signal,
+    id,
+  );
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(prepared.cache.installed).toBe(false);
+});

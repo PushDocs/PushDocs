@@ -167,18 +167,40 @@ export function createWorkspaceManager(options: {
           : undefined;
       let cache = await readCache(branch);
       let migrated = false;
+      let legacyHead: string | undefined;
+      if (legacyWorkspace && (await exists(path.join(legacyWorkspace, ".git")))) {
+        try {
+          legacyHead = (
+            await options.run(["git", "-C", legacyWorkspace, "rev-parse", "--verify", "HEAD"], {
+              cwd: options.root,
+              signal,
+              timeoutMs: 30_000,
+            })
+          ).trim();
+        } catch {
+          signal.throwIfAborted();
+          // A failed download may leave an initialized repository with no checked-out commit.
+          legacyHead = undefined;
+        }
+      }
       // Preserve existing node_modules and build caches on upgrades from session-based checkouts.
-      if (
-        !(await exists(workspace)) &&
-        legacyWorkspace &&
-        (await exists(path.join(legacyWorkspace, ".git")))
-      ) {
+      if (!(await exists(workspace)) && legacyWorkspace && legacyHead) {
+        if (process.platform === "linux" && process.getuid?.() === 0)
+          // upload-pack deliberately strips caller Git configuration. Own the source Git metadata
+          // as controller state before copying it; leave installed dependencies untouched.
+          await options.run(["chown", "-R", "0:0", path.join(legacyWorkspace, ".git")], {
+            cwd: options.root,
+            signal,
+            timeoutMs: 120_000,
+          });
         if (!(await exists(repository))) {
           await options.run(
             [
               "git",
               "-c",
               `safe.directory=${legacyWorkspace}`,
+              "-c",
+              `safe.directory=${path.join(legacyWorkspace, ".git")}`,
               "clone",
               "--bare",
               "--no-hardlinks",
@@ -199,10 +221,13 @@ export function createWorkspaceManager(options: {
               "git",
               "-c",
               `safe.directory=${legacyWorkspace}`,
+              "-c",
+              `safe.directory=${path.join(legacyWorkspace, ".git")}`,
               "-C",
               repository,
               "fetch",
               "--quiet",
+              "--update-shallow",
               legacyWorkspace,
               "HEAD",
             ],
@@ -213,13 +238,6 @@ export function createWorkspaceManager(options: {
             },
           );
         }
-        const legacyHead = (
-          await options.run(["git", "-C", legacyWorkspace, "rev-parse", "HEAD"], {
-            cwd: options.root,
-            signal,
-            timeoutMs: 30_000,
-          })
-        ).trim();
         try {
           cache = JSON.parse(
             await readFile(path.join(options.root, `${legacySessionId}.json`), "utf8"),

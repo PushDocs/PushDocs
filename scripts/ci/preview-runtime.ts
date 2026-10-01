@@ -88,6 +88,25 @@ try {
     ),
   );
 
+  // Production upgrades copy repositories previously owned by the runtime UID.
+  const legacyId = "00000000-0000-4000-8000-000000000001";
+  const legacy = path.join(root, legacyId);
+  await run(["git", "clone", "--quiet", source, legacy], { cwd: root, timeoutMs: 10_000 });
+  await mkdir(path.join(legacy, "node_modules"));
+  await writeFile(path.join(legacy, "node_modules/installed"), "preserved");
+  await run(["chown", "-R", `${uid}:${uid}`, legacy], { cwd: root, timeoutMs: 10_000 });
+  await run(["chown", "0:0", legacy], { cwd: root, timeoutMs: 10_000 });
+  await chmod(legacy, 0o700);
+  const migrated = await manager.ensure(
+    { ...branch, projectId: "ci-legacy" },
+    new AbortController().signal,
+    legacyId,
+  );
+  assert.equal(
+    await readFile(path.join(migrated.workspace, "node_modules/installed"), "utf8"),
+    "preserved",
+  );
+
   await assert.rejects(
     run(
       [
