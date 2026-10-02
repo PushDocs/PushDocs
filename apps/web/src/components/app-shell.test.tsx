@@ -1,12 +1,60 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { MouseEventHandler, ReactNode } from "react";
+import { type MouseEventHandler, type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ pathname: "/projects/one/documents" }));
+const mocks = vi.hoisted(() => ({
+  pathname: "/projects/one/documents",
+  push: vi.fn(),
+  refresh: vi.fn(),
+}));
 
-vi.mock("next/navigation", () => ({ usePathname: () => mocks.pathname }));
+vi.mock("next/navigation", () => ({ usePathname: () => mocks.pathname, useRouter: () => mocks }));
+vi.mock("@pushdocs/ui", () => ({
+  SearchableSelect: ({
+    label,
+    options,
+    value,
+    fallbackLabel,
+    onValueChange,
+  }: {
+    label: string;
+    options: Array<{ label: string; value: string }>;
+    value: string;
+    fallbackLabel: string;
+    onValueChange: (value: string) => void;
+  }) => {
+    const [open, setOpen] = useState(false);
+    return (
+      <div>
+        <button
+          role="combobox"
+          aria-expanded={open}
+          aria-label={label}
+          type="button"
+          onClick={() => setOpen(!open)}
+        >
+          {options.find((item) => item.value === value)?.label ?? fallbackLabel}
+        </button>
+        {open ? (
+          <div role="listbox">
+            {options.map((item) => (
+              <button
+                role="option"
+                type="button"
+                key={item.value}
+                onClick={() => onValueChange(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  },
+}));
 vi.mock("next/link", () => ({
   default: ({
     children,
@@ -75,6 +123,8 @@ const operator = {
 afterEach(cleanup);
 beforeEach(() => {
   sessionStorage.clear();
+  mocks.push.mockClear();
+  mocks.refresh.mockClear();
   mocks.pathname = "/projects/one/documents";
   window.history.replaceState({}, "", "/");
 });
@@ -218,16 +268,48 @@ it("shows the working branch while browsing a different MR, then updates on an e
   expect(screen.getByTitle("Текущая ветка: docs/other")).toBeTruthy();
 });
 
-it("renders the current branch as noninteractive text", () => {
+it("switches away from an unavailable branch through the sidebar picker", async () => {
+  window.history.replaceState({}, "", "/projects/one/documents?branch=doc%2F790&path=old.md");
   render(
-    <AppShell projects={projects} user={operator}>
-      Content
+    <AppShell
+      projects={projects}
+      branchesByProject={{
+        one: [{ full_ref: "main" }, { full_ref: "release/2" }],
+        two: [{ full_ref: "other-project" }],
+      }}
+      user={operator}
+    >
+      Import failed
     </AppShell>,
   );
-  const branch = screen.getByTitle("Текущая ветка: main");
-  expect(branch.tagName).toBe("DIV");
-  expect(branch.hasAttribute("tabindex")).toBe(false);
-  expect(branch.closest("a, button")).toBeNull();
+  const picker = screen.getByRole("combobox", { name: "Выбрать текущую ветку" });
+  expect(picker.textContent).toContain("doc/790");
+  fireEvent.click(picker);
+  const option = await screen.findByRole("option", { name: "release/2" });
+  expect(screen.queryByRole("option", { name: "doc/790" })).toBeNull();
+  expect(screen.queryByRole("option", { name: "other-project" })).toBeNull();
+  fireEvent.click(option);
+  expect(mocks.push).toHaveBeenCalledWith("/projects/one/documents?branch=release%2F2");
+  expect(sessionStorage.getItem("pushdocs:branch:one")).toBe("release/2");
+  expect(screen.getByRole("link", { name: "Изменения" }).getAttribute("href")).toBe(
+    "/projects/one/changes?branch=release%2F2",
+  );
+});
+
+it("keeps the changes section when switching branches", async () => {
+  mocks.pathname = "/projects/one/changes";
+  render(
+    <AppShell
+      projects={projects}
+      branchesByProject={{ one: [{ full_ref: "main" }, { full_ref: "release/2" }] }}
+      user={operator}
+    >
+      Changes
+    </AppShell>,
+  );
+  fireEvent.click(screen.getByRole("combobox", { name: "Выбрать текущую ветку" }));
+  fireEvent.click(await screen.findByRole("option", { name: "release/2" }));
+  expect(mocks.push).toHaveBeenCalledWith("/projects/one/changes?branch=release%2F2");
 });
 
 it.each(["one", "two"])("closes the project menu when choosing project %s", (project) => {

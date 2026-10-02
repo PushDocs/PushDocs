@@ -733,8 +733,23 @@ export function Workbench({
         if (ok) router.push(destination.pathname + destination.search);
       });
     };
+    const switchBranch = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail.projectId !== projectId) return;
+      event.preventDefault();
+      const { branch: destinationBranch, href } = event.detail;
+      void save().then((ok) => {
+        if (!ok) return;
+        rememberProjectBranch(projectId, destinationBranch);
+        router.push(href);
+        router.refresh();
+      });
+    };
     document.addEventListener("click", navigate, true);
-    return () => document.removeEventListener("click", navigate, true);
+    window.addEventListener("pushdocs:branch-switch", switchBranch);
+    return () => {
+      document.removeEventListener("click", navigate, true);
+      window.removeEventListener("pushdocs:branch-switch", switchBranch);
+    };
   }, [save, router, projectId, branch, selected]);
 
   useEffect(() => {

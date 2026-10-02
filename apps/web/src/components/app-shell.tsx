@@ -1,6 +1,7 @@
 "use client";
 
 import type { ProjectSummary } from "@pushdocs/contracts";
+import { SearchableSelect } from "@pushdocs/ui";
 import {
   BookOpenText,
   ChevronDown,
@@ -14,11 +15,11 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { logoutAction } from "@/app/actions";
 import type { CurrentUser } from "@/lib/server";
-import { documentHref, readProjectBranch } from "./project-context";
+import { documentHref, readProjectBranch, rememberProjectBranch } from "./project-context";
 import { PushDocsLogo } from "./pushdocs-logo";
 import { RealtimeRefresh } from "./realtime-refresh";
 
@@ -32,15 +33,18 @@ const projectNavigation = [
 export function AppShell({
   children,
   projects,
+  branchesByProject = {},
   user,
 }: {
   children: ReactNode;
   projects: ProjectSummary[];
+  branchesByProject?: Record<string, Array<{ full_ref: string }>>;
   user: CurrentUser;
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const projectSwitcherRef = useRef<HTMLDetailsElement>(null);
   const pathname = usePathname();
+  const router = useRouter();
   const match = pathname.match(/^\/projects\/([^/]+)/);
   const projectId = match?.[1];
   const activeProject = projects.find((project) => project.id === projectId);
@@ -77,12 +81,13 @@ export function AppShell({
   const [currentBranch, setCurrentBranch] = useState("");
   useEffect(() => {
     if (projectSwitcherRef.current) projectSwitcherRef.current.open = false;
-    const update = () => {
+    const update = (event?: Event) => {
       if (!activeProject || !pathname.startsWith("/projects/")) return;
       const query = new URLSearchParams(window.location.search);
       setCurrentBranch(
-        (/\/(documents|changes)$/.test(pathname) ? query.get("branch") : null) ||
-          readProjectBranch(activeProject.id, activeProject.defaultBranch),
+        (event?.type !== "pushdocs:context" && /\/(documents|changes)$/.test(pathname)
+          ? query.get("branch")
+          : null) || readProjectBranch(activeProject.id, activeProject.defaultBranch),
       );
     };
     update();
@@ -157,11 +162,36 @@ export function AppShell({
               className="sidebar-branch"
               title={`Текущая ветка: ${currentBranch || activeProject.defaultBranch}`}
             >
-              <GitBranch aria-hidden size={16} />
-              <span>
-                <small>Текущая ветка</small>
-                <code>{currentBranch || activeProject.defaultBranch}</code>
-              </span>
+              <small>Текущая ветка</small>
+              <SearchableSelect
+                className="sidebar-branch-picker"
+                label="Выбрать текущую ветку"
+                leadingIcon={<GitBranch aria-hidden size={16} />}
+                value={currentBranch || activeProject.defaultBranch}
+                fallbackLabel={currentBranch || activeProject.defaultBranch}
+                options={(branchesByProject[activeProject.id] ?? []).map((item) => ({
+                  label: item.full_ref,
+                  value: item.full_ref,
+                }))}
+                searchLabel="Поиск по веткам"
+                searchPlaceholder="Найти ветку…"
+                emptyText="Ветки не найдены"
+                onValueChange={(branch) => {
+                  if (branch === (currentBranch || activeProject.defaultBranch)) return;
+                  const href = pathname.endsWith("/changes")
+                    ? `/projects/${activeProject.id}/changes?${new URLSearchParams({ branch })}`
+                    : documentHref(activeProject.id, branch);
+                  const event = new CustomEvent("pushdocs:branch-switch", {
+                    cancelable: true,
+                    detail: { projectId: activeProject.id, branch, href },
+                  });
+                  if (window.dispatchEvent(event)) {
+                    rememberProjectBranch(activeProject.id, branch);
+                    router.push(href);
+                    router.refresh();
+                  }
+                }}
+              />
             </div>
             <nav className="sidebar-nav" aria-label="Разделы проекта">
               {projectNavigation.map((item) => {

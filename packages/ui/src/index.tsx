@@ -25,6 +25,7 @@ export function SearchableSelect({
   className,
   disabled,
   emptyText = "Ничего не найдено",
+  fallbackLabel,
   label,
   leadingIcon,
   name,
@@ -37,6 +38,7 @@ export function SearchableSelect({
   className?: string;
   disabled?: boolean;
   emptyText?: string;
+  fallbackLabel?: string;
   label: string;
   leadingIcon?: ReactNode;
   name?: string;
@@ -74,7 +76,7 @@ export function SearchableSelect({
       >
         {leadingIcon ? <span className="pd-combobox-leading">{leadingIcon}</span> : null}
         <Combobox.Value>
-          {(option: SelectOption | null) => option?.label ?? "Выберите значение"}
+          {(option: SelectOption | null) => option?.label ?? fallbackLabel ?? "Выберите значение"}
         </Combobox.Value>
         <Combobox.Icon className="pd-combobox-icon">
           <ChevronDown aria-hidden size={15} />

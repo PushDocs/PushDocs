@@ -1742,3 +1742,25 @@ it("updates comment state through its own controller without reloading the edito
     "# Первый\n<Widget />",
   );
 });
+
+it("saves pending editor changes before a sidebar branch switch", async () => {
+  mount();
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "unsaved before switching" },
+  });
+  const event = new CustomEvent("pushdocs:branch-switch", {
+    cancelable: true,
+    detail: {
+      projectId: "project",
+      branch: "release/2",
+      href: "/projects/project/documents?branch=release%2F2",
+    },
+  });
+  await act(async () => {
+    window.dispatchEvent(event);
+  });
+  expect(event.defaultPrevented).toBe(true);
+  expect(state.files[0]?.content).toBe("unsaved before switching");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=release%2F2");
+  expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("release/2");
+});

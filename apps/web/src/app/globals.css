@@ -653,36 +653,28 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 
 .sidebar-branch {
-  align-items: center;
   border-radius: 6px;
   color: var(--ink-muted);
-  display: flex;
-  gap: 9px;
+  display: grid;
+  gap: 4px;
   margin-top: 8px;
   min-width: 0;
   padding: 9px 10px;
-}
-
-.sidebar-branch > svg {
-  flex-shrink: 0;
-}
-
-.sidebar-branch > span {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
 }
 
 .sidebar-branch small {
   font-size: 10px;
 }
 
-.sidebar-branch code {
-  color: var(--ink);
+.sidebar-branch-picker {
+  width: 100%;
+  min-width: 0;
   font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: left;
+}
+
+.sidebar-branch-picker .pd-combobox-leading {
+  flex-shrink: 0;
 }
 
 .sidebar-nav {
@@ -2756,7 +2748,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   cursor: pointer;
   font-size: 14px;
 }
-@media (max-width: 900px) {
+@media (max-width: 860px) {
   .component-examples {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2859,7 +2851,7 @@ textarea:where(:not(.monaco-editor *)):focus {
 
 .sidebar-collapsed .sidebar-brand .pushdocs-logo > span:last-child,
 .sidebar-collapsed .sidebar-label,
-.sidebar-collapsed .sidebar-branch > span,
+.sidebar-collapsed .sidebar-branch > small,
 .sidebar-collapsed .project-switcher > span:nth-child(2),
 .sidebar-collapsed .project-switcher > svg,
 .sidebar-collapsed .profile-copy,
@@ -2920,7 +2912,7 @@ textarea:where(:not(.monaco-editor *)):focus {
 
   .sidebar-brand .pushdocs-logo > span:last-child,
   .sidebar-label,
-  .sidebar-branch > span,
+  .sidebar-branch > small,
   .project-switcher > span:nth-child(2),
   .project-switcher > svg {
     display: none;
@@ -4149,4 +4141,31 @@ progress::-moz-progress-bar {
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--surface);
+}
+
+.sidebar-collapsed .sidebar-branch {
+  padding-inline: 0;
+}
+.sidebar-collapsed .sidebar-branch-picker {
+  width: 42px;
+  font-size: 0;
+  gap: 0;
+  justify-content: center;
+}
+.sidebar-collapsed .sidebar-branch-picker .pd-combobox-icon {
+  display: none;
+}
+@media (max-width: 860px) {
+  .sidebar-branch {
+    padding-inline: 0;
+  }
+  .sidebar-branch-picker {
+    width: 42px;
+    font-size: 0;
+    gap: 0;
+    justify-content: center;
+  }
+  .sidebar-branch-picker .pd-combobox-icon {
+    display: none;
+  }
 }
