@@ -43,6 +43,7 @@ type RunningPreview = {
   stopMemoryWatch: () => void;
   launchHash: string;
   uid: number;
+  generatedConfig?: string;
   stoppingTask?: Promise<void>;
   failureTask?: Promise<void>;
 };
@@ -635,6 +636,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     const startedAt = Date.now();
     const controller = new AbortController();
     let launched: RunningPreview | undefined;
+    let generatedConfig: string | undefined;
     starting.set(session.id, controller);
     let startupOutput = "";
     let startupFailure: string | undefined;
@@ -730,11 +732,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
       await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
       const startCommand = await prepareDocusaurusPreview({
         cwd,
-        home: runtime.env.HOME,
         command: preview.start,
       });
-      const generatedConfig = startCommand.at(-1);
-      if (startCommand !== preview.start && generatedConfig)
+      generatedConfig = startCommand !== preview.start ? startCommand.at(-1) : undefined;
+      if (generatedConfig)
         await run(["chown", `${runtime.uid}:${runtime.gid}`, generatedConfig], {
           cwd: workspace,
           timeoutMs: 30_000,
@@ -758,11 +759,12 @@ export function createPreviewService(options: PreviewServiceOptions) {
         stopMemoryWatch: () => {},
         launchHash,
         uid: runtime.uid,
+        generatedConfig,
       };
       launched = active;
       running.set(session.id, active);
       const onOutput = (chunk: Buffer) => {
-        startupOutput = `${startupOutput}${chunk.toString()}`.slice(-2000);
+        startupOutput = `${startupOutput}${chunk.toString()}`.slice(-12000);
         if (/heap out of memory|Reached heap limit|Allocation failed.*heap/i.test(startupOutput))
           startupFailure = `Предпросмотр остановлен: сайту не хватило памяти JavaScript (лимит ${heapLimitMb} МБ).`;
         void appendLog(session.id, chunk.toString()).catch(() => undefined);
@@ -848,6 +850,8 @@ export function createPreviewService(options: PreviewServiceOptions) {
       if (!controller.signal.aborted)
         logger.error(JSON.stringify({ error: message, previewSessionId: session.id }));
     } finally {
+      if (generatedConfig && !running.has(session.id))
+        await rm(generatedConfig, { force: true }).catch((error) => logger.error(String(error)));
       starting.delete(session.id);
     }
   }
@@ -897,9 +901,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
         });
     }
     await stopRuntimeProcesses(active.uid);
-    if (running.get(sessionId) === active) running.delete(sessionId);
+    if (active.generatedConfig) await rm(active.generatedConfig, { force: true });
     if (process.platform === "linux" && process.getuid?.() === 0)
       await run(["chown", "0:0", active.workspace], { cwd: active.workspace, timeoutMs: 30_000 });
+    if (running.get(sessionId) === active) running.delete(sessionId);
   }
 
   function failActive(sessionId: string, active: RunningPreview, message: string) {

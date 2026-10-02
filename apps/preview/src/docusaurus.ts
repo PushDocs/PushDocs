@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { atomicWrite } from "./workspaces";
@@ -6,10 +6,9 @@ import { atomicWrite } from "./workspaces";
 /** Preserve the real site, but don't serialize imported media into a second disk cache. */
 export async function prepareDocusaurusPreview(options: {
   cwd: string;
-  home: string;
   command: string[];
 }): Promise<string[]> {
-  const { cwd, home, command } = options;
+  const { cwd, command } = options;
   if (
     command.some(
       (argument) =>
@@ -42,12 +41,10 @@ export async function prepareDocusaurusPreview(options: {
   // Avoid choosing a different source configuration than the site's own CLI would.
   const [configPath] = configs;
   if (configs.length !== 1 || !configPath) return command;
-  if (!(await lstat(home)).isDirectory())
-    throw new Error("Рабочая папка конфигурации предпросмотра недоступна");
-  const id = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-  const filename = path.join(home, `docusaurus-preview-${id}.config.ts`);
-  let relativeConfig = path.relative(home, configPath).split(path.sep).join("/");
-  if (!relativeConfig.startsWith(".")) relativeConfig = `./${relativeConfig}`;
+  // Docusaurus resolves plugin paths from the config's directory, not process.cwd().
+  // Use a new generated filename beside the source config, and remove it on shutdown.
+  const filename = path.join(cwd, `.pushdocs-preview-${randomUUID()}.config.ts`);
+  const relativeConfig = `./${path.basename(configPath)}`;
   await atomicWrite(
     filename,
     `import original from ${JSON.stringify(relativeConfig)};

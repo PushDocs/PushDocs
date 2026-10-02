@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
@@ -7,8 +7,6 @@ import { prepareDocusaurusPreview } from "./docusaurus";
 it("keeps the site's config and plugins but replaces the media-heavy disk cache", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "preview-docusaurus-"));
   try {
-    const home = path.join(cwd, ".home");
-    await mkdir(home);
     await writeFile(
       path.join(cwd, "package.json"),
       JSON.stringify({ scripts: { start: "docusaurus start" } }),
@@ -16,11 +14,12 @@ it("keeps the site's config and plugins but replaces the media-heavy disk cache"
     const original = "export default {title: 'Site', plugins: ['original-plugin']};";
     await writeFile(path.join(cwd, "docusaurus.config.ts"), original);
     const command = ["yarn", "start", "--port", "{port}"];
-    const prepared = await prepareDocusaurusPreview({ cwd, home, command });
+    const prepared = await prepareDocusaurusPreview({ cwd, command });
     expect(prepared.slice(0, command.length)).toEqual(command);
     expect(prepared[command.length]).toBe("--config");
     const filename = prepared.at(-1);
     if (!filename) throw new Error("Expected generated config");
+    expect(path.dirname(filename)).toBe(cwd);
     const source = await readFile(filename, "utf8");
     expect(source).toContain("docusaurus.config.ts");
     const factory = new Function(
@@ -53,20 +52,14 @@ it("does not alter another framework or a manually configured Docusaurus command
     await writeFile(path.join(cwd, "package.json"), JSON.stringify({ scripts: { start: "vite" } }));
     await writeFile(path.join(cwd, "docusaurus.config.ts"), "export default {};");
     const command = ["yarn", "start"];
-    expect(await prepareDocusaurusPreview({ cwd, home: path.join(cwd, ".home"), command })).toEqual(
-      command,
-    );
+    expect(await prepareDocusaurusPreview({ cwd, command })).toEqual(command);
     const custom = ["docusaurus", "start", "--config", "custom.ts"];
-    expect(
-      await prepareDocusaurusPreview({ cwd, home: path.join(cwd, ".home"), command: custom }),
-    ).toEqual(custom);
+    expect(await prepareDocusaurusPreview({ cwd, command: custom })).toEqual(custom);
     await writeFile(
       path.join(cwd, "package.json"),
       JSON.stringify({ scripts: { start: "docusaurus start --config custom.ts" } }),
     );
-    expect(await prepareDocusaurusPreview({ cwd, home: path.join(cwd, ".home"), command })).toEqual(
-      command,
-    );
+    expect(await prepareDocusaurusPreview({ cwd, command })).toEqual(command);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
