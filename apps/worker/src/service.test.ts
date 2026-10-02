@@ -1233,6 +1233,27 @@ describe("job execution and review polling", () => {
     expect(client.listFiles).not.toHaveBeenCalled();
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
+  it("does not retry importing a branch that is absent from the connected repository", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      attempts: 1,
+      id: "job",
+      kind: "branch.sync",
+      payload: { branch: "doc/790", projectId: "project" },
+    } as never);
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(syncTarget as never);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+      logger: { error: vi.fn() },
+    }).runJob();
+    expect(port.failJob).toHaveBeenCalledWith("job", "Branch doc/790 was not found", false, 1);
+    expect(client.listFiles).not.toHaveBeenCalled();
+    expect(port.markProjectAttention).not.toHaveBeenCalled();
+  });
+
   it("completes a branch synchronization job", async () => {
     const port = repository();
     const client = provider();

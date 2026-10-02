@@ -6,6 +6,7 @@ import {
   retryChangeSetSubmissionAction,
   submitChangeSetAction,
 } from "@/app/actions";
+import { BranchImport } from "@/components/branch-import";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
 import { ProjectContext } from "@/components/project-context";
@@ -62,6 +63,9 @@ export default async function ChangesPage({
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
   const access = { role: project.role };
   const branch = query.branch ?? project.defaultBranch;
+  const branches = await store.listBranches(projectId);
+  const localBranch = branches.find((item) => item.full_ref === branch);
+  if (!localBranch) return <BranchImport key={branch} projectId={projectId} branch={branch} />;
   const [drafts, working, attachments, conflicts, submission, review] = await Promise.all([
     store.listDraftFiles(projectId, branch),
     store.listChangedWorkingFiles(projectId, branch),
@@ -70,6 +74,14 @@ export default async function ChangesPage({
     store.getSubmissionStatus(projectId, branch),
     store.findOpenChangeRequestByBranch(projectId, branch),
   ]);
+  if (
+    working.branch.repository_paths.length === 0 &&
+    working.files.length === 0 &&
+    drafts.length === 0 &&
+    attachments.length === 0 &&
+    !(await store.hasImportedBranch(localBranch.id))
+  )
+    return <BranchImport key={branch} projectId={projectId} branch={branch} />;
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
   const changeSetId = drafts[0]?.change_set_id ?? attachments[0]?.change_set_id;
   const changeSet = drafts[0];

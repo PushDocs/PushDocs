@@ -145,3 +145,24 @@ it("shows a terminal job failure and ignores a late poll result after unmount", 
   syncFailure.unmount();
   await act(async () => rejectSync?.(new Error("late")));
 });
+
+it("explains a missing branch without exposing raw provider errors", async () => {
+  mocks.sync.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({ status: "failed", last_error: "Branch doc/790 was not found" });
+  render(<BranchImport projectId="project" branch="doc/790" />);
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Ветка doc/790 не найдена в подключённом репозитории",
+  );
+});
+
+it("does not display arbitrary provider error bodies", async () => {
+  mocks.sync.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({
+    status: "failed",
+    last_error: "Provider request failed with 403: private response",
+  });
+  render(<BranchImport projectId="project" branch="main" />);
+  const message = (await screen.findByRole("alert")).textContent;
+  expect(message).toContain("Проверьте доступ подключения PushDocs");
+  expect(message).not.toContain("private response");
+});

@@ -382,6 +382,9 @@ export class GitLabProvider implements GitProvider {
         this.request(`${path}?with_labels_details=true`).then(
           readJson<{
             sha: string;
+            source_project_id?: number | null;
+            target_project_id?: number;
+            source_branch?: string;
             state: string;
             draft?: boolean;
             work_in_progress?: boolean;
@@ -428,7 +431,23 @@ export class GitLabProvider implements GitProvider {
         state = "checking";
       else if (reason) state = "blocked";
     }
+    const sourceId = review?.source_project_id;
+    const source =
+      sourceId !== undefined && review?.target_project_id !== undefined
+        ? {
+            repositoryId: sourceId === null ? null : String(sourceId),
+            isFork: sourceId !== review.target_project_id,
+            branchUrl: null as string | null,
+          }
+        : null;
+    if (source?.isFork && source.repositoryId && review?.source_branch) {
+      const repositoryId = source.repositoryId;
+      const sourceRepository = await available(() => this.getRepository(repositoryId));
+      if (sourceRepository)
+        source.branchUrl = `${sourceRepository.webUrl}/-/tree/${encodeURIComponent(review.source_branch)}`;
+    }
     return {
+      source,
       headSha: review?.sha ?? null,
       readiness: { state, reason },
       labels:
@@ -773,7 +792,12 @@ export class GitHubProvider implements GitProvider {
       available(() =>
         this.request(path).then(
           readJson<{
-            head: { sha: string };
+            head: {
+              sha: string;
+              ref?: string;
+              repo?: { full_name: string; html_url: string } | null;
+            };
+            base?: { repo: { full_name: string } };
             state: string;
             draft: boolean;
             mergeable: boolean | null;
@@ -861,6 +885,16 @@ export class GitHubProvider implements GitProvider {
         })),
     ];
     return {
+      source: review?.base
+        ? {
+            repositoryId: review.head.repo?.full_name ?? null,
+            isFork: review.head.repo?.full_name !== review.base.repo.full_name,
+            branchUrl:
+              review.head.repo && review.head.ref
+                ? `${review.head.repo.html_url}/tree/${encodeURIComponent(review.head.ref)}`
+                : null,
+          }
+        : null,
       headSha: review?.head.sha ?? null,
       readiness: { state, reason },
       labels:

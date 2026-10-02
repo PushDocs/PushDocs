@@ -113,13 +113,25 @@ export default async function ReviewsPage({
                 </div>
               </header>
               <nav className="review-actions" aria-label={`Действия с ${reviewLabel}`}>
-                <Link
-                  className="pd-button pd-button--primary"
-                  href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: selected.source_branch })}`}
-                >
-                  <GitBranch aria-hidden size={15} />
-                  Переключиться на ветку
-                </Link>
+                {selected.details?.source?.isFork === false ? (
+                  <Link
+                    className="pd-button pd-button--primary"
+                    href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: selected.source_branch })}`}
+                  >
+                    <GitBranch aria-hidden size={15} />
+                    Переключиться на ветку
+                  </Link>
+                ) : selected.details?.source?.branchUrl ? (
+                  <a
+                    className="pd-button pd-button--primary"
+                    href={selected.details.source.branchUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Открыть ветку в {providerName}
+                    <ExternalLink aria-hidden size={15} />
+                  </a>
+                ) : null}
                 <a
                   className="pd-button pd-button--secondary review-provider-link"
                   href={selected.provider_url}
@@ -149,6 +161,18 @@ export default async function ReviewsPage({
                   </button>
                 ) : null}
               </nav>
+              {selected.details?.source?.isFork ? (
+                <p className="panel-note">
+                  {selected.details.source.branchUrl
+                    ? "Ветка находится в форке. Для работы с ней в PushDocs подключите исходный репозиторий как отдельный проект."
+                    : "Исходный репозиторий удалён или недоступен подключению PushDocs. Проверьте доступ к форку в Git."}
+                </p>
+              ) : !selected.details?.source ? (
+                <p className="panel-note">
+                  Исходный репозиторий ещё не определён. Обновите данные из Git, чтобы открыть
+                  ветку.
+                </p>
+              ) : null}
               <ReviewInformation details={selected.details} />
               <div className="checks-panel">
                 <div className="checks-title">

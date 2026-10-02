@@ -877,6 +877,7 @@ describe("read-only review details", () => {
         "1",
       ),
     ).toEqual({
+      source: null,
       headSha: null,
       readiness: { state: "unknown", reason: null },
       labels: null,
@@ -1118,3 +1119,96 @@ it("does not turn a nonblocking GitHub review into a merge requirement when the 
   expect(details.readiness).toEqual({ state: "ready", reason: null });
   expect(details.approvals?.reviewers).toEqual([{ name: "alice", state: "changes_requested" }]);
 });
+
+it.each([9, 42, null])("tracks the GitLab MR source project %s", async (sourceId) => {
+  const request = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("/approvals")) return json({ approved_by: [] });
+    if (url.includes("/discussions")) return json([]);
+    if (url.includes("/merge_requests/"))
+      return json({
+        sha: "head",
+        state: "opened",
+        labels: [],
+        source_project_id: sourceId,
+        target_project_id: 9,
+        source_branch: "doc/790",
+      });
+    return json({
+      id: 42,
+      path_with_namespace: "author/docs",
+      web_url: "https://gitlab.test/author/docs",
+      http_url_to_repo: "https://gitlab.test/author/docs.git",
+      default_branch: "main",
+    });
+  });
+  const details = await new GitLabProvider(
+    "https://gitlab.test",
+    "token",
+    request,
+  ).getChangeRequestDetails("9", "52");
+  expect(details).toMatchObject({
+    source: {
+      repositoryId: sourceId === null ? null : String(sourceId),
+      isFork: sourceId !== 9,
+      branchUrl: sourceId === 42 ? "https://gitlab.test/author/docs/-/tree/doc%2F790" : null,
+    },
+  });
+});
+
+it("retains fork identity when the connection cannot access it", async () => {
+  const request = async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("/approvals")) return json({ approved_by: [] });
+    if (url.includes("/discussions")) return json([]);
+    if (url.includes("/merge_requests/"))
+      return json({
+        sha: "head",
+        state: "opened",
+        labels: [],
+        source_project_id: 42,
+        target_project_id: 9,
+        source_branch: "doc/790",
+      });
+    return json({}, 404);
+  };
+  const details = await new GitLabProvider(
+    "https://gitlab.test",
+    "token",
+    request,
+  ).getChangeRequestDetails("9", "52");
+  expect(details).toMatchObject({ source: { repositoryId: "42", isFork: true, branchUrl: null } });
+});
+
+it.each(["acme/docs", "author/docs", null])(
+  "tracks GitHub PR source repository %s",
+  async (fullName) => {
+    const request = async (input: string | URL) =>
+      String(input).includes("?per_page")
+        ? json([])
+        : json({
+            head: {
+              sha: "head",
+              ref: "doc/790",
+              repo: fullName
+                ? { full_name: fullName, html_url: `https://github.com/${fullName}` }
+                : null,
+            },
+            base: { repo: { full_name: "acme/docs" } },
+            state: "open",
+            labels: [],
+          });
+    const details = await new GitHubProvider(
+      "https://github.com",
+      "token",
+      request,
+    ).getChangeRequestDetails("acme/docs", "52");
+    expect(details).toMatchObject({
+      source: {
+        repositoryId: fullName,
+        isFork: fullName !== "acme/docs",
+        branchUrl: fullName ? `https://github.com/${fullName}/tree/doc%2F790` : null,
+      },
+    });
+  },
+);

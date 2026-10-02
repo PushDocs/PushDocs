@@ -14,6 +14,15 @@ const mocks = vi.hoisted(() => {
       head_sha: "sha",
       provider_url: "https://git.example/1",
       state: "open",
+      details: {
+        headSha: "sha",
+        readiness: { state: "unknown", reason: null },
+        labels: null,
+        approvals: null,
+        comments: null,
+        commentsComplete: false,
+        source: { repositoryId: "main", isFork: false, branchUrl: null },
+      },
     },
     {
       id: "selected",
@@ -24,6 +33,15 @@ const mocks = vi.hoisted(() => {
       head_sha: "sha",
       provider_url: "https://git.example/2",
       state: "open",
+      details: {
+        headSha: "sha",
+        readiness: { state: "unknown", reason: null },
+        labels: null,
+        approvals: null,
+        comments: null,
+        commentsComplete: false,
+        source: { repositoryId: "main", isFork: false, branchUrl: null },
+      },
     },
     {
       id: "merged",
@@ -228,4 +246,64 @@ it("shows readiness on every open review and keeps missing provider data unknown
     "Готовность неизвестна",
   );
   expect(screen.queryByText("Готов к слиянию")).toBeNull();
+});
+
+it("does not import a fork branch into the main project's workspace", async () => {
+  mocks.listReviews.mockResolvedValueOnce([
+    {
+      ...mocks.reviews[1],
+      details: {
+        ...mocks.reviews[1]?.details,
+        source: {
+          repositoryId: "fork",
+          isFork: true,
+          branchUrl: "https://git.example/fork/-/tree/doc%2F790",
+        },
+      },
+    },
+  ] as never);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
+  expect(screen.getByRole("link", { name: /Открыть ветку в GitLab/ }).getAttribute("href")).toBe(
+    "https://git.example/fork/-/tree/doc%2F790",
+  );
+  expect(screen.getByText(/Ветка находится в форке/)).toBeTruthy();
+});
+
+it("explains when the fork is unavailable instead of offering an import", async () => {
+  mocks.listReviews.mockResolvedValueOnce([
+    {
+      ...mocks.reviews[1],
+      details: {
+        ...mocks.reviews[1]?.details,
+        source: { repositoryId: null, isFork: true, branchUrl: null },
+      },
+    },
+  ] as never);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
+  expect(screen.queryByRole("link", { name: /Открыть ветку в GitLab/ })).toBeNull();
+  expect(screen.getByText(/Исходный репозиторий удалён или недоступен/)).toBeTruthy();
+});
+
+it("requires refreshing old reviews before opening an unidentified source repository", async () => {
+  mocks.listReviews.mockResolvedValueOnce([{ ...mocks.reviews[1], details: null }] as never);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
+  expect(screen.getByText(/Исходный репозиторий ещё не определён/)).toBeTruthy();
 });

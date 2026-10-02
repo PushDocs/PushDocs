@@ -45,7 +45,11 @@ export function BranchImport({ projectId, branch }: { projectId: string; branch:
             if (job.status === "failed") {
               active = false;
               clearTimeout(timeout);
-              setError("Не удалось загрузить ветку. Проверьте подключение и повторите попытку.");
+              setError(
+                job.last_error === `Branch ${branch} was not found`
+                  ? `Ветка ${branch} не найдена в подключённом репозитории. Возможно, она удалена или находится в форке. Откройте PR / MR и проверьте исходный репозиторий.`
+                  : "Не удалось загрузить ветку. Проверьте доступ подключения PushDocs к репозиторию и повторите попытку.",
+              );
               return;
             }
             setStage(job.status === "running" ? "running" : "queued");

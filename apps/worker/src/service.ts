@@ -12,6 +12,12 @@ import { createProvider, type GitProvider, type ProviderFileChange } from "@push
 import { prepareVpnAccess, type VpnAccess, type VpnConnection } from "@pushdocs/vpn";
 import { GitTransport, type GitTransportOptions } from "./git-transport";
 
+class BranchNotFoundError extends Error {
+  constructor(branch: string) {
+    super(`Branch ${branch} was not found`);
+  }
+}
+
 class CloneOriginMismatchError extends Error {
   constructor() {
     super(
@@ -223,7 +229,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const branches = await client.listBranches(target.provider_repository_id);
     await repository.ensureBranches(projectId, branches);
     const branch = branches.find((item) => item.name === branchName);
-    if (!branch) throw new Error(`Branch ${branchName} was not found`);
+    if (!branch) throw new BranchNotFoundError(branchName);
     const allPaths = await client.listFiles(target.provider_repository_id, branch.sha);
     const configPath = repositoryPath(target.root_path, ".pushdocs/config.json");
     const config = parseProjectConfig(
@@ -653,12 +659,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
       const permanentSubmissionFailure =
         job.kind === "change-set.submit" && error instanceof CloneOriginMismatchError;
       const permanentBranchFailure =
-        job.kind === "branch.create" &&
-        (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
-          (typeof error === "object" &&
-            error !== null &&
-            "code" in error &&
-            error.code === "ACCESS_DENIED"));
+        error instanceof BranchNotFoundError ||
+        (job.kind === "branch.create" &&
+          (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
+            (typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "ACCESS_DENIED")));
       if (
         job.kind === "change-set.submit" &&
         error &&

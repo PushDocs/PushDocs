@@ -40,6 +40,7 @@ The local preview executes repository JavaScript. Enable it only for repositorie
 ## Current limits
 
 - PushDocs displays provider checks, but merging still happens in GitHub or GitLab.
+- The review screen switches to branches from the connected repository. For a PR or MR from a fork, it links to the source branch at the Git provider when the connection can access that repository. Editing a fork in PushDocs requires connecting it as a separate project. Older review data must be refreshed before its source branch can be opened.
 - Comments are stored in PushDocs and are not copied to provider discussions.
 - Review state is refreshed every 30 seconds. Provider webhooks are not implemented yet.
 - The write path has real local Git and PostgreSQL integration tests. Live provider acceptance requires separately agreed test repositories. Tests never push to sendsay-docs.

@@ -3,6 +3,8 @@ import { expect, it, vi } from "vitest";
 
 const submitChangesProps = vi.hoisted(() => vi.fn());
 const repository = vi.hoisted(() => ({
+  listBranches: vi.fn().mockResolvedValue([{ id: "branch", full_ref: "fix" }]),
+  hasImportedBranch: vi.fn().mockResolvedValue(true),
   getProjectForUser: vi.fn().mockResolvedValue({
     id: "project",
     defaultBranch: "stable",
@@ -14,11 +16,14 @@ const repository = vi.hoisted(() => ({
     .mockResolvedValue([
       { path: "docs/a.md", operation: "modify", status: "open", change_set_id: "set" },
     ]),
-  listChangedWorkingFiles: vi.fn().mockResolvedValue({
-    branch: { repository_paths: ["docs/a.md", "static/existing.png"] },
-    files: [
-      { path: "docs/a.md", baseContent: "Before server draft", content: "After server draft" },
-    ],
+  listChangedWorkingFiles: vi.fn(async (_projectId: string, branch: string) => {
+    if (branch === "doc/790") throw new Error("Branch not found");
+    return {
+      branch: { repository_paths: ["docs/a.md", "static/existing.png"] },
+      files: [
+        { path: "docs/a.md", baseContent: "Before server draft", content: "After server draft" },
+      ],
+    };
   }),
   listAttachmentsForBranch: vi.fn().mockResolvedValue([
     {
@@ -64,6 +69,9 @@ vi.mock("@/components/submit-changes", async (importOriginal) => {
   };
 });
 
+vi.mock("@/components/branch-import", () => ({ BranchImport: () => null }));
+
+import { BranchImport } from "@/components/branch-import";
 import ChangesPage from "./page";
 
 it("uses the selected branch's actual before/after content and distinguishes replaced from new attachments", async () => {
@@ -128,4 +136,48 @@ it("does not reopen an already released failed submission in recovery mode", asy
   const props = submitChangesProps.mock.calls.at(-1)?.[0];
   expect(props.retryAction).toBeUndefined();
   expect(props.children).toBeNull();
+});
+
+it("renders branch loading before accessing changes for an unknown branch", async () => {
+  repository.listBranches.mockResolvedValueOnce([]);
+  const reads = repository.listChangedWorkingFiles.mock.calls.length;
+  const view = await ChangesPage({
+    params: Promise.resolve({ projectId: "project" }),
+    searchParams: Promise.resolve({ branch: "doc/790" }),
+  });
+  expect(view.type).toBe(BranchImport);
+  expect(view.props).toEqual({ projectId: "project", branch: "doc/790" });
+  expect(repository.listChangedWorkingFiles.mock.calls.length).toBe(reads);
+});
+
+it("keeps a catalog-only branch loading instead of offering to create an MR", async () => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.listChangedWorkingFiles.mockResolvedValueOnce({
+    branch: { repository_paths: [] },
+    files: [],
+  });
+  repository.hasImportedBranch.mockResolvedValueOnce(false);
+  const view = await ChangesPage({
+    params: Promise.resolve({ projectId: "project" }),
+    searchParams: Promise.resolve({ branch: "fix" }),
+  });
+  expect(view.type).toBe(BranchImport);
+});
+
+it("opens changes for a successfully imported empty repository", async () => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.listChangedWorkingFiles.mockResolvedValueOnce({
+    branch: { repository_paths: [] },
+    files: [],
+  });
+  const html = renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ branch: "fix" }),
+    }),
+  );
+  expect(html).toContain("Все изменения отправлены");
+  expect(repository.hasImportedBranch).toHaveBeenLastCalledWith("branch");
 });

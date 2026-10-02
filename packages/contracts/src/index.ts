@@ -260,6 +260,11 @@ export interface CheckRunSummary {
 
 /** Read-only snapshot of the Git provider's review information. Null means unavailable. */
 export interface ChangeRequestDetails {
+  source?: {
+    repositoryId: string | null;
+    isFork: boolean;
+    branchUrl: string | null;
+  } | null;
   headSha: string | null;
   readiness: {
     state: "ready" | "blocked" | "checking" | "unknown";
