@@ -148,18 +148,6 @@ function App() {
           </div>
           <div className="wb-actions">
             <LivePreviewButton projectId="project" branch="stable" />
-            <div className="wb-branch-tools">
-              <SearchableSelect
-                className="wb-branch-picker"
-                label="Текущая ветка"
-                value="stable"
-                options={[{ label: "stable", value: "stable" }]}
-                onValueChange={() => {}}
-              />
-              <button className="wb-new-branch" type="button">
-                Новая ветка
-              </button>
-            </div>
             <a className="wb-primary" href="#changes">
               К изменениям (0)
             </a>

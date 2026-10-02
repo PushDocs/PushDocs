@@ -399,3 +399,58 @@ it("keeps Settings accessible for an operator before any project exists", () => 
   );
   expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
 });
+
+it("opens branch creation from the sidebar in other project sections", () => {
+  mocks.pathname = "/projects/one/changes";
+  render(
+    <AppShell
+      projects={projects}
+      branchesByProject={{ one: [{ full_ref: "main" }] }}
+      user={operator}
+    >
+      Changes
+    </AppShell>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Новая ветка" }));
+  expect(mocks.push).toHaveBeenCalledWith("/projects/one/documents?branch=main&panel=branch");
+});
+
+it("lets the editor handle sidebar branch creation without navigating", () => {
+  const handle = (event: Event) => event.preventDefault();
+  window.addEventListener("pushdocs:branch-create", handle);
+  try {
+    render(
+      <AppShell
+        projects={projects}
+        branchesByProject={{ one: [{ full_ref: "main" }] }}
+        user={operator}
+      >
+        Documents
+      </AppShell>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Новая ветка" }));
+    expect(mocks.push).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("pushdocs:branch-create", handle);
+  }
+});
+
+it("disables sidebar branch creation for readers and missing branches", () => {
+  const view = render(
+    <AppShell projects={projects} user={operator}>
+      Documents
+    </AppShell>,
+  );
+  expect(screen.getByRole("button", { name: "Новая ветка" })).toHaveProperty("disabled", true);
+  mocks.pathname = "/projects/two/documents";
+  view.rerender(
+    <AppShell
+      projects={projects}
+      branchesByProject={{ two: [{ full_ref: "stable" }] }}
+      user={operator}
+    >
+      Documents
+    </AppShell>,
+  );
+  expect(screen.getByRole("button", { name: "Новая ветка" })).toHaveProperty("disabled", true);
+});

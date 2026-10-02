@@ -13,7 +13,9 @@ test("document header actions have one height and preview failure is visible", a
           .filter((element) => !element.closest(".settings-notification"))
           .map((element) => Math.round(element.getBoundingClientRect().height)),
       );
-    expect(heights).toEqual([42, 42, 42, 42]);
+    expect(heights).toEqual([42, 42]);
+    await expect(page.getByRole("combobox", { name: "Текущая ветка" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Новая ветка" })).toHaveCount(0);
     const positions = await page.getByRole("alert").evaluate((alert) => {
       const icon = alert.querySelector(":scope > svg");
       const close = alert.querySelector(":scope > button");

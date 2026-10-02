@@ -400,17 +400,10 @@ it("persists reordered tabs without saving or changing the active document", asy
   ).toContain("b.md");
   expect(screen.getByRole("tab", { name: "b.md" }).getAttribute("aria-selected")).toBe("true");
 });
-it("searches branch names without exposing provider protection metadata", async () => {
-  state.branches[0] = { full_ref: "main", is_protected: true };
+it("keeps branch controls out of the document header", () => {
   mount();
-  fireEvent.click(screen.getByRole("combobox", { name: "Текущая ветка" }));
-  expect(screen.getByLabelText("Поиск по веткам").closest(".pd-combobox-popup")).toBeTruthy();
-  expect(screen.getByRole("option", { name: "main" })).toBeTruthy();
-  expect(screen.queryByText(/защищена/i)).toBeNull();
-  fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "docs/new" } });
-  expect(screen.getByRole("option", { name: "docs/new" })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Поиск по веткам"), { target: { value: "missing" } });
-  expect(screen.queryByRole("option", { name: "docs/new" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Текущая ветка" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Новая ветка" })).toBeNull();
 });
 it("refreshes Git data in the background and keeps manual refresh out of the editor", async () => {
   mocks.backgroundSync.mockResolvedValueOnce("background-job");
@@ -475,6 +468,15 @@ it("keeps untouched CRLF endings when editing through a browser textarea", async
 });
 async function click(name: string) {
   await act(async () => {
+    if (name === "Новая ветка") {
+      window.dispatchEvent(
+        new CustomEvent("pushdocs:branch-create", {
+          cancelable: true,
+          detail: { projectId: "project" },
+        }),
+      );
+      return;
+    }
     fireEvent.click(
       screen.queryByRole("button", { name }) ??
         screen.queryByRole("menuitem", { name }) ??
@@ -572,7 +574,8 @@ it("does not allow a reader to change files", async () => {
   state.role = "reader";
   mount();
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
-  expect(screen.getByRole("button", { name: "Новая ветка" })).toHaveProperty("disabled", true);
+  await click("Новая ветка");
+  expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(screen.getByText("Компонент").closest("summary") as HTMLElement);
   expect(screen.getByRole("menuitem", { name: "Widget" })).toHaveProperty("disabled", true);
   await tick();
@@ -603,10 +606,12 @@ it("saves before navigating to changes or another branch", async () => {
   expect(state.files[0]?.content).toBe("черновик");
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/changes?branch=main");
   await act(async () => {
-    fireEvent.click(screen.getByRole("combobox", { name: "Текущая ветка" }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("option", { name: "docs/new" }));
+    window.dispatchEvent(
+      new CustomEvent("pushdocs:branch-switch", {
+        cancelable: true,
+        detail: { projectId: "project", branch: "docs/new", href: "?branch=docs%2Fnew" },
+      }),
+    );
   });
   expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
 });

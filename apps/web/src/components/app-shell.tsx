@@ -11,6 +11,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  Plus,
   Settings,
   SlidersHorizontal,
 } from "lucide-react";
@@ -192,6 +193,35 @@ export function AppShell({
                   }
                 }}
               />
+              <button
+                className="sidebar-new-branch"
+                type="button"
+                title="Новая ветка"
+                aria-label="Новая ветка"
+                disabled={
+                  activeProject.role === "reader" ||
+                  !(branchesByProject[activeProject.id] ?? []).some(
+                    (item) => item.full_ref === (currentBranch || activeProject.defaultBranch),
+                  )
+                }
+                onClick={() => {
+                  const event = new CustomEvent("pushdocs:branch-create", {
+                    cancelable: true,
+                    detail: { projectId: activeProject.id },
+                  });
+                  if (window.dispatchEvent(event)) {
+                    const href = new URL(
+                      documentHref(activeProject.id, currentBranch || activeProject.defaultBranch),
+                      window.location.origin,
+                    );
+                    href.searchParams.set("panel", "branch");
+                    router.push(href.pathname + href.search);
+                  }
+                }}
+              >
+                <Plus aria-hidden size={16} />
+                <span>Новая ветка</span>
+              </button>
             </div>
             <nav className="sidebar-nav" aria-label="Разделы проекта">
               {projectNavigation.map((item) => {

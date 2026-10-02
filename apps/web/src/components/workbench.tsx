@@ -3,14 +3,13 @@
 import { assetLocation } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
-import { SearchableSelect, Select } from "@pushdocs/ui";
+import { Select } from "@pushdocs/ui";
 import {
   ArrowRight,
   Bold,
   Check,
   ChevronDown,
   Columns2,
-  GitBranch,
   Heading2,
   MoreHorizontal,
   Plus,
@@ -112,7 +111,7 @@ export function Workbench({
   branch: string;
   initial: WorkbenchState;
   initialPath?: string;
-  initialPanel?: "media";
+  initialPanel?: "media" | "branch";
   headerAction?: ReactNode;
   components?: Array<{ label: string; snippet: string }>;
   metadataTabEnabled?: boolean;
@@ -152,7 +151,11 @@ export function Workbench({
   const [remoteFiles, setRemoteFiles] = useState<Record<string, string | null>>({});
   const opening = useRef(0);
   const [mode, setMode] = useState<"source" | "preview" | "diff" | "metadata" | "split">("source");
-  const [dialog, setDialog] = useState<Dialog>(initialPanel ?? null);
+  const [dialog, setDialog] = useState<Dialog>(
+    initialPanel === "branch" && (initial.role === "reader" || initial.status !== "open")
+      ? null
+      : (initialPanel ?? null),
+  );
   const [replaceAttachment, setReplaceAttachment] = useState<string>();
   const [mediaMode, setMediaMode] = useState<"library" | "insert">("library");
   const [deleteResultPath, setDeleteResultPath] = useState("");
@@ -753,6 +756,16 @@ export function Workbench({
   }, [save, router, projectId, branch, selected]);
 
   useEffect(() => {
+    const createBranch = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail.projectId !== projectId) return;
+      event.preventDefault();
+      if (!projectReadOnly && !busy && !inFlight.current) setDialog("branch");
+    };
+    window.addEventListener("pushdocs:branch-create", createBranch);
+    return () => window.removeEventListener("pushdocs:branch-create", createBranch);
+  }, [projectId, projectReadOnly, busy]);
+
+  useEffect(() => {
     const dismiss = (event: PointerEvent | KeyboardEvent) => {
       if (event instanceof KeyboardEvent && event.key !== "Escape") return;
       for (const disclosure of document.querySelectorAll<HTMLDetailsElement>(
@@ -1121,36 +1134,6 @@ export function Workbench({
         </div>
         <div className="wb-actions">
           {headerAction}
-          <div className="wb-branch-tools">
-            <SearchableSelect
-              className="wb-branch-picker"
-              emptyText="Ветки не найдены"
-              label="Текущая ветка"
-              leadingIcon={<GitBranch aria-hidden size={16} />}
-              options={state.branches.map((item) => ({
-                label: item.full_ref,
-                value: item.full_ref,
-              }))}
-              searchLabel="Поиск по веткам"
-              searchPlaceholder="Найти ветку…"
-              value={branch}
-              onValueChange={async (value) => {
-                if (value !== branch && (await save())) {
-                  router.push(`?branch=${encodeURIComponent(value)}`);
-                  router.refresh();
-                }
-              }}
-            />
-            <button
-              className="wb-new-branch"
-              type="button"
-              disabled={projectReadOnly || busy}
-              onClick={() => setDialog("branch")}
-            >
-              <Plus size={15} />
-              Новая ветка
-            </button>
-          </div>
           <Link
             className="wb-primary"
             href={`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`}

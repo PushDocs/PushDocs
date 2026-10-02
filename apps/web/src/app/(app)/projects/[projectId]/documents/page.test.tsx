@@ -133,3 +133,12 @@ it("opens the attachment panel with only uploads belonging to this draft", async
   expect(view.props.initial.uploads).toEqual([{ path: "static/img/new.png" }]);
   expect(mocks.attachments).toHaveBeenCalledWith("project", "draft");
 });
+
+it("opens branch creation requested from the sidebar", async () => {
+  mocks.imported.mockResolvedValue(true);
+  const view = await DocumentsPage({
+    params: Promise.resolve({ projectId: "project" }),
+    searchParams: Promise.resolve({ branch: "docs/fix", panel: "branch" }),
+  });
+  expect(view.props.initialPanel).toBe("branch");
+});

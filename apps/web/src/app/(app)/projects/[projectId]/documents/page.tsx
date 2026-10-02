@@ -62,7 +62,9 @@ export default async function DocumentsPage({
       components={components}
       branch={branch}
       initialPath={query.path ?? initialFilePath}
-      initialPanel={query.panel === "files" ? "media" : undefined}
+      initialPanel={
+        query.panel === "files" ? "media" : query.panel === "branch" ? "branch" : undefined
+      }
       initial={{
         collaboration: true,
         ownerId: user.id,

@@ -4169,3 +4169,37 @@ progress::-moz-progress-bar {
     display: none;
   }
 }
+
+.sidebar-new-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--violet-deep);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sidebar-new-branch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sidebar-collapsed .sidebar-new-branch {
+  width: 42px;
+  justify-content: center;
+}
+.sidebar-collapsed .sidebar-new-branch span {
+  display: none;
+}
+@media (max-width: 860px) {
+  .sidebar-new-branch {
+    width: 42px;
+    justify-content: center;
+  }
+  .sidebar-new-branch span {
+    display: none;
+  }
+}
