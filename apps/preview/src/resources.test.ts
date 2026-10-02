@@ -33,8 +33,8 @@ it("counts the whole runtime user's process tree without counting other sites", 
 });
 
 it("does not increase V8 heap automatically when the whole-site RSS budget increases", () => {
-  expect(nodeHeapLimitMb(4096)).toBe(3072);
-  expect(nodeHeapLimitMb(5120)).toBe(3072);
+  expect(nodeHeapLimitMb(4096)).toBe(1536);
+  expect(nodeHeapLimitMb(5120)).toBe(1536);
   expect(nodeHeapLimitMb(5120, 2048)).toBe(2048);
   expect(nodeHeapLimitMb(256)).toBe(128);
 });

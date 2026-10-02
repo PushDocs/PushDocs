@@ -18,7 +18,7 @@ export function runtimeMemoryError(limitMb: number) {
 
 export function nodeHeapLimitMb(memoryLimitMb: number, requested?: string | number) {
   return Math.min(
-    positiveInteger(requested, 3072, "Лимит heap Node предпросмотра"),
+    positiveInteger(requested, 1536, "Лимит heap Node предпросмотра"),
     Math.max(128, memoryLimitMb - 1024),
   );
 }

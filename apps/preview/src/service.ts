@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { parseProjectConfig, safePath } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { prepareVpnAccess } from "@pushdocs/vpn";
+import { prepareDocusaurusPreview } from "./docusaurus";
 import {
   nodeHeapLimitMb,
   positiveInteger,
@@ -727,7 +728,18 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       if (controller.signal.aborted) throw new Error("Запуск предпросмотра отменён");
       await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
-      const [executable, args] = commandArgs(preview.start, session.port);
+      const startCommand = await prepareDocusaurusPreview({
+        cwd,
+        home: runtime.env.HOME,
+        command: preview.start,
+      });
+      const generatedConfig = startCommand.at(-1);
+      if (startCommand !== preview.start && generatedConfig)
+        await run(["chown", `${runtime.uid}:${runtime.gid}`, generatedConfig], {
+          cwd: workspace,
+          timeoutMs: 30_000,
+        });
+      const [executable, args] = commandArgs(startCommand, session.port);
       const child = spawn(executable, args, {
         cwd,
         detached: true,
