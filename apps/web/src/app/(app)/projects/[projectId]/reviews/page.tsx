@@ -121,17 +121,22 @@ export default async function ReviewsPage({
                     <GitBranch aria-hidden size={15} />
                     Переключиться на ветку
                   </Link>
-                ) : selected.details?.source?.branchUrl ? (
-                  <a
+                ) : (
+                  <button
                     className="pd-button pd-button--primary"
-                    href={selected.details.source.branchUrl}
-                    rel="noreferrer"
-                    target="_blank"
+                    type="button"
+                    disabled
+                    title={
+                      selected.details?.source?.isFork
+                        ? "Переключение на ветки из форков недоступно"
+                        : "Исходный репозиторий ещё не определён"
+                    }
                   >
-                    Открыть ветку в {providerName}
-                    <ExternalLink aria-hidden size={15} />
-                  </a>
-                ) : null}
+                    <GitBranch aria-hidden size={15} />
+                    Переключиться на ветку
+                  </button>
+                )}
+
                 <a
                   className="pd-button pd-button--secondary review-provider-link"
                   href={selected.provider_url}
@@ -164,8 +169,8 @@ export default async function ReviewsPage({
               {selected.details?.source?.isFork ? (
                 <p className="panel-note">
                   {selected.details.source.branchUrl
-                    ? "Ветка находится в форке. Для работы с ней в PushDocs подключите исходный репозиторий как отдельный проект."
-                    : "Исходный репозиторий удалён или недоступен подключению PushDocs. Проверьте доступ к форку в Git."}
+                    ? "Ветка находится в форке. Переключение на ветки из форков недоступно."
+                    : "Ветка находится в форке. Переключение на ветки из форков недоступно. Исходный репозиторий удалён или недоступен подключению PushDocs."}
                 </p>
               ) : !selected.details?.source ? (
                 <p className="panel-note">

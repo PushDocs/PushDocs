@@ -269,9 +269,10 @@ it("does not import a fork branch into the main project's workspace", async () =
     }),
   );
   expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
-  expect(screen.getByRole("link", { name: /Открыть ветку в GitLab/ }).getAttribute("href")).toBe(
-    "https://git.example/fork/-/tree/doc%2F790",
-  );
+  expect(screen.queryByRole("link", { name: /Открыть ветку в GitLab/ })).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "Переключиться на ветку" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
   expect(screen.getByText(/Ветка находится в форке/)).toBeTruthy();
 });
 
@@ -293,6 +294,9 @@ it("explains when the fork is unavailable instead of offering an import", async 
   );
   expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
   expect(screen.queryByRole("link", { name: /Открыть ветку в GitLab/ })).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "Переключиться на ветку" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
   expect(screen.getByText(/Исходный репозиторий удалён или недоступен/)).toBeTruthy();
 });
 
@@ -305,5 +309,8 @@ it("requires refreshing old reviews before opening an unidentified source reposi
     }),
   );
   expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "Переключиться на ветку" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
   expect(screen.getByText(/Исходный репозиторий ещё не определён/)).toBeTruthy();
 });
