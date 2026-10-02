@@ -2,10 +2,16 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { parseProjectConfig, safePath } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { prepareVpnAccess } from "@pushdocs/vpn";
-import { positiveInteger, watchRuntimeMemory } from "./resources";
+import {
+  nodeHeapLimitMb,
+  positiveInteger,
+  stopRuntimeProcesses,
+  watchRuntimeMemory,
+} from "./resources";
 import {
   atomicWrite,
   createWorkspaceManager,
@@ -35,6 +41,9 @@ type RunningPreview = {
   workspace: string;
   stopMemoryWatch: () => void;
   launchHash: string;
+  uid: number;
+  stoppingTask?: Promise<void>;
+  failureTask?: Promise<void>;
 };
 
 export async function previewEndpointReady(port: number): Promise<boolean> {
@@ -74,6 +83,16 @@ function commandArgs(command: string[], port?: number): [string, string[]] {
   if (expanded.some((part) => part.includes("{port}") || part.includes("{host}")))
     throw new Error("Подстановки preview разрешены только как отдельные аргументы");
   return [expanded[0] ?? "", expanded.slice(1)];
+}
+
+export function previewExitError(output: string, code: number | null, signal: string | null) {
+  const lines = stripVTControlCharacters(output)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const errors = lines.filter((line) => /^\[(?:ERROR|FATAL)\]/i.test(line));
+  if (errors.length) return `Не удалось запустить предпросмотр: ${errors.join("\n").slice(-1200)}`;
+  return `Сайт предпросмотра неожиданно завершился (${signal ?? `код ${code ?? "unknown"}`}). ${lines.slice(-4).join("\n").slice(-1000)}`;
 }
 
 const transientFetchError =
@@ -222,7 +241,7 @@ export async function run(
       settled = true;
       reject(error);
     });
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       terminate("SIGKILL");
       clearTimeout(timeout);
       clearTimeout(abortTimeout);
@@ -230,6 +249,12 @@ export async function run(
       options.signal?.removeEventListener("abort", cancel);
       if (settled) return;
       settled = true;
+      try {
+        await stopRuntimeProcesses(options.uid);
+      } catch (error) {
+        reject(error);
+        return;
+      }
       if (resourceError) reject(new Error(resourceError));
       else if (/heap out of memory|Allocation failed.*heap|Reached heap limit/i.test(output))
         reject(
@@ -275,7 +300,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     "Лимит памяти предпросмотра",
   );
   const portFrom = Number(process.env.PUSHDOCS_PREVIEW_PORT_FROM ?? 43000);
-  const heapLimitMb = Math.max(128, memoryLimitMb - 1024);
+  const heapLimitMb = nodeHeapLimitMb(memoryLimitMb, process.env.PUSHDOCS_PREVIEW_NODE_HEAP_MB);
   if (
     !Number.isInteger(runtimeUidFrom) ||
     runtimeUidFrom <= 0 ||
@@ -608,6 +633,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
   async function start(session: PreviewSession): Promise<void> {
     const startedAt = Date.now();
     const controller = new AbortController();
+    let launched: RunningPreview | undefined;
     starting.set(session.id, controller);
     let startupOutput = "";
     let startupFailure: string | undefined;
@@ -638,6 +664,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
         target.root_path,
       );
       const runtime = runtimeIdentity(session, workspace);
+      await stopRuntimeProcesses(runtime.uid);
       await mkdir(runtime.env.HOME, { recursive: true, mode: 0o700 });
       await mkdir(runtime.env.COREPACK_HOME, { recursive: true, mode: 0o700 });
       await mkdir(runtime.env.npm_config_cache, { recursive: true, mode: 0o700 });
@@ -718,7 +745,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
         stopping: false,
         stopMemoryWatch: () => {},
         launchHash,
+        uid: runtime.uid,
       };
+      launched = active;
       running.set(session.id, active);
       const onOutput = (chunk: Buffer) => {
         startupOutput = `${startupOutput}${chunk.toString()}`.slice(-2000);
@@ -734,7 +763,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             startupOutput,
           )
             ? `Предпросмотр остановлен: сайту не хватило памяти JavaScript (лимит ${heapLimitMb} МБ).`
-            : `Процесс предпросмотра завершился: ${signal ?? code ?? "unknown"}. ${startupOutput}`;
+            : previewExitError(startupOutput, code, signal);
           void failActive(session.id, active, startupFailure).catch((error) =>
             logger.error(String(error)),
           );
@@ -786,6 +815,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
         }),
       );
     } catch (error) {
+      if (launched?.failureTask) {
+        await launched.failureTask;
+        return;
+      }
       const active = running.get(session.id);
       if (active)
         await stopProcess(session.id, active).catch((cause) => logger.error(String(cause)));
@@ -808,6 +841,12 @@ export function createPreviewService(options: PreviewServiceOptions) {
   }
 
   async function stopProcess(sessionId: string, active: RunningPreview): Promise<void> {
+    if (active.stoppingTask) return active.stoppingTask;
+    active.stoppingTask = stopProcessOnce(sessionId, active);
+    return active.stoppingTask;
+  }
+
+  async function stopProcessOnce(sessionId: string, active: RunningPreview): Promise<void> {
     active.stopping = true;
     active.stopMemoryWatch();
     const pid = active.child.pid;
@@ -845,15 +884,19 @@ export function createPreviewService(options: PreviewServiceOptions) {
           active.child.once("exit", finish);
         });
     }
+    await stopRuntimeProcesses(active.uid);
     if (running.get(sessionId) === active) running.delete(sessionId);
     if (process.platform === "linux" && process.getuid?.() === 0)
       await run(["chown", "0:0", active.workspace], { cwd: active.workspace, timeoutMs: 30_000 });
   }
 
-  async function failActive(sessionId: string, active: RunningPreview, message: string) {
-    await stopProcess(sessionId, active);
-    await repository.updatePreviewSession(sessionId, { last_error: message, status: "failed" });
-    logger.error(JSON.stringify({ error: message, previewSessionId: sessionId }));
+  function failActive(sessionId: string, active: RunningPreview, message: string) {
+    active.failureTask ??= (async () => {
+      await stopProcess(sessionId, active);
+      await repository.updatePreviewSession(sessionId, { last_error: message, status: "failed" });
+      logger.error(JSON.stringify({ error: message, previewSessionId: sessionId }));
+    })();
+    return active.failureTask;
   }
 
   async function tick(): Promise<void> {

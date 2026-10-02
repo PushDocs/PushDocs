@@ -25,7 +25,9 @@ export async function startFixtureServer() {
             ? {
                 sessionId: "00000000-0000-4000-8000-000000000001",
                 status: "failed",
-                error: "git fetch: early EOF",
+                error: request.headers.referer?.includes("preview-long-error")
+                  ? `git fetch: early EOF\n${"Detailed error context\n".repeat(20)}`
+                  : "git fetch: early EOF",
               }
             : {
                 sessionId: "00000000-0000-4000-8000-000000000001",

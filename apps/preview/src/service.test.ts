@@ -2,10 +2,27 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { createPreviewService, previewEndpointReady, retryGitFetch, run } from "./service";
+import {
+  createPreviewService,
+  previewEndpointReady,
+  previewExitError,
+  retryGitFetch,
+  run,
+} from "./service";
 import { leafCheckoutDirectories } from "./workspaces";
 
 const service = createPreviewService({ repository: {} as never });
+
+it("shows the actual site error instead of the update advertisement even after exit code zero", () => {
+  const message = previewExitError(
+    "Update available 3.6.3 → 3.10.2\nyarn upgrade packages\n[INFO] Starting the development server...\n[ERROR] Something is already running on port 43000.\nDone in 3.59s.",
+    0,
+    null,
+  );
+  expect(message).toContain("Something is already running on port 43000");
+  expect(message).not.toContain("yarn upgrade");
+  expect(message).not.toContain("Update available");
+});
 
 it("reports a subprocess timeout instead of an exit code of null", async () => {
   await expect(

@@ -3334,6 +3334,12 @@ textarea:where(:not(.monaco-editor *)):focus {
   flex: none;
   white-space: nowrap;
 }
+.live-preview-notification {
+  align-items: start;
+}
+.live-preview-notification > svg {
+  margin-top: 2px;
+}
 .live-preview-notification-content {
   min-width: 0;
   color: var(--ink);
