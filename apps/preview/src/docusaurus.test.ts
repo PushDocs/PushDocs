@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { prepareDocusaurusPreview } from "./docusaurus";
 
-it("keeps the site's config and plugins but replaces the media-heavy disk cache", async () => {
+it("serves static folders directly in preview without changing custom copies or production", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "preview-docusaurus-"));
   try {
     await writeFile(
@@ -24,21 +24,56 @@ it("keeps the site's config and plugins but replaces the media-heavy disk cache"
     expect(source).toContain("docusaurus.config.ts");
     const factory = new Function(
       "original",
-      source.replace(/^import .*;\n/, "").replace("export default", "return"),
+      "path",
+      source.replace(/^import .*;\n/gm, "").replace("export default", "return"),
     );
-    const base = { title: "Site", plugins: ["original-plugin"] };
-    const configured = await factory(async () => base)();
-    expect((await factory(base)()).title).toBe("Site");
+    const base = {
+      title: "Site",
+      plugins: ["original-plugin"],
+      staticDirectories: ["static", "staticLocalized/ru"],
+    };
+    const configured = await factory(async () => base, path)();
+    expect((await factory(base, path)()).title).toBe("Site");
     expect(configured.title).toBe("Site");
     expect(configured.plugins[0]).toBe("original-plugin");
-    const plugin = configured.plugins[1]();
+    const staticDirectories = ["static", "staticLocalized/ru"];
+    const outDir = path.join(cwd, "build");
+    class CopyPlugin {
+      constructor(public patterns: unknown[]) {}
+    }
+    const patterns = staticDirectories.map((directory) => ({
+      from: path.resolve(cwd, directory),
+      to: outDir,
+      toType: "dir",
+      info: { minimized: true },
+    }));
+    const staticCopy = new CopyPlugin(patterns);
+    const customCopy = new CopyPlugin([{ from: path.join(cwd, "extra"), to: outDir }]);
+    const transformedCopy = new CopyPlugin([{ ...patterns[0], transform: () => "custom" }]);
+    const mixedCopy = new CopyPlugin([...patterns, { from: "extra", to: outDir }]);
+    const unrelated = { patterns };
+    const plugin = configured.plugins[1]({
+      siteDir: cwd,
+      outDir,
+      siteConfig: { staticDirectories },
+    });
     const webpack = {
       cache: { type: "filesystem", buildDependencies: { config: ["original"] } },
       devtool: "eval-cheap-module-source-map",
+      plugins: [staticCopy, customCopy, transformedCopy, mixedCopy, unrelated],
     };
-    plugin.configureWebpack(webpack);
+    plugin.configureWebpack(webpack, false);
+    expect(webpack.plugins).toEqual([customCopy, transformedCopy, mixedCopy, unrelated]);
+    expect(configured.staticDirectories).toBe(base.staticDirectories);
     expect(webpack.cache).toEqual({ type: "memory", maxGenerations: 1 });
     expect(webpack.devtool).toBe(false);
+    const production = { cache: false, devtool: "source-map", plugins: [staticCopy] };
+    plugin.configureWebpack(production, true);
+    expect(production).toEqual({ cache: false, devtool: "source-map", plugins: [staticCopy] });
+    const productionClient = { ...production, mode: "production" };
+    plugin.configureWebpack(productionClient, false);
+    expect(productionClient.plugins).toEqual([staticCopy]);
+    expect(productionClient.cache).toBe(false);
     expect(await readFile(path.join(cwd, "docusaurus.config.ts"), "utf8")).toBe(original);
     expect(command).toEqual(["yarn", "start", "--port", "{port}"]);
   } finally {
