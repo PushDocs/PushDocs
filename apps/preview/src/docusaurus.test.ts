@@ -55,17 +55,68 @@ it("serves static folders directly in preview without changing custom copies or 
     const plugin = configured.plugins[1]({
       siteDir: cwd,
       outDir,
+      siteConfigPath: filename,
       siteConfig: { staticDirectories },
     });
     const webpack = {
-      cache: { type: "filesystem", buildDependencies: { config: ["original"] } },
+      cache: {
+        type: "filesystem",
+        name: "client-development-ru",
+        version: "docusaurus-aliases",
+        buildDependencies: { config: ["webpack-base.js", filename], extra: ["extra-config.js"] },
+      },
       devtool: "eval-cheap-module-source-map",
       plugins: [staticCopy, customCopy, transformedCopy, mixedCopy, unrelated],
     };
     plugin.configureWebpack(webpack, false);
     expect(webpack.plugins).toEqual([customCopy, transformedCopy, mixedCopy, unrelated]);
     expect(configured.staticDirectories).toBe(base.staticDirectories);
-    expect(webpack.cache).toEqual({ type: "memory", maxGenerations: 1 });
+    expect(webpack.cache).toMatchObject({
+      type: "filesystem",
+      maxMemoryGenerations: 1,
+      cacheDirectory: path.join(cwd, ".cache", "pushdocs-webpack"),
+      name: "client-development-ru-pushdocs-preview",
+      buildDependencies: {
+        config: ["webpack-base.js", path.join(cwd, "docusaurus.config.ts")],
+        extra: ["extra-config.js"],
+      },
+    });
+    expect(webpack.cache.version).toContain("docusaurus-aliases");
+    expect(webpack.cache.version).not.toContain(filename);
+    expect(webpack.cache).toMatchObject({
+      idleTimeout: 1000,
+      idleTimeoutForInitialStore: 1000,
+      idleTimeoutAfterLargeChanges: 1000,
+    });
+    const next = await prepareDocusaurusPreview({ cwd, command });
+    const nextFilename = next.at(-1);
+    if (!nextFilename) throw new Error("Expected second generated config");
+    expect(nextFilename).not.toBe(filename);
+    const nextFactory = new Function(
+      "original",
+      "path",
+      (await readFile(nextFilename, "utf8"))
+        .replace(/^import .*;\n/gm, "")
+        .replace("export default", "return"),
+    );
+    const nextConfig = await nextFactory(base, path)();
+    const nextWebpack = {
+      cache: {
+        type: "filesystem",
+        name: "client-development-ru",
+        version: "docusaurus-aliases",
+        buildDependencies: {
+          config: ["webpack-base.js", nextFilename],
+          extra: ["extra-config.js"],
+        },
+      },
+    };
+    nextConfig.plugins[1]({
+      siteDir: cwd,
+      siteConfigPath: nextFilename,
+      siteConfig: base,
+    }).configureWebpack(nextWebpack, false);
+    expect(nextWebpack.cache).toEqual(webpack.cache);
     expect(webpack.devtool).toBe(false);
     const production = { cache: false, devtool: "source-map", plugins: [staticCopy] };
     plugin.configureWebpack(production, true);
@@ -74,6 +125,12 @@ it("serves static folders directly in preview without changing custom copies or 
     plugin.configureWebpack(productionClient, false);
     expect(productionClient.plugins).toEqual([staticCopy]);
     expect(productionClient.cache).toBe(false);
+    const disabled = { cache: false };
+    plugin.configureWebpack(disabled, false);
+    expect(disabled.cache).toBe(false);
+    const memory = { cache: { type: "memory" } };
+    plugin.configureWebpack(memory, false);
+    expect(memory.cache).toEqual({ type: "memory", maxGenerations: 1 });
     expect(await readFile(path.join(cwd, "docusaurus.config.ts"), "utf8")).toBe(original);
     expect(command).toEqual(["yarn", "start", "--port", "{port}"]);
   } finally {

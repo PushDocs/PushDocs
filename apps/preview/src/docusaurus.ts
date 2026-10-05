@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { atomicWrite } from "./workspaces";
@@ -45,9 +45,7 @@ export async function prepareDocusaurusPreview(options: {
   // Use a new generated filename beside the source config, and remove it on shutdown.
   const filename = path.join(cwd, `.pushdocs-preview-${randomUUID()}.config.ts`);
   const relativeConfig = `./${path.basename(configPath)}`;
-  await atomicWrite(
-    filename,
-    `import path from "node:path";
+  const source = `import path from "node:path";
 import original from ${JSON.stringify(relativeConfig)};
 export default async function (...args) {
   const config = await (typeof original === "function" ? original(...args) : original);
@@ -72,9 +70,31 @@ export default async function (...args) {
               Object.keys(pattern.info).length === 1
             )
           ));
-          // Imported GIFs can total gigabytes. Filesystem cache serializes their buffers
-          // again on disk and on every invalidation; reuse modules only in this process.
-          webpack.cache = { type: "memory", maxGenerations: 1 };
+          // Static media is no longer copied into compilation. Keep a separate disk
+          // cache for fast restarts, with only one generation retained in memory.
+          if (webpack.cache?.type === "filesystem") {
+            const previous = webpack.cache;
+            webpack.cache = {
+              ...previous,
+              cacheDirectory: path.join(context.siteDir, ".cache", "pushdocs-webpack"),
+              name: (previous.name ?? "client-development") + "-pushdocs-preview",
+              version: (previous.version ?? "") + "-__PUSHDOCS_CACHE_VERSION__",
+              maxMemoryGenerations: 1,
+              idleTimeout: 1000,
+              idleTimeoutForInitialStore: 1000,
+              idleTimeoutAfterLargeChanges: 1000,
+              buildDependencies: {
+                ...previous.buildDependencies,
+                config: [...new Set([
+                  ...(previous.buildDependencies?.config ?? [])
+                    .filter(file => file !== context.siteConfigPath),
+                  path.resolve(context.siteDir, ${JSON.stringify(relativeConfig)}),
+                ])],
+              },
+            };
+          } else if (webpack.cache !== false) {
+            webpack.cache = { type: "memory", maxGenerations: 1 };
+          }
           webpack.devtool = false;
           return {};
         },
@@ -82,8 +102,10 @@ export default async function (...args) {
     }],
   };
 }
-`,
-    0o600,
-  );
+`;
+  // Random wrapper paths must not invalidate every restart. Track the original
+  // config and its imports, plus a stable fingerprint of our generated settings.
+  const cacheVersion = createHash("sha256").update(source).digest("hex");
+  await atomicWrite(filename, source.replace("__PUSHDOCS_CACHE_VERSION__", cacheVersion), 0o600);
   return [...command, "--config", filename];
 }
