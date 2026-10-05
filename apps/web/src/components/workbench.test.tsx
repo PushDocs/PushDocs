@@ -1124,75 +1124,78 @@ it("shows committed changes and immediate unsaved edits in the tree and tabs", a
   expect(requests).toHaveLength(0);
 });
 
-it("saves the article and inserts an uploaded file immediately", async () => {
-  const original = vi.mocked(fetch).getMockImplementation();
-  if (!original) throw new Error("Missing fixture");
-  vi.mocked(fetch).mockImplementation(async (url, options) => {
-    if (String(url).includes("/media?"))
-      return Response.json({
-        assets: (state.uploads ?? []).map(({ path }) => ({
-          path,
-          url: "/img/new.png",
-          status: "upload",
-          size: 5,
-          usages: [],
-        })),
-        revision: state.revision,
-        role: "editor",
-        status: "open",
-        locale: "ru",
-      });
-    return original(url, options);
-  });
-  class UploadRequest extends EventTarget {
-    upload = new EventTarget();
-    status = 200;
-    responseText = JSON.stringify({ path: "static/img/new.png" });
-    open(_method: string, url: string) {
-      const query = new URL(url, "https://cms.test").searchParams;
-      expect(query.get("branch")).toBe("main");
-      expect(query.get("document")).toBe("docs/a.mdx");
-      expect(query.get("revision")).toBe("1");
-    }
-    send() {
-      state.uploads = [{ path: "static/img/new.png" }];
-      state.revision++;
-      queueMicrotask(() => this.dispatchEvent(new Event("load")));
-    }
-    abort() {}
-  }
-  vi.stubGlobal("XMLHttpRequest", UploadRequest);
-  mount();
-  fireEvent.change(screen.getByLabelText("Исходник документа"), {
-    target: { value: "# Unsaved article" },
-  });
-  await click("Вставить файл");
-  expect(requests[0]).toMatchObject({
-    files: [{ path: "docs/a.mdx", content: "# Unsaved article" }],
-  });
-  await act(async () => {
-    fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
-      target: { files: [new File(["image"], "new.png")] },
+it.each(["/img/new.png", "pathname:///img/new.png"])(
+  "saves the article and inserts an uploaded file with pathname:/// from %s",
+  async (assetUrl) => {
+    const original = vi.mocked(fetch).getMockImplementation();
+    if (!original) throw new Error("Missing fixture");
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (String(url).includes("/media?"))
+        return Response.json({
+          assets: (state.uploads ?? []).map(({ path }) => ({
+            path,
+            url: assetUrl,
+            status: "upload",
+            size: 5,
+            usages: [],
+          })),
+          revision: state.revision,
+          role: "editor",
+          status: "open",
+          locale: "ru",
+        });
+      return original(url, options);
     });
-  });
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(screen.getByRole("treeitem", { name: "new.png" }).textContent).toContain("A");
-  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
-    "value",
-    expect.stringContaining("![new.png](/img/new.png)"),
-  );
-  const calls = vi.mocked(fetch).mock.calls.length;
-  await click("new.png");
-  expect(
-    vi
-      .mocked(fetch)
-      .mock.calls.slice(calls)
-      .some(([url]) => String(url).includes("workbench?") && String(url).includes("path=")),
-  ).toBe(false);
-  expect(screen.getByRole("img", { name: "new.png" }).getAttribute("src")).toContain(
-    "/assets?branch=main&path=static%2Fimg%2Fnew.png",
-  );
-});
+    class UploadRequest extends EventTarget {
+      upload = new EventTarget();
+      status = 200;
+      responseText = JSON.stringify({ path: "static/img/new.png" });
+      open(_method: string, url: string) {
+        const query = new URL(url, "https://cms.test").searchParams;
+        expect(query.get("branch")).toBe("main");
+        expect(query.get("document")).toBe("docs/a.mdx");
+        expect(query.get("revision")).toBe("1");
+      }
+      send() {
+        state.uploads = [{ path: "static/img/new.png" }];
+        state.revision++;
+        queueMicrotask(() => this.dispatchEvent(new Event("load")));
+      }
+      abort() {}
+    }
+    vi.stubGlobal("XMLHttpRequest", UploadRequest);
+    mount();
+    fireEvent.change(screen.getByLabelText("Исходник документа"), {
+      target: { value: "# Unsaved article" },
+    });
+    await click("Вставить файл");
+    expect(requests[0]).toMatchObject({
+      files: [{ path: "docs/a.mdx", content: "# Unsaved article" }],
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
+        target: { files: [new File(["image"], "new.png")] },
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("treeitem", { name: "new.png" }).textContent).toContain("A");
+    expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+      "value",
+      expect.stringContaining("![new.png](pathname:///img/new.png)"),
+    );
+    const calls = vi.mocked(fetch).mock.calls.length;
+    await click("new.png");
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.slice(calls)
+        .some(([url]) => String(url).includes("workbench?") && String(url).includes("path=")),
+    ).toBe(false);
+    expect(screen.getByRole("img", { name: "new.png" }).getAttribute("src")).toContain(
+      "/assets?branch=main&path=static%2Fimg%2Fnew.png",
+    );
+  },
+);
 it("opens a replacement upload from the draft instead of downloading the old Git binary", async () => {
   state.repositoryPaths = ["logo.png"];
   state.uploads = [{ path: "logo.png" }];

@@ -1947,7 +1947,7 @@ export function Workbench({
                               url.split("/").at(-1) ?? "Файл",
                             ).replace(/[[\]]/g, "");
                             insert(
-                              `\n${/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(url) ? "!" : ""}[${name}](${url})\n`,
+                              `\n${/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(url) ? "!" : ""}[${name}](${url.startsWith("/") ? "pathname://" : ""}${url})\n`,
                             );
                             setMode("source");
                             setDialog(null);
@@ -1961,7 +1961,7 @@ export function Workbench({
                     .map(({ path, url }) => {
                       const name = path.split("/").at(-1)?.replace(/[[\]]/g, "") ?? "Файл";
                       const image = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(path) ? "!" : "";
-                      return `${image}[${name}](${url})`;
+                      return `${image}[${name}](${url.startsWith("/") ? "pathname://" : ""}${url})`;
                     })
                     .join("\n");
                   insert(`\n${markdown}\n`);
