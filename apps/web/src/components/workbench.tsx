@@ -1052,8 +1052,8 @@ export function Workbench({
         /* v8 ignore next -- both attempts either assign a result or throw. */
         if (!result) throw new Error("Не удалось создать ветку");
         setNotice(`Ветка ${result.name} создана. Открываем документы…`);
-        router.push(`?branch=${encodeURIComponent(result.name)}`);
-        router.refresh();
+        rememberProjectBranch(projectId, result.name);
+        router.push(`/projects/${projectId}/documents?branch=${encodeURIComponent(result.name)}`);
         setDialog(null);
       } catch (cause) {
         setNotice("");

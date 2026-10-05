@@ -735,7 +735,7 @@ it("refreshes an updated source branch and retries branch creation", async () =>
     expect.objectContaining({ action: "branch", sha: "12345678", name: "docs/new" }),
     expect.objectContaining({ action: "branch", sha: "new-head", name: "docs/new" }),
   ]);
-  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 it("waits for branch import before opening its documents", async () => {
@@ -747,8 +747,12 @@ it("waits for branch import before opening its documents", async () => {
   fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
   await click("Создать и перейти");
   expect(mocks.push).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("main");
   await tick(2000);
-  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+  expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("docs/new");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+  expect(mocks.refresh).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 it("shows actual branch creation stages inside its dialog", async () => {
   mocks.status
@@ -782,7 +786,7 @@ it("shows actual branch creation stages inside its dialog", async () => {
   await tick(2000);
   expect(screen.getByRole("dialog").textContent).toContain("Повторная попытка");
   await tick(2000);
-  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
 });
 
 it("continues checking branch creation after a temporary polling failure", async () => {
@@ -795,7 +799,7 @@ it("continues checking branch creation after a temporary polling failure", async
   await click("Создать и перейти");
   expect(screen.getByRole("status").textContent).toContain("Нет связи");
   await tick(5000);
-  expect(mocks.push).toHaveBeenCalledWith("?branch=docs%2Fnew");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
 });
 it("traps dialog focus and closes with Escape", async () => {
   mount();
