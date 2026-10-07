@@ -146,3 +146,8 @@ yarn test:mcp
 HTTP route. После `yarn build` можно также выполнить `PUSHDOCS_MCP_NETWORK_SMOKE=1 yarn test:mcp`: тест запустит standalone web application на временном HTTP-порту. Он не авторизуется в пользовательских accounts и не обращается
 к production repositories. Ручная проверка обоих целевых клиентов остаётся
 отдельным условием приёмки.
+
+Браузерная проверка consent: `PUSHDOCS_MCP_BROWSER_SMOKE=1 yarn test:mcp`
+с отдельной PostgreSQL и установленным Chromium (`yarn exec playwright install chromium`).
+Она проверяет подтверждение доступа и переход на callback другого origin.
+Эта проверка также выполняется в CI.

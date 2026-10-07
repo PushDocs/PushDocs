@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createServer as httpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { chromium } from "@playwright/test";
 import {
   appendEvent,
   closeDatabase,
@@ -330,6 +332,123 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       await c.close();
     }
   });
+  it.skipIf(process.env.PUSHDOCS_MCP_BROWSER_SMOKE !== "1")(
+    "redirects browser consent to a different callback origin",
+    async () => {
+      let posts = 0;
+      let base = "";
+      const server = httpServer(async (req, res) => {
+        if (req.url?.startsWith("/callback")) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<h1>Подключение готово</h1>");
+          return;
+        }
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          const request = new Request(`${base}${req.url}`, {
+            method: req.method,
+            headers: req.headers as Record<string, string>,
+            ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
+          });
+          if (req.method === "POST") posts++;
+          const response =
+            req.method === "POST" ? await authorizePost(request) : await authorizeGet(request);
+          res.writeHead(response.status, Object.fromEntries(response.headers));
+          res.end(Buffer.from(await response.arrayBuffer()));
+        } catch {
+          res.writeHead(500);
+          res.end("Fixture failure");
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const bound = server.address();
+      if (!bound || typeof bound === "string") throw new Error("No test port");
+      base = `http://127.0.0.1:${bound.port}`;
+      // Different origin, same disposable fixture server. No user accounts or external callback.
+      const callback = `http://localhost:${bound.port}/callback`;
+      vi.stubEnv("PUSHDOCS_PUBLIC_ORIGIN", base);
+      const id = await auth.registerClient("ChatGPT", [callback]);
+      const query = new URLSearchParams({
+        client_id: id,
+        redirect_uri: callback,
+        response_type: "code",
+        resource: `${base}/mcp`,
+        code_challenge: pkceChallenge(opaque() + opaque()),
+        code_challenge_method: "S256",
+        scope: "pushdocs:read",
+        state: "fixture-state",
+      });
+      const browser = await chromium.launch();
+      try {
+        const page = await browser.newPage();
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.goto(`${base}/oauth/authorize?${query}`);
+        const nonce = await page.locator('input[name="nonce"]').inputValue();
+        await mkdir("output/playwright/oauth", { recursive: true });
+        await page.screenshot({
+          path: "output/playwright/oauth/consent-desktop.png",
+          fullPage: true,
+        });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.screenshot({
+          path: "output/playwright/oauth/consent-mobile.png",
+          fullPage: true,
+        });
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        ).toBe(true);
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.getByRole("button", { name: "Разрешить", exact: true }).click();
+        expect(await page.getByRole("alert").textContent()).toContain(
+          "Выберите хотя бы один проект",
+        );
+        expect(await page.locator('input[name="nonce"]').inputValue()).toBe(nonce);
+        await page.getByRole("checkbox").first().check();
+        await page.getByRole("button", { name: "Разрешить", exact: true }).click();
+        await page.waitForURL(
+          (url) => url.hostname === "localhost" && url.pathname === "/callback",
+          { timeout: 4000 },
+        );
+        expect(await page.getByRole("heading").textContent()).toBe("Подключение готово");
+        expect(posts).toBe(2);
+        const returned = new URL(page.url());
+        expect(returned.searchParams.get("state")).toBe("fixture-state");
+        expect(returned.searchParams.get("iss")).toBe(base);
+        expect(returned.searchParams.has("code")).toBe(true);
+        const replay = await authorizePost(
+          new Request(`${base}/oauth/authorize`, {
+            method: "POST",
+            headers: { Origin: base, "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ nonce, decision: "allow", projects: projectId }),
+          }),
+        );
+        expect(replay.status).toBe(400);
+        expect(replay.headers.get("content-type")).toContain("text/html");
+        expect(await replay.text()).toContain("Эта форма уже использована");
+        await page.goto(`${base}/oauth/authorize?${query}`);
+        await page.getByRole("button", { name: "Отказать", exact: true }).click();
+        await page.waitForURL(
+          (url) => url.hostname === "localhost" && url.pathname === "/callback",
+          { timeout: 4000 },
+        );
+        expect(new URL(page.url()).searchParams.get("error")).toBe("access_denied");
+        expect(
+          (
+            await sql<{
+              count: string;
+            }>`select count(*) from mcp_grants where client_id=${id}`.execute(getDatabase())
+          ).rows[0]?.count,
+        ).toBe("1");
+      } finally {
+        await browser.close();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+    20_000,
+  );
   it("returns OAuth discovery challenge and rejects bad Origin", async () => {
     const response = await POST(new Request(resource, { method: "POST" }));
     expect(response.status).toBe(401);

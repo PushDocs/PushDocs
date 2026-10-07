@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { optionalUser, repository } from "@/lib/server";
+import { consentFailure, consentPage } from "./consent-page";
 import { oauthResumeCookie } from "./resume";
 
 export function mcpStore() {
@@ -119,11 +120,6 @@ export async function register(request: Request) {
     return oauthError(error);
   }
 }
-const escapeHtml = (value: string) =>
-  value.replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
-  );
 export async function authorizeGet(request: Request) {
   try {
     const query = new URL(request.url).searchParams;
@@ -171,42 +167,62 @@ export async function authorizeGet(request: Request) {
     };
     const nonce = await mcpStore().consent(user.id, auth);
     const projects = await repository().listProjects(user.id);
-    const options = projects
-      .map(
-        (p) =>
-          `<label><input type="checkbox" name="projects" value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.role)})</label><br>`,
-      )
-      .join("");
-    return new Response(
-      `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>PushDocs OAuth</title><body><main><h1>Подключение ${escapeHtml(client.name)}</h1><p>Разрешения: ${escapeHtml(scopes.join(", "))}</p><p>Выберите проекты. Клиент получает доступ к общим сохранённым черновикам выбранных веток в пределах вашей роли.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="nonce" value="${nonce}">${options}<button name="decision" value="allow">Разрешить</button> <button name="decision" value="deny">Отказать</button></form></main></body></html>`,
-      {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-          "Content-Security-Policy":
-            "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-          "Referrer-Policy": "no-referrer",
-        },
-      },
+    return consentPage({
+      clientName: client.name,
+      userName: user.displayName,
+      nonce,
+      scopes: auth.scopes,
+      redirectUri,
+      projects,
+    });
+  } catch {
+    return consentFailure(
+      "Не удалось открыть запрос на подключение. Вернитесь в приложение и начните подключение заново.",
     );
-  } catch (error) {
-    return oauthError(error);
   }
 }
 export async function authorizePost(request: Request) {
   try {
     assertMcpOrigin(request, true);
-    if (Number(request.headers.get("content-length")) > 32_768)
-      throw new McpError("invalid_request", "Request too large.");
-    const body = await boundedText(request);
-    const form = new URLSearchParams(body);
+    const form = new URLSearchParams(await boundedText(request));
+    if (
+      form.getAll("nonce").length !== 1 ||
+      form.getAll("decision").length !== 1 ||
+      !["allow", "deny"].includes(form.get("decision") ?? "")
+    )
+      return consentFailure(
+        "Форма отправлена некорректно. Вернитесь в приложение и начните подключение заново.",
+      );
     const user = await optionalUser();
-    if (!user) throw new McpError("access_denied", "Sign in again.", 401);
+    if (!user)
+      return consentFailure(
+        "Сессия PushDocs завершилась. Войдите в PushDocs, затем начните подключение из приложения заново.",
+        401,
+      );
+    await mcpStore().rateLimit(`oauth:decision:${user.id}`, 30);
     const nonce = form.get("nonce") ?? "";
+    const pending = await mcpStore().consentRequest(user.id, nonce);
+    if (!pending)
+      return consentFailure(
+        "Эта форма уже использована или срок её действия истёк. Вернитесь в приложение и начните подключение заново.",
+      );
+    const selected = form.getAll("projects");
+    if (form.get("decision") === "allow" && !selected.length) {
+      const client = await mcpStore().client(pending.clientId);
+      return consentPage({
+        clientName: client?.name ?? "Приложение",
+        userName: user.displayName,
+        nonce,
+        scopes: pending.scopes,
+        redirectUri: pending.redirectUri,
+        projects: await repository().listProjects(user.id),
+        error: "Выберите хотя бы один проект, к которому хотите предоставить доступ.",
+      });
+    }
     const { code, request: auth } = await mcpStore().authorize(
       user.id,
       nonce,
-      form.getAll("projects"),
+      selected,
       form.get("decision") === "allow",
     );
     const url = new URL(auth.redirectUri);
@@ -216,9 +232,15 @@ export async function authorizePost(request: Request) {
     if (auth.state !== undefined) url.searchParams.set("state", auth.state);
     return Response.redirect(url.toString(), 303);
   } catch (error) {
-    return oauthError(error);
+    return consentFailure(
+      error instanceof McpError && error.code === "INVALID_ORIGIN"
+        ? "Форма отправлена с другого адреса. Начните подключение заново из приложения."
+        : "Не удалось подтвердить доступ. Вернитесь в приложение и начните подключение заново.",
+      error instanceof McpError ? error.status : 400,
+    );
   }
 }
+
 export async function token(request: Request) {
   try {
     assertMcpOrigin(request);

@@ -95,6 +95,14 @@ export class McpRepository {
     );
     return nonce;
   }
+  async consentRequest(userId: string, nonce: string) {
+    return (
+      await sql<{ request: AuthorizationRequest }>`select request from mcp_consents
+      where hash=${tokenDigest(nonce)} and user_id=${userId} and expires_at > now()`.execute(
+        this.db,
+      )
+    ).rows[0]?.request;
+  }
   async authorize(userId: string, nonce: string, projects: string[], approved = true) {
     return this.transaction(async (tx) => {
       const request = (
