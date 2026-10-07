@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { analyzeContent, resolveDocument, searchDocuments } from "./intelligence";
+import {
+  analyzeContent,
+  type IndexedDocument,
+  resolveDocument,
+  searchDocuments,
+} from "./intelligence";
 
-const documents = [
+const documents: [IndexedDocument, IndexedDocument] = [
   {
     path: "docs/a.md",
     title: "Integration",
@@ -56,5 +61,33 @@ describe("document intelligence", () => {
       "docs/a.md",
     );
     expect(searchDocuments(documents, "все статьи", true)).toEqual([]);
+  });
+  it("searches literal source even when another document cannot be parsed as MDX", () => {
+    const broken = {
+      ...documents[1],
+      content: "# Other\n\n<!-- prettier-ignore -->\n\nUnrelated content.",
+    };
+    const matching = {
+      ...documents[0],
+      content: "---\ninvalid: [\n---\n\n```js\nconst provider = 'amoCRM';\n```",
+    };
+    const results = searchDocuments([broken, matching], "AMOcrm");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ path: matching.path, line: 6 });
+    expect(results[0]?.snippet).toContain("amoCRM");
+    expect(searchDocuments([broken, matching], "missing")).toEqual([]);
+  });
+  it("falls back to Markdown text for topic search in unsupported MDX", () => {
+    const broken = {
+      ...documents[0],
+      title: "Other",
+      content:
+        "# Other\n\n<!-- prettier-ignore -->\n\nИнтеграция с amoCRM.\n\n`hiddenword`\n\n```js\ncodeword\n```\n\n<!-- commentword -->",
+    };
+    expect(searchDocuments([broken, documents[1]], "найди статьи про amoCRM", true)).toEqual([
+      expect.objectContaining({ path: broken.path, snippet: expect.stringContaining("amoCRM") }),
+    ]);
+    for (const query of ["hiddenword", "codeword", "commentword"])
+      expect(searchDocuments([broken], query, true)).toEqual([]);
   });
 });

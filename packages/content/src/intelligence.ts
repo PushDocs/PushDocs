@@ -144,18 +144,33 @@ export function topicWords(query: string) {
       ].includes(w),
   );
 }
+function topicText(source: string) {
+  try {
+    return analyzeContent(source)
+      .text.map((text) => text.value)
+      .join(" ");
+  } catch {
+    // Imported Markdown and partially edited MDX can contain unsupported syntax.
+    // Keep their readable text searchable without executing repository code.
+    const tree = unified().use(remarkParse).parse(source) as Node;
+    const text: string[] = [];
+    const visit = (node: Node) => {
+      if (node.type === "text" && node.value) text.push(node.value);
+      for (const child of node.children ?? []) visit(child);
+    };
+    visit(tree);
+    return text.join(" ");
+  }
+}
 export function searchDocuments(documents: IndexedDocument[], query: string, topic = false) {
   const terms = topic ? topicWords(query) : [query.trim().toLocaleLowerCase()];
   if (!terms.length || !terms[0]) return [];
   return documents
     .flatMap((doc) => {
-      const analysis = analyzeContent(doc.content);
-      const body = analysis.text
-        .map((t) => t.value)
-        .join(" ")
-        .toLocaleLowerCase();
       const raw = doc.content.toLocaleLowerCase(),
         title = doc.title.toLocaleLowerCase();
+      if (!topic && !raw.includes(terms[0] ?? "")) return [];
+      const body = topic ? topicText(doc.content).toLocaleLowerCase() : raw;
       const score = terms.reduce(
         (n, t) =>
           n +

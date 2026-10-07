@@ -149,6 +149,14 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
         version: "current",
       },
       {
+        path: "docs/legacy.mdx",
+        title: "Legacy integration",
+        content: "# Legacy integration\n\n<!-- prettier-ignore -->\n\nConnect amoCRM.",
+        contentHash: "legacy",
+        locale: "default",
+        version: "current",
+      },
+      {
         path: "sidebars.js",
         title: "Sidebar",
         content: 'module.exports = {docs: ["intro"]};',
@@ -518,6 +526,25 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       }),
     );
     expect(valid.status).toBe(200);
+  });
+  it("searches imported documents with unsupported MDX through MCP", async () => {
+    const access = await grant(["pushdocs:read"]);
+    const c = await client(access.access_token);
+    try {
+      for (const name of ["search_documents", "find_documents_by_topic"]) {
+        const result = await c.callTool({
+          name,
+          arguments: { projectId, branch: "main", query: "amoCRM" },
+        });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          total: 1,
+          items: [{ path: "docs/legacy.mdx", snippet: expect.stringContaining("amoCRM") }],
+        });
+      }
+    } finally {
+      await c.close();
+    }
   });
   it("initializes, lists annotations, stages and searches drafts, and rejects stale revisions", async () => {
     const access = await grant();
