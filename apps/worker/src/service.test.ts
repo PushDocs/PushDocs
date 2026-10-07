@@ -1689,3 +1689,127 @@ it("caches read-only review details for open requests and obtains checks for the
     expect.objectContaining({ details: null, checks: [], headSha: "closed-head", externalId: "2" }),
   ]);
 });
+
+describe("MCP worker authorization and review metadata", () => {
+  it("blocks a revoked OAuth grant before touching Git", async () => {
+    const port = repository(),
+      client = provider();
+    port.requireMcpGrant = vi.fn().mockRejectedValue(new Error("OAuth grant revoked"));
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    await expect(
+      createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+      }).submitChangeSet({
+        projectId: "project",
+        changeSetId: "change",
+        message: "Edit",
+        createReview: true,
+        userId: "actor",
+        oauthGrantId: "grant",
+      }),
+    ).rejects.toThrow("revoked");
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+  it("rechecks OAuth immediately before publishing and forwards target/title/description", async () => {
+    const port = repository(),
+      client = provider();
+    port.requireMcpGrant = vi.fn();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Commit text",
+      createReview: true,
+      userId: "actor",
+      oauthGrantId: "grant",
+      targetBranch: "release",
+      title: "Review title",
+      description: "Review description",
+    });
+    expect(port.requireMcpGrant).toHaveBeenCalledTimes(3);
+    expect(client.ensureChangeRequest).toHaveBeenCalledWith({
+      repositoryId: "42",
+      sourceBranch: "docs/update",
+      targetBranch: "release",
+      title: "Review title",
+      description: "Review description",
+    });
+  });
+  it("retains OAuth and review metadata when retrying after a successful push", async () => {
+    const port = repository(),
+      client = provider();
+    port.requireMcpGrant = vi.fn();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+    vi.mocked(client.ensureChangeRequest).mockRejectedValue(
+      new Error("Provider temporarily unavailable"),
+    );
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+      logger: { error: vi.fn() },
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      message: "Edit",
+      createReview: true,
+      userId: "actor",
+      oauthGrantId: "grant",
+      targetBranch: "release",
+      title: "Review title",
+      description: "Description",
+    });
+    expect(port.enqueueReviewCreation).toHaveBeenCalledWith(
+      "project",
+      "docs/update",
+      "Review title",
+      "actor",
+      { targetBranch: "release", description: "Description", oauthGrantId: "grant" },
+    );
+    expect(client.commitFiles).toHaveBeenCalledTimes(1);
+  });
+  it("preserves review metadata when a submitted job is delivered again", async () => {
+    const port = repository(),
+      client = provider();
+    port.requireMcpGrant = vi.fn();
+    vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+      ...submissionTarget,
+      status: "submitted",
+    } as never);
+    await createWorkerService({
+      repository: port,
+      createProvider: () => client,
+      decryptSecret: () => "fixture",
+    }).submitChangeSet({
+      projectId: "project",
+      changeSetId: "change",
+      userId: "actor",
+      message: "Commit",
+      createReview: true,
+      targetBranch: "release",
+      title: "Review",
+      description: "Details",
+      oauthGrantId: "grant",
+    });
+    expect(port.enqueueReviewCreation).toHaveBeenCalledWith(
+      "project",
+      "docs/update",
+      "Review",
+      "actor",
+      {
+        targetBranch: "release",
+        description: "Details",
+        oauthGrantId: "grant",
+      },
+    );
+    expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+});

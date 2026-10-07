@@ -116,3 +116,14 @@ export function isEditableFile(config: ProjectConfig, filePath: string): boolean
     /\.(mdx?|json)$/i.test(filePath)
   );
 }
+
+export function assertProjectFileEditable(
+  config: ProjectConfig,
+  filePath: string,
+  role: string,
+): void {
+  safePath(filePath);
+  if (!isEditableFile(config, filePath)) throw new Error("Файл не разрешён настройками проекта");
+  if (filePath === ".pushdocs/config.json" && role !== "admin")
+    throw new Error("Конфигурацию изменяет администратор");
+}

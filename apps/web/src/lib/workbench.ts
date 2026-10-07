@@ -1,5 +1,5 @@
 import "server-only";
-import { isEditableFile, parseProjectConfig, safePath } from "@pushdocs/content";
+import { assertProjectFileEditable, parseProjectConfig } from "@pushdocs/content";
 import { providerForConnection } from "./provider";
 import { type CurrentUser, repository, requireUser } from "./server";
 
@@ -48,10 +48,7 @@ export function assertEditable(
   path: string,
   role: string,
 ): void {
-  safePath(path);
-  if (!isEditableFile(config, path)) throw new Error("Файл не разрешён настройками проекта");
-  if (path === ".pushdocs/config.json" && role !== "admin")
-    throw new Error("Конфигурацию изменяет администратор");
+  assertProjectFileEditable(config, path, role);
 }
 
 export function assertSameOrigin(request: Request): void {

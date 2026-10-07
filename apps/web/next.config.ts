@@ -10,7 +10,15 @@ const nextConfig: NextConfig = {
       ? [{ source: "/events", destination: `${process.env.PUSHDOCS_REALTIME_ORIGIN}/events` }]
       : [];
   },
-  serverExternalPackages: ["argon2", "pg", "yjs"],
+  serverExternalPackages: [
+    "argon2",
+    "pg",
+    "yjs",
+    "sharp",
+    "dictionary-en",
+    "dictionary-ru",
+    "nspell",
+  ],
   transpilePackages: [
     "@pushdocs/content",
     "@pushdocs/contracts",

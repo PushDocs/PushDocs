@@ -53,6 +53,7 @@ export interface GitProvider {
     sourceBranch: string;
     targetBranch: string;
     title: string;
+    description?: string;
   }): Promise<ProviderChangeRequest>;
   getChangeRequestDetails(repositoryId: string, id: string): Promise<ChangeRequestDetails>;
   getRepository(repositoryId: string): Promise<ProviderRepository>;
@@ -264,6 +265,7 @@ export class GitLabProvider implements GitProvider {
     sourceBranch: string;
     targetBranch: string;
     title: string;
+    description?: string;
   }): Promise<ProviderChangeRequest> {
     const existing = (await this.listChangeRequests(input.repositoryId)).find(
       (request) =>
@@ -284,6 +286,7 @@ export class GitLabProvider implements GitProvider {
           source_branch: input.sourceBranch,
           target_branch: input.targetBranch,
           title: input.title,
+          ...(input.description !== undefined ? { description: input.description } : {}),
         }),
         method: "POST",
       }),
@@ -685,6 +688,7 @@ export class GitHubProvider implements GitProvider {
     sourceBranch: string;
     targetBranch: string;
     title: string;
+    description?: string;
   }): Promise<ProviderChangeRequest> {
     const existing = (await this.listChangeRequests(input.repositoryId)).find(
       (request) =>
@@ -704,6 +708,7 @@ export class GitHubProvider implements GitProvider {
           base: input.targetBranch,
           head: input.sourceBranch,
           title: input.title,
+          ...(input.description !== undefined ? { body: input.description } : {}),
         }),
         method: "POST",
       }),

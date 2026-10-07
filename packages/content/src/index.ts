@@ -6,6 +6,7 @@ import glob from "fast-glob";
 import matter from "gray-matter";
 
 export {
+  assertProjectFileEditable,
   assetLocation,
   isEditableFile,
   parseProjectConfig,
@@ -128,4 +129,19 @@ export async function discoverDocusaurusProject(root: string): Promise<Docusauru
   );
   return { ...analyzeDocusaurusFiles(contents), root: absoluteRoot };
 }
+export type { ContentAnalysis, ContentLink, IndexedDocument } from "./intelligence";
+export {
+  analyzeContent,
+  buildLinkIndex,
+  resolveDocument,
+  searchDocuments,
+  topicWords,
+} from "./intelligence";
 export { isMediaFile, mediaCatalog } from "./media";
+export type { NavigationPosition } from "./navigation";
+export {
+  editNavigation,
+  navigationTree,
+  parseNavigation,
+  UnsupportedNavigationError,
+} from "./navigation";

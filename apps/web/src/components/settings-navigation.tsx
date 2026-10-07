@@ -6,7 +6,7 @@ export function SettingsNavigation({
   canManageConnections,
 }: {
   projectId?: string;
-  active: "project" | "members" | "connections" | "profile";
+  active: "project" | "members" | "connections" | "profile" | "mcp";
   canManageConnections: boolean;
 }) {
   const base = projectId ? `/projects/${projectId}/settings` : "/settings";
@@ -24,6 +24,9 @@ export function SettingsNavigation({
       ) : null}
       <Link href={`${base}/profile`} aria-current={active === "profile" ? "page" : undefined}>
         Мой профиль
+      </Link>
+      <Link href="/settings/mcp" aria-current={active === "mcp" ? "page" : undefined}>
+        MCP
       </Link>
       {canManageConnections ? (
         <Link

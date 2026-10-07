@@ -35,6 +35,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { oauthResumeCookie, oauthResumeTarget } from "@/lib/mcp/resume";
 import { providerForConnection } from "@/lib/provider";
 import {
   actor,
@@ -61,6 +62,13 @@ async function uploadedVpnProfile(formData: FormData): Promise<string | undefine
   if (value.size > vpnProfileLimit || !value.name.toLowerCase().endsWith(".ovpn"))
     throw new Error("VPN_PROFILE_INVALID_FILE");
   return validateVpnProfile(await value.text());
+}
+
+async function postLoginDestination(): Promise<string> {
+  const cookieStore = await cookies();
+  const target = oauthResumeTarget(cookieStore.get(oauthResumeCookie)?.value);
+  if (target !== "/projects") cookieStore.delete(oauthResumeCookie);
+  return target;
 }
 
 async function startBrowserSession(
@@ -114,7 +122,7 @@ export async function loginAction(formData: FormData): Promise<void> {
     redirect("/two-factor");
   }
   await startBrowserSession(user.id);
-  redirect("/projects");
+  redirect(await postLoginDestination());
 }
 
 export async function logoutAction(): Promise<void> {
@@ -138,7 +146,7 @@ export async function verifyTwoFactorAction(formData: FormData): Promise<void> {
     redirect("/two-factor?error=code");
   }
   await startBrowserSession(session.id, "full", true);
-  redirect("/projects");
+  redirect(await postLoginDestination());
 }
 
 export async function beginTwoFactorAction(formData: FormData): Promise<void> {

@@ -17,6 +17,7 @@ import {
   openSharedDocument,
 } from "./collaboration";
 import { appendEvent } from "./events";
+import { McpRepository } from "./mcp";
 import type { PreparedGitCommit } from "./schema";
 import { SecurityRepository } from "./security";
 
@@ -60,7 +61,7 @@ export class PushDocsRepository extends SecurityRepository {
     email: string;
     passwordHash: string;
   }): Promise<{ id: string }> {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       await sql`select pg_advisory_xact_lock(734921)`.execute(transaction);
       const existing = await transaction
         .selectFrom("users")
@@ -319,7 +320,7 @@ export class PushDocsRepository extends SecurityRepository {
     secretEncrypted: string;
     vpnProfileEncrypted?: string;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       let vpnSlot: number | null = null;
       if (input.vpnProfileEncrypted) {
         const rows = await transaction
@@ -354,7 +355,7 @@ export class PushDocsRepository extends SecurityRepository {
     repositoryCloneUrls?: { repositoryId: string; cloneUrl: string }[];
     vpnProfileEncrypted?: string | null;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const current = await transaction
         .selectFrom("provider_connections")
         .select(["vpn_profile_encrypted", "vpn_slot"])
@@ -405,7 +406,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async deleteConnection(connectionId: string): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const usage = await transaction
         .selectFrom("projects")
         .innerJoin("repositories", "repositories.id", "projects.repository_id")
@@ -438,7 +439,7 @@ export class PushDocsRepository extends SecurityRepository {
     rootPath: string;
     slug: string;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const repository = await transaction
         .insertInto("repositories")
         .values({
@@ -541,7 +542,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async deleteProject(projectId: string): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const project = await transaction
         .selectFrom("projects")
         .select(["id", "repository_id"])
@@ -619,7 +620,7 @@ export class PushDocsRepository extends SecurityRepository {
     }>,
     repositoryPaths?: string[],
   ): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const fullRef = normalizeBranchRef(branchName);
       let branch = await transaction
         .selectFrom("branch_contexts")
@@ -693,7 +694,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async claimNextJob() {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const job = await transaction
         .selectFrom("jobs")
         .selectAll()
@@ -742,7 +743,7 @@ export class PushDocsRepository extends SecurityRepository {
     progress: string,
     counts?: { completed: number; total: number },
   ): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const job = await transaction
         .selectFrom("jobs")
         .select("payload")
@@ -896,6 +897,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async enqueueBranchCreation(input: {
+    oauthGrantId?: string;
     projectId: string;
     sourceBranch: string;
     sourceSha: string;
@@ -908,6 +910,7 @@ export class PushDocsRepository extends SecurityRepository {
         kind: "branch.create",
         payload: {
           projectId: input.projectId,
+          oauthGrantId: input.oauthGrantId,
           sourceBranch: normalizeBranchRef(input.sourceBranch),
           sourceSha: input.sourceSha,
           branch: normalizeBranchRef(input.branch),
@@ -919,16 +922,89 @@ export class PushDocsRepository extends SecurityRepository {
     return job.id;
   }
 
-  async enqueueReviewCreation(projectId: string, branch: string, title: string, userId: string) {
+  async enqueueReviewCreation(
+    projectId: string,
+    branch: string,
+    title: string,
+    userId: string,
+    options?: { targetBranch?: string; description?: string; oauthGrantId?: string },
+  ) {
     const job = await this.database
       .insertInto("jobs")
       .values({
         kind: "review.create",
-        payload: { projectId, branch: normalizeBranchRef(branch), title, userId },
+        payload: { projectId, branch: normalizeBranchRef(branch), title, userId, ...options },
       })
       .returning("id")
       .executeTakeFirstOrThrow();
     return job.id;
+  }
+
+  async requireMcpGrant(grantId: string, userId: string, projectId: string, scope: string) {
+    await new McpRepository(this.database).requireGrant(grantId, userId, projectId, scope);
+  }
+
+  async getMcpOperation(projectId: string, operationId: string) {
+    const job = await this.database
+      .selectFrom("jobs")
+      .select(["status", "last_error", "payload"])
+      .where("id", "=", operationId)
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .executeTakeFirst();
+    if (!job) return undefined;
+    const payload = job.payload as Record<string, unknown>;
+    const branch = typeof payload.branch === "string" ? payload.branch : "";
+    let reviewQuery = this.database
+      .selectFrom("change_requests")
+      .select(["id", "external_id", "provider_url", "head_sha"])
+      .where("project_id", "=", projectId)
+      .where("source_branch", "=", branch)
+      .where("state", "=", "open");
+    if (typeof payload.targetBranch === "string")
+      reviewQuery = reviewQuery.where("target_branch", "=", payload.targetBranch);
+    const review = await reviewQuery.orderBy("updated_at", "desc").executeTakeFirst();
+    const submitted =
+      typeof payload.changeSetId === "string"
+        ? await this.database
+            .selectFrom("domain_events")
+            .select("payload")
+            .where("project_id", "=", projectId)
+            .where("entity_id", "=", payload.changeSetId)
+            .where("type", "=", "change-set.submitted")
+            .orderBy("sequence", "desc")
+            .executeTakeFirst()
+        : undefined;
+    const commit = submitted?.payload as { commitSha?: string; commitUrl?: string } | undefined;
+    const state = await this.database
+      .selectFrom("branch_contexts")
+      .select("head_commit_sha")
+      .where("project_id", "=", projectId)
+      .where("full_ref", "=", branch)
+      .orderBy("generation", "desc")
+      .executeTakeFirst();
+    const checks = review ? await this.listChecks(review.id) : [];
+    const preview = checks.find((check) => check.name === "preview:deploy");
+    return {
+      status: job.status,
+      stage: typeof payload.progress === "string" ? payload.progress : null,
+      error: job.last_error
+        ? { code: "OPERATION_FAILED", message: "Operation failed. Inspect PushDocs for details." }
+        : null,
+      result: {
+        branch,
+        commitSha: commit?.commitSha ?? (payload.changeSetId ? undefined : state?.head_commit_sha),
+        commitUrl: commit?.commitUrl,
+        currentBranchSha: state?.head_commit_sha,
+        reviewMatchesCommit: Boolean(commit?.commitSha && review?.head_sha === commit.commitSha),
+        reviewUrl: review?.provider_url,
+        reviewNumber: review?.external_id,
+        ciPreviewStatus:
+          !commit?.commitSha || review?.head_sha !== commit.commitSha
+            ? "pending"
+            : (preview?.conclusion ?? "unavailable"),
+        reviewStatus: review ? "ready" : payload.createReview ? "pending" : "not_requested",
+      },
+    };
   }
 
   async getProjectJob(projectId: string, jobId: string) {
@@ -960,13 +1036,14 @@ export class PushDocsRepository extends SecurityRepository {
   async acquirePreview(input: {
     branch: string;
     clientId: string;
+    leaseTtlMs?: number;
     portFrom: number;
     portTo: number;
     projectId: string;
     userId: string;
   }) {
     const branch = normalizeBranchRef(input.branch);
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
       const now = new Date();
       await transaction.deleteFrom("preview_leases").where("expires_at", "<", now).execute();
@@ -1041,13 +1118,17 @@ export class PushDocsRepository extends SecurityRepository {
         .insertInto("preview_leases")
         .values({
           client_id: input.clientId,
-          expires_at: new Date(now.getTime() + 60_000),
+          expires_at: new Date(
+            now.getTime() + Math.min(1_800_000, Math.max(60_000, input.leaseTtlMs ?? 60_000)),
+          ),
           session_id: session.id,
           user_id: input.userId,
         })
         .onConflict((conflict) =>
           conflict.columns(["session_id", "user_id", "client_id"]).doUpdateSet({
-            expires_at: new Date(now.getTime() + 60_000),
+            expires_at: new Date(
+              now.getTime() + Math.min(1_800_000, Math.max(60_000, input.leaseTtlMs ?? 60_000)),
+            ),
           }),
         )
         .execute();
@@ -1067,7 +1148,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async releasePreview(sessionId: string, userId: string, clientId: string): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       await transaction
         .deleteFrom("preview_leases")
         .where("session_id", "=", sessionId)
@@ -1099,7 +1180,39 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async reconcilePreviewLeases(): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
+      const agentLeases = await transaction
+        .selectFrom("preview_leases")
+        .innerJoin("preview_sessions", "preview_sessions.id", "preview_leases.session_id")
+        .select([
+          "preview_leases.client_id",
+          "preview_leases.user_id",
+          "preview_leases.session_id",
+          "preview_sessions.project_id",
+        ])
+        .where("preview_leases.client_id", "like", "mcp:%")
+        .execute();
+      for (const lease of agentLeases) {
+        try {
+          await new McpRepository(transaction).requireGrant(
+            lease.client_id.slice(4),
+            lease.user_id,
+            lease.project_id,
+            "pushdocs:preview",
+          );
+          await new PushDocsRepository(transaction).requireProjectAccess(
+            lease.user_id,
+            lease.project_id,
+          );
+        } catch {
+          await transaction
+            .deleteFrom("preview_leases")
+            .where("session_id", "=", lease.session_id)
+            .where("user_id", "=", lease.user_id)
+            .where("client_id", "=", lease.client_id)
+            .execute();
+        }
+      }
       await transaction.deleteFrom("preview_leases").where("expires_at", "<", new Date()).execute();
       const leased = new Set(
         (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
@@ -1374,6 +1487,7 @@ export class PushDocsRepository extends SecurityRepository {
     branch: string;
     userId: string;
     expectedRevision: number;
+    expectedHeadSha?: string;
     files: Array<{ path: string; content?: string | null; revert?: boolean; createOnly?: boolean }>;
   }): Promise<{ changeSetId: string; revision: number }> {
     await this.requireProjectAccess(input.userId, input.projectId, "document:write");
@@ -1395,7 +1509,7 @@ export class PushDocsRepository extends SecurityRepository {
         throw new Error("Invalid file path");
       if (!file.revert && file.content === undefined) throw new Error("File content required");
     }
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -1403,6 +1517,10 @@ export class PushDocsRepository extends SecurityRepository {
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .forUpdate()
         .executeTakeFirstOrThrow();
+      if (input.expectedHeadSha && branch.head_commit_sha !== input.expectedHeadSha)
+        throw new RevisionConflictError(
+          "The imported branch snapshot changed. Reload before editing.",
+        );
       let changeSet = await transaction
         .selectFrom("change_sets")
         .selectAll()
@@ -1541,7 +1659,7 @@ export class PushDocsRepository extends SecurityRepository {
       throw new Error("Invalid file path");
     if (input.update && !input.epoch)
       throw new Error("Откройте совместный документ перед редактированием");
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -1872,7 +1990,7 @@ export class PushDocsRepository extends SecurityRepository {
     projectId: string;
     userId: string;
   }): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -1937,7 +2055,7 @@ export class PushDocsRepository extends SecurityRepository {
     projectId: string;
     userId: string;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -2065,7 +2183,7 @@ export class PushDocsRepository extends SecurityRepository {
   }) {
     await this.requireProjectAccess(input.userId, input.projectId);
     if (!input.commentIds.length) return [];
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const scoped = await transaction
         .selectFrom("comments")
         .innerJoin("discussions", "discussions.id", "comments.discussion_id")
@@ -2121,7 +2239,7 @@ export class PushDocsRepository extends SecurityRepository {
     projectId: string;
     userId: string;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .select("id")
@@ -2201,7 +2319,7 @@ export class PushDocsRepository extends SecurityRepository {
       url: string;
     }>,
   ): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       await transaction
         .updateTable("change_requests")
         .set({ state: "closed", updated_at: new Date() })
@@ -2398,8 +2516,9 @@ export class PushDocsRepository extends SecurityRepository {
     storageKey: string;
     createOnly?: boolean;
     expectedRevision?: number;
+    expectedHeadSha?: string;
   }) {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const branch = await transaction
         .selectFrom("branch_contexts")
         .selectAll()
@@ -2409,6 +2528,8 @@ export class PushDocsRepository extends SecurityRepository {
         .forUpdate()
         .executeTakeFirst();
       if (!branch) throw new NotFoundError("Branch not found");
+      if (input.expectedHeadSha && input.expectedHeadSha !== branch.head_commit_sha)
+        throw new RevisionConflictError("Branch snapshot changed during optimization.");
       let changeSet = await transaction
         .selectFrom("change_sets")
         .selectAll()
@@ -2507,9 +2628,14 @@ export class PushDocsRepository extends SecurityRepository {
     message: string;
     projectId: string;
     userId: string;
-  }): Promise<void> {
+    expectedRevision?: number;
+    targetBranch?: string;
+    title?: string;
+    description?: string;
+    oauthGrantId?: string;
+  }): Promise<string> {
     await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
-    await this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const target = await transaction
         .selectFrom("change_sets")
         .select("branch_context_id")
@@ -2540,6 +2666,10 @@ export class PushDocsRepository extends SecurityRepository {
         .executeTakeFirst();
       /* v8 ignore next -- the same row was found and locked above in this transaction. */
       if (!changeSet) throw new NotFoundError("Change set not found");
+      if (input.expectedRevision !== undefined && changeSet.revision !== input.expectedRevision)
+        throw new RevisionConflictError(
+          "The change set changed after review. Reload it before submitting.",
+        );
       if (changeSet.status !== "open") {
         throw new RevisionConflictError("Change set cannot be submitted in its current state");
       }
@@ -2590,7 +2720,7 @@ export class PushDocsRepository extends SecurityRepository {
         .set({ status: "submitting", updated_at: new Date() })
         .where("id", "=", changeSet.id)
         .execute();
-      await transaction
+      const job = await transaction
         .insertInto("jobs")
         .values({
           kind: "change-set.submit",
@@ -2600,19 +2730,25 @@ export class PushDocsRepository extends SecurityRepository {
             operationId: randomUUID(),
             createdAt: new Date().toISOString(),
             createReview: input.createReview,
+            targetBranch: input.targetBranch,
+            title: input.title,
+            description: input.description,
+            oauthGrantId: input.oauthGrantId,
             newBranch: input.newBranch,
             branchBaseSha: sourceBranch.head_commit_sha,
             message: input.message,
             projectId: input.projectId,
           },
         })
-        .execute();
+        .returning("id")
+        .executeTakeFirstOrThrow();
       await appendEvent(transaction, {
         entityId: changeSet.id,
         projectId: input.projectId,
         revision: changeSet.revision,
         type: "change-set.submitting",
       });
+      return job.id;
     });
   }
 
@@ -2672,7 +2808,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async savePreparedCommit(changeSetId: string, prepared: PreparedGitCommit): Promise<void> {
-    await this.database.transaction().execute(async (tx) => {
+    await this.transaction(async (tx) => {
       const row = await tx
         .selectFrom("change_sets")
         .select(["prepared_commit", "status"])
@@ -2701,7 +2837,7 @@ export class PushDocsRepository extends SecurityRepository {
   async withGitRefLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const lock =
       Number.parseInt(createHash("sha256").update(key).digest("hex").slice(0, 8), 16) | 0;
-    return this.database.transaction().execute(async (tx) => {
+    return this.transaction(async (tx) => {
       await sql`select pg_advisory_xact_lock(${lock})`.execute(tx);
       return operation();
     });
@@ -2719,7 +2855,7 @@ export class PushDocsRepository extends SecurityRepository {
       theirsContent: string | null;
     }>,
   ): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const changeSet = await transaction
         .selectFrom("change_sets")
         .select(["branch_context_id", "revision"])
@@ -2785,7 +2921,7 @@ export class PushDocsRepository extends SecurityRepository {
     resolution: "ours" | "theirs" | "manual";
     resolvedContent: string;
   }): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const conflict = await transaction
         .selectFrom("change_set_conflicts")
         .innerJoin("change_sets", "change_sets.id", "change_set_conflicts.change_set_id")
@@ -2887,7 +3023,7 @@ export class PushDocsRepository extends SecurityRepository {
     commitUrl: string;
     projectId: string;
   }): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const changeSet = await transaction
         .updateTable("change_sets")
         .set({ status: "submitted", updated_at: new Date() })
@@ -2978,7 +3114,7 @@ export class PushDocsRepository extends SecurityRepository {
     projectId: string,
     error: string,
   ): Promise<void> {
-    await this.database.transaction().execute(async (transaction) => {
+    await this.transaction(async (transaction) => {
       const changeSet = await transaction
         .updateTable("change_sets")
         .set({ status: "open", updated_at: new Date() })
@@ -3015,7 +3151,7 @@ export class PushDocsRepository extends SecurityRepository {
     userId: string,
   ): Promise<void> {
     await this.requireProjectAccess(userId, projectId, "branch:push");
-    await this.database.transaction().execute(async (tx) => {
+    await this.transaction(async (tx) => {
       const context = await tx
         .selectFrom("change_sets")
         .select("branch_context_id")
@@ -3099,7 +3235,7 @@ export class PushDocsRepository extends SecurityRepository {
     userId: string;
   }) {
     await this.requireProjectAccess(input.userId, input.projectId, "document:write");
-    return this.database.transaction().execute(async (tx) => {
+    return this.transaction(async (tx) => {
       await tx
         .selectFrom("projects")
         .select("id")
@@ -3195,7 +3331,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async acceptInvitation(tokenHash: string, userId: string): Promise<{ projectId: string }> {
-    return this.database.transaction().execute(async (transaction) => {
+    return this.transaction(async (transaction) => {
       const invitation = await transaction
         .selectFrom("project_invitations")
         .innerJoin("users", "users.email", "project_invitations.email")
@@ -3246,7 +3382,7 @@ export class PushDocsRepository extends SecurityRepository {
     userId: string;
     role: ProjectRole | null;
   }) {
-    return this.database.transaction().execute(async (trx) => {
+    return this.transaction(async (trx) => {
       await trx
         .selectFrom("projects")
         .select("id")

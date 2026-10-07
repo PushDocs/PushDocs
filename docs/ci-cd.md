@@ -9,7 +9,7 @@ The `CI` job succeeds only when all three jobs succeed:
 | Job | Checks |
 | --- | --- |
 | Quality checks | Immutable Yarn install, lint, format, package boundaries, TypeScript, unit tests and production build |
-| PostgreSQL and Git recovery | Real PostgreSQL 17 and temporary local Git repositories, including retry after an accepted push and concurrent writes |
+| PostgreSQL and Git recovery | Real PostgreSQL 17 and temporary local Git repositories, including retry after an accepted push, concurrent writes and OAuth-authenticated MCP SDK calls |
 | Compose, browser and restore | Generated installation secrets, the Docker image, Compose configuration, migrations, service health, Chromium sessions, backup and restore |
 
 The installation job uses a unique Compose project and fresh volumes. It checks the application through Caddy, including the unauthenticated SSE response. Chromium creates the first operator, checks incorrect credentials, logs in and verifies that a second browser context remains anonymous.

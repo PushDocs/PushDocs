@@ -10,6 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@pushdocs/content": "workspace:*",
     "@pushdocs/contracts": "workspace:*",
     "@pushdocs/core": "workspace:*",
@@ -19,10 +20,13 @@
     "@pushdocs/ui": "workspace:*",
     "@pushdocs/vpn": "workspace:*",
     "argon2": "0.44.0",
+    "dictionary-en": "4.0.0",
+    "dictionary-ru": "3.0.0",
     "diff": "9.0.0",
     "lucide-react": "1.27.0",
     "monaco-editor": "0.56.0",
     "next": "16.2.12",
+    "nspell": "2.1.5",
     "qrcode": "1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -30,11 +34,14 @@
     "remark-directive": "4.0.0",
     "remark-gfm": "4.0.1",
     "remark-mdx": "3.1.1",
+    "sharp": "0.34.5",
+    "svgo": "4.0.0",
     "yjs": "13.6.32",
     "zod": "4.4.1"
   },
   "devDependencies": {
     "@types/node": "20.19.24",
+    "@types/nspell": "2.1.6",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",

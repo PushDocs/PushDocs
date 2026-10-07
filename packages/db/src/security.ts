@@ -1,10 +1,16 @@
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { decryptSecret, encryptSecret } from "./crypto";
 import type { Database } from "./schema";
 import { generateTotpSecret, verifyTotp } from "./totp";
 
 export class SecurityRepository {
   constructor(protected readonly database: Kysely<Database>) {}
+
+  protected transaction<T>(run: (db: Transaction<Database>) => Promise<T>): Promise<T> {
+    return this.database.isTransaction
+      ? run(this.database as Transaction<Database>)
+      : this.database.transaction().execute(run);
+  }
 
   async getSecurityUser(userId: string) {
     return this.database

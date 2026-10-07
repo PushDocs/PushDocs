@@ -31,7 +31,8 @@
     "test:integration": "yarn workspace @pushdocs/worker exec tsx src/recovery.integration.ts",
     "test:security": "yarn workspace @pushdocs/db exec tsx src/security.integration.ts",
     "typecheck": "turbo run typecheck && tsc -p tsconfig.ci.json",
-    "test:ui": "yarn workspace @pushdocs/web exec node scripts/build-monaco.mjs && playwright test -c playwright.ui.config.ts"
+    "test:ui": "yarn workspace @pushdocs/web exec node scripts/build-monaco.mjs && playwright test -c playwright.ui.config.ts",
+    "test:mcp": "vitest run apps/web/src/lib/mcp/integration.test.ts"
   },
   "dependenciesMeta": {
     "argon2": {

@@ -435,6 +435,61 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               await database.schema.dropTable("collaborative_documents").execute();
             },
           },
+          "017-mcp-oauth": {
+            async up(database) {
+              await sql`
+                create table mcp_clients (
+                  id text primary key, name text not null, redirect_uris jsonb not null,
+                  created_at timestamptz not null default now()
+                );
+                create table mcp_consents (
+                  hash text primary key, user_id uuid not null references users(id) on delete cascade,
+                  request jsonb not null, expires_at timestamptz not null
+                );
+                create table mcp_grants (
+                  id uuid primary key default gen_random_uuid(),
+                  user_id uuid not null references users(id) on delete cascade,
+                  client_id text not null references mcp_clients(id),
+                  scopes jsonb not null, projects jsonb not null, resource text not null, security_stamp text not null,
+                  revoked_at timestamptz, created_at timestamptz not null default now()
+                );
+                create index mcp_grants_user_idx on mcp_grants(user_id);
+                create table mcp_codes (
+                  hash text primary key, grant_id uuid not null references mcp_grants(id) on delete cascade,
+                  redirect_uri text not null, challenge text not null, resource text not null,
+                  expires_at timestamptz not null, consumed_at timestamptz
+                );
+                create table mcp_tokens (
+                  hash text primary key, grant_id uuid not null references mcp_grants(id) on delete cascade,
+                  kind text not null check (kind in ('access','refresh')),
+                  expires_at timestamptz not null, consumed_at timestamptz
+                );
+                create index mcp_tokens_grant_idx on mcp_tokens(grant_id);
+                create table mcp_calls (
+                  id uuid primary key default gen_random_uuid(),
+                  grant_id uuid not null references mcp_grants(id),
+                  request_key text not null, digest text not null, tool text not null,
+                  project_id uuid references projects(id) on delete set null,
+                  branch text, result jsonb, created_at timestamptz not null default now(),
+                  unique(grant_id, request_key)
+                );
+                create table mcp_audit (
+                  id uuid primary key default gen_random_uuid(),
+                  grant_id uuid not null references mcp_grants(id),
+                  tool text not null, project_id uuid references projects(id) on delete set null,
+                  branch text, detail jsonb not null, created_at timestamptz not null default now()
+                );
+                create index mcp_audit_grant_idx on mcp_audit(grant_id, created_at);
+                create table mcp_rate_limits (
+                  key text primary key, window_at timestamptz not null, count integer not null
+                );
+              `.execute(database);
+            },
+            async down(database) {
+              await sql`drop table mcp_audit, mcp_calls, mcp_tokens, mcp_codes, mcp_grants,
+                mcp_consents, mcp_clients, mcp_rate_limits`.execute(database);
+            },
+          },
           "016-live-preview-sessions": {
             async up(database) {
               await sql`create table preview_sessions (

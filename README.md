@@ -127,3 +127,8 @@ The coverage check includes domain rules, content import, provider adapters, dat
 Architecture decisions are in [the ADR](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
 
 The [development plan](docs/development-plan.md) separates delivered capabilities from remaining work. The [verification report](docs/verification-2026-09-08.md) records automated checks, browser scenarios and limits of the compatibility claims.
+
+## MCP
+
+Remote access for Codex and Claude Code is documented in [MCP setup](docs/mcp.md).
+See the [implementation plan](docs/mcp-plan.md) and [MCP ADR](docs/adr/0004-mcp-access.md).

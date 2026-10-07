@@ -47,6 +47,7 @@ export type WorkerRepository = Pick<
   | "replaceChangeRequests"
   | "replaceImportedDocuments"
   | "requireProjectAccess"
+  | "requireMcpGrant"
   | "savePreparedCommit"
   | "withGitRefLock"
   | "discardRejectedCommit"
@@ -295,10 +296,27 @@ export function createWorkerService(options: WorkerServiceOptions) {
     await synchronizeReviews(projectId, provider, target.provider_repository_id);
   }
 
+  function optionalPayloadString(payload: unknown, key: string): string | undefined {
+    if (!payload || typeof payload !== "object") return undefined;
+    const value = (payload as Record<string, unknown>)[key];
+    return typeof value === "string" ? value : undefined;
+  }
+  async function checkMcpAuthorization(payload: unknown, scope: string) {
+    const grantId = optionalPayloadString(payload, "oauthGrantId");
+    if (grantId)
+      await repository.requireMcpGrant(
+        grantId,
+        stringFromPayload(payload, "userId"),
+        projectIdFromPayload(payload),
+        scope,
+      );
+  }
+
   async function createBranch(
     payload: unknown,
     onProgress: (progress: string, counts?: { completed: number; total: number }) => Promise<void>,
   ): Promise<void> {
+    await checkMcpAuthorization(payload, "pushdocs:write");
     await onProgress("checking-source");
     const projectId = projectIdFromPayload(payload);
     const userId = stringFromPayload(payload, "userId");
@@ -317,8 +335,11 @@ export function createWorkerService(options: WorkerServiceOptions) {
     if (existing && existing.sha !== sourceSha)
       throw new Error(`Ветка ${branchName} уже существует и содержит другие изменения`);
     await onProgress("creating-branch");
-    if (!existing)
+    if (!existing) {
+      await checkMcpAuthorization(payload, "pushdocs:write");
+      await repository.requireProjectAccess(userId, projectId, "branch:push");
       await provider.createBranch(target.provider_repository_id, branchName, sourceSha);
+    }
     await onProgress("importing-documents");
     await synchronizeBranch(projectId, branchName, provider, (completed, total) =>
       onProgress("importing-documents", { completed, total }),
@@ -338,24 +359,39 @@ export function createWorkerService(options: WorkerServiceOptions) {
   }
 
   async function submitLocked(payload: unknown): Promise<void> {
+    await checkMcpAuthorization(payload, "pushdocs:submit");
     const projectId = projectIdFromPayload(payload);
     const changeSetId = stringFromPayload(payload, "changeSetId");
     const message = stringFromPayload(payload, "message");
     const createReview = booleanFromPayload(payload, "createReview");
     const userId = stringFromPayload(payload, "userId");
     await repository.requireProjectAccess(userId, projectId, "branch:push");
+    if (createReview)
+      await repository.requireProjectAccess(userId, projectId, "change-request:create");
     if (!(await repository.getProjectSyncTarget(projectId)))
       throw new Error("Project sync target is unavailable or no longer granted");
     const target = await repository.getChangeSetSubmission(changeSetId);
     if (!target || target.project_id !== projectId) throw new Error("Change set is unavailable");
+    const reviewTitle =
+      optionalPayloadString(payload, "title") ??
+      (message.split("\n", 1)[0] || "Обновление документации");
+    const reviewTarget = optionalPayloadString(payload, "targetBranch") ?? target.default_branch;
+    const description = optionalPayloadString(payload, "description");
+    const needsReview = createReview && target.branch !== reviewTarget;
+    const retryReview = async () => {
+      if (
+        optionalPayloadString(payload, "targetBranch") ||
+        optionalPayloadString(payload, "oauthGrantId")
+      )
+        await repository.enqueueReviewCreation(projectId, target.branch, reviewTitle, userId, {
+          targetBranch: reviewTarget,
+          description,
+          oauthGrantId: optionalPayloadString(payload, "oauthGrantId"),
+        });
+      else await repository.enqueueReviewCreation(projectId, target.branch, reviewTitle, userId);
+    };
     if (target.status === "submitted") {
-      if (createReview && target.branch !== target.default_branch)
-        await repository.enqueueReviewCreation(
-          projectId,
-          target.branch,
-          message.split("\n", 1)[0] || "Обновление документации",
-          userId,
-        );
+      if (needsReview) await retryReview();
       return;
     }
     if (target.status !== "submitting") throw new Error("Change set is not ready for submission");
@@ -539,6 +575,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
       message,
     });
     await repository.savePreparedCommit(changeSetId, { ...prepared, operationId, createdAt });
+    await checkMcpAuthorization(payload, "pushdocs:submit");
     await repository.requireProjectAccess(userId, projectId, "branch:push");
     if (!(await repository.getProjectSyncTarget(projectId)))
       throw new Error("Project connection grant was revoked");
@@ -553,20 +590,26 @@ export function createWorkerService(options: WorkerServiceOptions) {
       commitUrl: commit.url,
       projectId,
     });
-    const reviewTitle = message.split("\n", 1)[0] || "Обновление документации";
-    const needsReview = createReview && target.branch !== target.default_branch;
     try {
       if (needsReview) {
         const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
-          (review) => review.sourceBranch === target.branch && review.state === "open",
+          (review) =>
+            review.sourceBranch === target.branch &&
+            (!optionalPayloadString(payload, "targetBranch") ||
+              review.targetBranch === reviewTarget) &&
+            review.state === "open",
         );
-        if (!existing)
+        if (!existing) {
+          await checkMcpAuthorization(payload, "pushdocs:submit");
+          await repository.requireProjectAccess(userId, projectId, "change-request:create");
           await provider.ensureChangeRequest({
             repositoryId: target.provider_repository_id,
             sourceBranch: target.branch,
-            targetBranch: target.default_branch,
+            targetBranch: reviewTarget,
             title: reviewTitle,
+            ...(description !== undefined ? { description } : {}),
           });
+        }
       }
       await synchronizeReviews(projectId, provider, target.provider_repository_id);
     } catch (error) {
@@ -578,8 +621,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
           stage: "review-after-push",
         }),
       );
-      if (needsReview)
-        await repository.enqueueReviewCreation(projectId, target.branch, reviewTitle, userId);
+      if (needsReview) await retryReview();
       else await repository.enqueueReviewsSync(projectId);
     }
   }
@@ -625,6 +667,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
             : repository.updateJobProgress(job.id, job.attempts, progress),
         );
       } else if (job.kind === "review.create") {
+        await checkMcpAuthorization(job.payload, "pushdocs:submit");
         const projectId = projectIdFromPayload(job.payload);
         await repository.requireProjectAccess(
           stringFromPayload(job.payload, "userId"),
@@ -634,18 +677,33 @@ export function createWorkerService(options: WorkerServiceOptions) {
         const target = await repository.getProjectSyncTarget(projectId);
         if (!target) throw new Error("Подключение проекта недоступно");
         const branch = stringFromPayload(job.payload, "branch");
-        if (branch === target.default_branch) throw new Error("Для PR / MR нужна отдельная ветка");
+        const reviewTarget =
+          optionalPayloadString(job.payload, "targetBranch") ?? target.default_branch;
+        if (branch === reviewTarget) throw new Error("Для PR / MR нужна отдельная ветка");
         const provider = await providerFor(target);
         const existing = (await provider.listChangeRequests(target.provider_repository_id)).find(
-          (review) => review.sourceBranch === branch && review.state === "open",
+          (review) =>
+            review.sourceBranch === branch &&
+            review.targetBranch === reviewTarget &&
+            review.state === "open",
         );
-        if (!existing)
+        if (!existing) {
+          await checkMcpAuthorization(job.payload, "pushdocs:submit");
+          await repository.requireProjectAccess(
+            stringFromPayload(job.payload, "userId"),
+            projectId,
+            "change-request:create",
+          );
           await provider.ensureChangeRequest({
             repositoryId: target.provider_repository_id,
             sourceBranch: branch,
-            targetBranch: target.default_branch,
+            targetBranch: reviewTarget,
             title: stringFromPayload(job.payload, "title"),
+            ...(optionalPayloadString(job.payload, "description") !== undefined
+              ? { description: optionalPayloadString(job.payload, "description") }
+              : {}),
           });
+        }
         await synchronizeReviews(projectId, provider, target.provider_repository_id);
       } else if (job.kind === "change-set.submit") {
         await submitChangeSet(job.payload);
