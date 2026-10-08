@@ -5,6 +5,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -63,6 +64,7 @@ export function createWorkspaceManager(options: {
   run: Runner;
   access: (projectId: string) => Promise<GitAccess>;
   fetch: (operation: () => Promise<string>) => Promise<string>;
+  isActive?: (key: string) => boolean;
 }) {
   const repositories = path.join(options.root, "repositories");
   const worktrees = path.join(options.root, "worktrees");
@@ -473,43 +475,68 @@ export function createWorkspaceManager(options: {
     await atomicWrite(userCache, JSON.stringify({ repository, workspace }), 0o600);
   }
 
+  async function diskBytes(directory: string): Promise<number> {
+    try {
+      const info = await lstat(directory);
+      let bytes = info.blocks * 512;
+      if (info.isDirectory())
+        for (const entry of await readdir(directory))
+          bytes += await diskBytes(path.join(directory, entry));
+      return bytes;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+  }
+
   async function prune(
     active: Set<string>,
     cutoff: number,
     protectedLegacyIds = new Set<string>(),
+    maxBytes = 8192 * 1024 * 1024,
   ) {
     await initialize();
-    for (const filename of await readdir(metadata)) {
-      if (!/^[a-f0-9]{64}\.json$/.test(filename) || active.has(filename.slice(0, -5))) continue;
-      const cache = JSON.parse(
-        await readFile(path.join(metadata, filename), "utf8"),
-      ) as WorkspaceCache & WorkspaceBranch;
-      if (cache.lastUsedAt > cutoff || (await stat(path.join(metadata, filename))).mtimeMs > cutoff)
-        continue;
-      const workspace = workspacePath(cache);
-      if (await exists(workspace))
-        await options.run(
-          [
-            "git",
-            "-C",
-            repositoryPath(cache.projectId),
-            "worktree",
-            "remove",
-            "--force",
-            workspace,
-          ],
-          { cwd: options.root, timeoutMs: 120_000 },
-        );
-      await rm(path.join(metadata, filename), { force: true });
+    const candidates: Array<{
+      key: string;
+      directory: string;
+      metadata?: string;
+      repository?: string;
+      lastUsedAt: number;
+      legacy?: boolean;
+    }> = [];
+    const registered = new Map<string, string>();
+    for (const entry of await readdir(repositories, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(entry.name)) continue;
+      const repository = path.join(repositories, entry.name);
+      const trees = await options.run(
+        ["git", "-C", repository, "worktree", "list", "--porcelain"],
+        {
+          cwd: options.root,
+          timeoutMs: 30_000,
+        },
+      );
+      for (const match of trees.matchAll(/^worktree (.+)$/gm))
+        if (match[1]) registered.set(match[1], repository);
     }
-    // Remove old session-based caches that were never migrated (including interrupted checkouts).
+    for (const entry of await readdir(worktrees, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
+      const directory = path.join(worktrees, entry.name);
+      const filename = path.join(metadata, `${entry.name}.json`);
+      let lastUsedAt = (await stat(directory)).mtimeMs;
+      if (await exists(filename)) {
+        const cache = JSON.parse(await readFile(filename, "utf8")) as WorkspaceCache;
+        lastUsedAt = Math.max(cache.lastUsedAt, (await stat(filename)).mtimeMs);
+      }
+      candidates.push({
+        key: entry.name,
+        directory,
+        metadata: filename,
+        repository: registered.get(await realpath(directory)),
+        lastUsedAt,
+      });
+    }
     for (const entry of await readdir(options.root, { withFileTypes: true })) {
-      if (
-        !entry.isDirectory() ||
-        !/^[a-f0-9-]{36}$/.test(entry.name) ||
-        protectedLegacyIds.has(entry.name)
-      )
-        continue;
+      if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
       const directory = path.join(options.root, entry.name);
       const filename = path.join(options.root, `${entry.name}.json`);
       const cacheTime = await stat(filename)
@@ -518,10 +545,37 @@ export function createWorkspaceManager(options: {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           return 0;
         });
-      if (Math.max(cacheTime, (await stat(directory)).mtimeMs) > cutoff) continue;
-      await rm(directory, { recursive: true, force: true });
-      await rm(filename, { force: true });
+      candidates.push({
+        key: entry.name,
+        directory,
+        metadata: filename,
+        lastUsedAt: Math.max(cacheTime, (await stat(directory)).mtimeMs),
+        legacy: true,
+      });
     }
+    let bytes = await diskBytes(options.root);
+    const removed: string[] = [];
+    for (const candidate of candidates.sort((a, b) => a.lastUsedAt - b.lastUsedAt)) {
+      if (
+        (candidate.lastUsedAt > cutoff && bytes <= maxBytes) ||
+        active.has(candidate.key) ||
+        options.isActive?.(candidate.key) ||
+        (candidate.legacy && protectedLegacyIds.has(candidate.key)) ||
+        [...locks.keys()].some((projectId) => repositoryPath(projectId) === candidate.repository)
+      )
+        continue;
+      const size = await diskBytes(candidate.directory);
+      if (candidate.repository)
+        await options.run(
+          ["git", "-C", candidate.repository, "worktree", "remove", "--force", candidate.directory],
+          { cwd: options.root, timeoutMs: 120_000 },
+        );
+      else await rm(candidate.directory, { recursive: true, force: true });
+      if (candidate.metadata) await rm(candidate.metadata, { force: true });
+      bytes -= size;
+      removed.push(candidate.key);
+    }
+    // Shared Git objects count towards the budget too. Keep repositories with retained worktrees.
     const retained = new Set([...locks.keys()].map(repositoryPath));
     for (const filename of await readdir(metadata)) {
       if (!/^[a-f0-9]{64}\.json$/.test(filename)) continue;
@@ -533,14 +587,22 @@ export function createWorkspaceManager(options: {
     for (const entry of await readdir(repositories, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(entry.name)) continue;
       const repository = path.join(repositories, entry.name);
-      if (retained.has(repository) || (await stat(repository)).mtimeMs > cutoff) continue;
+      if (retained.has(repository)) continue;
+      if ((await stat(repository)).mtimeMs > cutoff && bytes <= maxBytes) continue;
       const trees = await options.run(
         ["git", "-C", repository, "worktree", "list", "--porcelain"],
-        { cwd: options.root, timeoutMs: 30_000 },
+        {
+          cwd: options.root,
+          timeoutMs: 30_000,
+        },
       );
-      if ((trees.match(/^worktree /gm) ?? []).length === 1)
+      if ((trees.match(/^worktree /gm) ?? []).length === 1) {
+        const size = await diskBytes(repository);
         await rm(repository, { recursive: true, force: true });
+        bytes -= size;
+      }
     }
+    return { bytes: await diskBytes(options.root), removed };
   }
 
   return {

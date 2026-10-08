@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -165,4 +165,105 @@ it("ignores an interrupted legacy checkout with no HEAD and prepares the importe
   );
   expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
   expect(prepared.cache.installed).toBe(false);
+});
+
+it("evicts the least recently used inactive cache before its retention expires", async () => {
+  const { first, manager, root } = await fixture();
+  const ref = (branch: string) => ({ projectId: "one", branch, headSha: first });
+  const refs = [ref("old"), ref("new"), ref("active")] as const;
+  const trees = new Map<string, string>();
+  const workspace = (branch: string) => {
+    const directory = trees.get(branch);
+    if (!directory) throw new Error("Missing fixture workspace");
+    return directory;
+  };
+  for (const [index, ref] of refs.entries()) {
+    const tree = await manager.ensure(ref, new AbortController().signal);
+    await writeFile(path.join(tree.workspace, "payload"), Buffer.alloc(65536));
+    const used = Date.now() - (3 - index) * 1000;
+    await manager.saveCache(ref, { ...tree.cache, lastUsedAt: used });
+    await utimes(
+      path.join(root, "preview/metadata", `${workspaceKey(ref)}.json`),
+      used / 1000,
+      used / 1000,
+    );
+    trees.set(ref.branch, tree.workspace);
+  }
+  const baseline = await manager.prune(new Set(), 0, new Set(), Infinity);
+  const result = await manager.prune(
+    new Set([workspaceKey(refs[2])]),
+    0,
+    new Set(),
+    baseline.bytes - 65536,
+  );
+  expect(result.removed).toEqual([workspaceKey(refs[0])]);
+  expect(result.bytes).toBeLessThanOrEqual(baseline.bytes - 65536);
+  expect(await manager.readCache(refs[0])).toBeNull();
+  await expect(readFile(path.join(workspace("old"), "payload"))).rejects.toThrow();
+  expect(await readFile(path.join(workspace("new"), "payload"))).toHaveLength(65536);
+  expect(await readFile(path.join(workspace("active"), "payload"))).toHaveLength(65536);
+  const rebuilt = await manager.ensure(refs[0], new AbortController().signal);
+  expect(await readFile(path.join(rebuilt.workspace, "docs/page.md"), "utf8")).toBe("first");
+});
+
+it("preserves protected caches even when they exceed the entire budget", async () => {
+  const { first, manager } = await fixture();
+  const ref = { projectId: "one", branch: "active", headSha: first };
+  const tree = await manager.ensure(ref, new AbortController().signal);
+  const result = await manager.prune(new Set([workspaceKey(ref)]), Date.now() + 1000, new Set(), 1);
+  expect(result.removed).toEqual([]);
+  expect(result.bytes).toBeGreaterThan(1);
+  expect(await readFile(path.join(tree.workspace, "docs/page.md"), "utf8")).toBe("first");
+});
+
+it("removes expired caches while retaining caches used within three days", async () => {
+  const { first, manager, root } = await fixture();
+  const now = Date.now();
+  const ref = (days: number) => ({ projectId: "one", branch: `days-${days}`, headSha: first });
+  const refs = [ref(4), ref(2)] as const;
+  for (const [index, ref] of refs.entries()) {
+    const tree = await manager.ensure(ref, new AbortController().signal);
+    const used = now - (index === 0 ? 4 : 2) * 24 * 60 * 60_000;
+    await manager.saveCache(ref, { ...tree.cache, lastUsedAt: used });
+    await utimes(
+      path.join(root, "preview/metadata", `${workspaceKey(ref)}.json`),
+      used / 1000,
+      used / 1000,
+    );
+  }
+  const result = await manager.prune(new Set(), now - 3 * 24 * 60 * 60_000, new Set(), Infinity);
+  expect(result.removed).toEqual([workspaceKey(refs[0])]);
+  expect(await manager.readCache(refs[1])).not.toBeNull();
+});
+
+it("counts shared repositories and removes them after evicting their final worktree", async () => {
+  const { first, manager, root } = await fixture();
+  await manager.ensure(
+    { projectId: "one", branch: "old", headSha: first },
+    new AbortController().signal,
+  );
+  const result = await manager.prune(new Set(), 0, new Set(), 1);
+  expect(result.removed).toHaveLength(1);
+  const { readdir } = await import("node:fs/promises");
+  expect(await readdir(path.join(root, "preview/repositories"))).toEqual([]);
+});
+
+it("evicts interrupted and legacy checkouts without following symlinks outside the cache", async () => {
+  const { manager, root } = await fixture();
+  await manager.initialize();
+  const orphan = path.join(root, "preview/worktrees", "a".repeat(64));
+  const legacyId = "00000000-0000-4000-8000-000000000099";
+  const legacy = path.join(root, "preview", legacyId);
+  const outside = path.join(root, "outside");
+  await mkdir(orphan);
+  await mkdir(legacy);
+  await mkdir(outside);
+  await writeFile(path.join(outside, "data"), Buffer.alloc(1024 * 1024));
+  await symlink(outside, path.join(orphan, "linked"));
+  await writeFile(path.join(legacy, "payload"), Buffer.alloc(65536));
+  const baseline = await manager.prune(new Set(), 0, new Set([legacyId]), Infinity);
+  expect(baseline.bytes).toBeLessThan(1024 * 1024);
+  const result = await manager.prune(new Set(), 0, new Set(), 1);
+  expect(result.removed.sort()).toEqual([legacyId, "a".repeat(64)].sort());
+  expect(await readFile(path.join(outside, "data"))).toHaveLength(1024 * 1024);
 });

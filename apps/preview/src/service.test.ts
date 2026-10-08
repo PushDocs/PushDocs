@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
@@ -9,7 +9,7 @@ import {
   retryGitFetch,
   run,
 } from "./service";
-import { leafCheckoutDirectories } from "./workspaces";
+import { leafCheckoutDirectories, workspaceKey } from "./workspaces";
 
 const service = createPreviewService({ repository: {} as never });
 
@@ -123,4 +123,48 @@ it("does not mark a preview ready when its HTTP endpoint returns an error", asyn
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+it.each([
+  { days: 4, bytes: 100, cacheMaxMb: 8192 },
+  { days: 1, bytes: 2 * 1024 * 1024, cacheMaxMb: 1 },
+])(
+  "cleans caches after three days or above the budget without immediately prewarming them: %j",
+  async ({ days, bytes, cacheMaxMb }) => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "pushdocs-preview-budget-"));
+    const ref = { projectId: "project", branch: "stable" };
+    const directory = path.join(workspaceRoot, "worktrees", workspaceKey(ref));
+    const listChangedWorkingFiles = vi.fn();
+    try {
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "cache"), Buffer.alloc(bytes));
+      const used = (Date.now() - days * 24 * 60 * 60_000) / 1000;
+      await utimes(directory, used, used);
+      const preview = createPreviewService({
+        workspaceRoot,
+        cacheMaxMb,
+        repository: {
+          reconcilePreviewLeases: async () => undefined,
+          listPreviewSessions: async () => [],
+          listPreviewWorkspaces: async () => [
+            { project_id: ref.projectId, full_ref: ref.branch, head_commit_sha: "sha" },
+          ],
+          listChangedWorkingFiles,
+        } as never,
+      });
+      await preview.tick();
+      await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+      await preview.tick();
+      expect(listChangedWorkingFiles).not.toHaveBeenCalled();
+      await preview.stopAll();
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+it("rejects invalid preview disk budgets", () => {
+  expect(() => createPreviewService({ repository: {} as never, cacheMaxMb: 0 })).toThrow(
+    "Лимит дискового кеша",
+  );
 });

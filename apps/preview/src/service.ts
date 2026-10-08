@@ -69,6 +69,7 @@ export interface PreviewServiceOptions {
   gitAccess?: (projectId: string) => Promise<{ remote: string; env: NodeJS.ProcessEnv }>;
   maxActive?: number;
   memoryLimitMb?: number;
+  cacheMaxMb?: number;
 }
 
 const defaultPreview = {
@@ -301,6 +302,14 @@ export function createPreviewService(options: PreviewServiceOptions) {
     4096,
     "Лимит памяти предпросмотра",
   );
+  const cacheMaxBytes =
+    positiveInteger(
+      options.cacheMaxMb ?? process.env.PUSHDOCS_PREVIEW_CACHE_MAX_MB,
+      8192,
+      "Лимит дискового кеша предпросмотров",
+    ) *
+    1024 *
+    1024;
   const portFrom = Number(process.env.PUSHDOCS_PREVIEW_PORT_FROM ?? 43000);
   const heapLimitMb = nodeHeapLimitMb(memoryLimitMb, process.env.PUSHDOCS_PREVIEW_NODE_HEAP_MB);
   if (
@@ -339,12 +348,16 @@ export function createPreviewService(options: PreviewServiceOptions) {
   const retryAfter = new Map<string, number>();
   let shuttingDown = false;
   let lastPruneAt = 0;
+  const evictedWorkspaces = new Set<string>();
   const branchRef = (
     session: Pick<PreviewSession, "project_id" | "branch">,
     headSha: string,
   ): WorkspaceBranch => ({ projectId: session.project_id, branch: session.branch, headSha });
   const workspaces = createWorkspaceManager({
     root: workspaceRoot,
+    isActive: (key) =>
+      preparations.has(key) ||
+      [...running.values()].some((preview) => path.basename(preview.workspace) === key),
     run,
     access:
       options.gitAccess ??
@@ -924,10 +937,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
     const sessionIds = new Set(sessions.map((session) => session.id));
     for (const [id, controller] of starting) if (!sessionIds.has(id)) controller.abort();
     for (const [id, active] of running) if (!sessionIds.has(id)) await stopProcess(id, active);
-    if (Date.now() - lastPruneAt > 60 * 60_000) {
-      lastPruneAt = Date.now();
-      const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
-      await workspaces.prune(
+    if (Date.now() - lastPruneAt > 5 * 60_000) {
+      const cutoff = Date.now() - 3 * 24 * 60 * 60_000;
+      const pruned = await workspaces.prune(
         new Set([
           ...sessions
             .filter((session) => session.desired_state === "running")
@@ -939,11 +951,20 @@ export function createPreviewService(options: PreviewServiceOptions) {
           sessions
             .filter(
               (session) =>
-                session.desired_state === "running" || session.updated_at.getTime() > cutoff,
+                session.desired_state === "running" ||
+                running.has(session.id) ||
+                starting.has(session.id),
             )
             .map((session) => session.id),
         ),
+        cacheMaxBytes,
       );
+      lastPruneAt = Date.now();
+      for (const key of pruned.removed) evictedWorkspaces.add(key);
+      if (pruned.bytes > cacheMaxBytes)
+        logger.error(
+          "Кеш предпросмотров превышает лимит: активные рабочие каталоги защищены от очистки.",
+        );
     }
     for (const session of sessions) {
       try {
@@ -1031,7 +1052,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
           headSha: branch.head_commit_sha,
         };
         const key = workspaceKey(ref);
-        if ((retryAfter.get(key) ?? 0) > Date.now()) continue;
+        if (evictedWorkspaces.has(key) || (retryAfter.get(key) ?? 0) > Date.now()) continue;
         const cache = await workspaces.readCache(ref);
         const working = await repository.listChangedWorkingFiles(ref.projectId, ref.branch);
         if (cache?.headSha === ref.headSha && cache.revision === (working.changeSet?.revision ?? 0))
