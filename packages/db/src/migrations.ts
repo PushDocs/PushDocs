@@ -490,6 +490,16 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
                 mcp_consents, mcp_clients, mcp_rate_limits`.execute(database);
             },
           },
+          "019-explicit-preview-stop": {
+            async up(database) {
+              await sql`alter table preview_sessions add column user_stopped boolean not null default false`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table preview_sessions drop column user_stopped`.execute(database);
+            },
+          },
           "018-preview-inventory": {
             async up(database) {
               await sql`create table preview_workspaces (

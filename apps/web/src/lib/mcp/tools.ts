@@ -600,16 +600,23 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
         const host = process.env.PUSHDOCS_PREVIEW_PUBLIC_HOST;
         if (!host || !/^[a-zA-Z0-9.-]+$/.test(host))
           throw new McpError("PREVIEW_FAILED", "Preview public host is not configured.");
+        const contentCurrent = session ? await s.store.isPreviewCurrent(session) : false;
         return {
           ...c.snapshot,
-          status: session?.status ?? "stopped",
+          status:
+            session?.desired_state !== "running"
+              ? "stopped"
+              : session.status === "ready" && !contentCurrent
+                ? "starting"
+                : session.status,
           stage: session?.log.split("\n").at(-1)?.slice(0, 240),
-          previewUrl: session?.status === "ready" ? `http://${host}:${session.port}/` : null,
+          previewUrl:
+            session?.desired_state === "running" && session.status === "ready" && contentCurrent
+              ? `http://${host}:${session.port}/`
+              : null,
           appliedSha: session?.head_sha,
           appliedRevision: session?.revision,
-          contentCurrent:
-            session?.head_sha === c.snapshot.headCommitSha &&
-            session?.revision === c.snapshot.changeSetRevision,
+          contentCurrent,
           leaseId: session ? `${session.id}:${clientId}` : null,
           expiresAt: action === "start" ? new Date(Date.now() + 1_800_000).toISOString() : null,
           access: "public",

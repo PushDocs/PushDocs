@@ -147,7 +147,7 @@ function App() {
             <h1>Документы</h1>
           </div>
           <div className="wb-actions">
-            <LivePreviewButton projectId="project" branch="stable" />
+            <LivePreviewButton projectId="project" branch="stable" autoStart />
             <a className="wb-primary" href="#changes">
               К изменениям (0)
             </a>

@@ -212,3 +212,65 @@ it("processes administrator deletion and suppresses automatic recreation after r
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+it("keeps the default workspace past expiry and above the disk budget without preparing unrequested branches", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "pushdocs-preview-pinned-"));
+  const ref = { projectId: "project", branch: "main" };
+  const key = workspaceKey(ref);
+  const directory = path.join(workspaceRoot, "worktrees", key);
+  const metadata = path.join(workspaceRoot, "metadata");
+  const sha = "a".repeat(40);
+  const listChangedWorkingFiles = vi.fn(async () => ({
+    branch: { head_commit_sha: sha },
+    changeSet: null,
+    files: [],
+  }));
+  const gitAccess = vi.fn();
+  try {
+    await mkdir(directory, { recursive: true });
+    await mkdir(metadata, { recursive: true });
+    await writeFile(path.join(directory, "cache"), Buffer.alloc(2 * 1024 * 1024));
+    const used = (Date.now() - 2 * 24 * 60 * 60_000) / 1000;
+    const cacheFile = path.join(metadata, `${key}.json`);
+    await writeFile(
+      cacheFile,
+      JSON.stringify({
+        ...ref,
+        headSha: sha,
+        appliedPaths: [],
+        installed: true,
+        revision: 0,
+        lastUsedAt: used * 1000,
+      }),
+    );
+    await utimes(directory, used, used);
+    await utimes(cacheFile, used, used);
+    const preview = createPreviewService({
+      workspaceRoot,
+      cacheMaxMb: 1,
+      gitAccess,
+      logger: { error: vi.fn(), log: vi.fn() },
+      repository: {
+        reconcilePreviewLeases: async () => undefined,
+        listPreviewSessions: async () => [],
+        listPreviewWorkspaces: async () => [
+          { project_id: "project", full_ref: "main", default_branch: "main", head_commit_sha: sha },
+          {
+            project_id: "project",
+            full_ref: "unrequested",
+            default_branch: "main",
+            head_commit_sha: sha,
+          },
+        ],
+        listChangedWorkingFiles,
+      } as never,
+    });
+    await preview.tick();
+    expect((await stat(directory)).isDirectory()).toBe(true);
+    expect(listChangedWorkingFiles).toHaveBeenCalledWith("project", "main");
+    expect(listChangedWorkingFiles).not.toHaveBeenCalledWith("project", "unrequested");
+    expect(gitAccess).not.toHaveBeenCalled();
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

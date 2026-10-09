@@ -51,6 +51,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
   const backgroundBranches: Array<{
     project_id: string;
     full_ref: string;
+    default_branch: string;
     head_commit_sha: string;
   }> = [];
   let revision = 1;
@@ -190,7 +191,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     await advance();
     expect(installations()).toBe(2);
 
-    // Leaving and returning to Documents must only start the site, without reinstalling.
+    // An explicit stop and restart must keep dependencies without reinstalling.
     session.desired_state = "stopped";
     await preview.tick();
     session.desired_state = "running";
@@ -223,6 +224,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     backgroundBranches.push({
       project_id: session.project_id,
       full_ref: "docs/prepared",
+      default_branch: "docs/prepared",
       head_commit_sha: head,
     });
     const beforePreparation = starts();

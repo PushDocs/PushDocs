@@ -3085,6 +3085,7 @@ describe("preview inventory", () => {
     const fixture = await synchronizedProject();
     const now = new Date();
     await repository.recordPreviewWorkspace(fixture.projectId, "cached/branch", {
+      ready_at: now,
       created_at: now,
       disk_bytes: 1024,
       startup_ms: 2400,
@@ -3092,6 +3093,7 @@ describe("preview inventory", () => {
     });
     await repository.recordPreviewWorkspace(fixture.projectId, "background", {
       preparation_status: "queued",
+      disk_bytes: 0,
     });
     const session = await repository.acquirePreview({
       projectId: fixture.projectId,
@@ -3122,7 +3124,7 @@ describe("preview inventory", () => {
         }),
         expect.objectContaining({
           branch: "cached/branch",
-          status: "stopped",
+          status: "deployed",
           diskBytes: 1024,
           startupMs: 2400,
         }),
@@ -3135,24 +3137,26 @@ describe("preview inventory", () => {
     const fixture = await synchronizedProject();
     const input = {
       projectId: fixture.projectId,
-      branch: "main",
+      branch: "feature",
       userId: fixture.operatorId,
       clientId: randomUUID(),
       portFrom: 43000,
       portTo: 43001,
     };
     const session = await repository.acquirePreview(input);
-    await repository.requestPreviewDeletion(fixture.projectId, "main");
-    expect(await repository.getPreviewSession(fixture.projectId, "main")).toBeUndefined();
+    await repository.requestPreviewDeletion(fixture.projectId, "feature");
+    expect(await repository.getPreviewSession(fixture.projectId, "feature")).toBeUndefined();
     expect(await repository.heartbeatPreview(session.id, fixture.operatorId, input.clientId)).toBe(
       false,
     );
     await expect(repository.acquirePreview(input)).rejects.toThrow("Предпросмотр удаляется");
-    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([
-      expect.objectContaining({ branch: "main", status: "deleting" }),
-    ]);
-    await repository.finishPreviewDeletion(fixture.projectId, "main");
-    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([]);
+    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ branch: "feature", status: "deleting" })]),
+    );
+    await repository.finishPreviewDeletion(fixture.projectId, "feature");
+    expect(
+      (await repository.listProjectPreviews(fixture.projectId)).map((row) => row.branch),
+    ).toEqual(["main"]);
     expect(await repository.acquirePreview(input)).toMatchObject({ status: "queued" });
   });
 
@@ -3160,17 +3164,92 @@ describe("preview inventory", () => {
     const fixture = await synchronizedProject();
     const input = {
       projectId: fixture.projectId,
-      branch: "main",
+      branch: "feature",
       userId: fixture.operatorId,
       clientId: randomUUID(),
       portFrom: 43000,
       portTo: 43001,
     };
     const session = await repository.acquirePreview(input);
-    await repository.recordPreviewWorkspace(fixture.projectId, "main", { disk_bytes: 2048 });
+    await repository.recordPreviewWorkspace(fixture.projectId, "feature", { disk_bytes: 2048 });
     expect(await repository.listProjectPreviews(randomUUID())).toEqual([]);
     await repository.releasePreview(session.id, fixture.operatorId, input.clientId);
-    await repository.finishPreviewDeletion(fixture.projectId, "main");
-    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([]);
+    await repository.finishPreviewDeletion(fixture.projectId, "feature");
+    expect(
+      (await repository.listProjectPreviews(fixture.projectId)).map((row) => row.branch),
+    ).toEqual(["main"]);
+  });
+});
+
+it("pins the default preview first and rejects deletion of its workspace", async () => {
+  const fixture = await synchronizedProject();
+  await repository.recordPreviewWorkspace(fixture.projectId, "aaa", {
+    ready_at: new Date(),
+    disk_bytes: 1,
+  });
+  await repository.recordPreviewWorkspace(fixture.projectId, "main", {
+    ready_at: new Date(),
+    expires_at: new Date(),
+  });
+  const previews = await repository.listProjectPreviews(fixture.projectId);
+  expect(previews[0]).toMatchObject({
+    branch: "main",
+    isDefault: true,
+    status: "deployed",
+    expiresAt: null,
+  });
+  await expect(repository.requestPreviewDeletion(fixture.projectId, "main")).rejects.toThrow(
+    "основной ветки нельзя удалить",
+  );
+  expect(
+    (await repository.listPreviewInventory(fixture.projectId)).find((row) => row.branch === "main")
+      ?.delete_requested,
+  ).toBe(false);
+});
+
+it("stops all preview leases without deleting files and detects changes to the applied revision", async () => {
+  const fixture = await synchronizedProject();
+  const clientId = randomUUID();
+  const session = await repository.acquirePreview({
+    projectId: fixture.projectId,
+    branch: "main",
+    userId: fixture.operatorId,
+    clientId,
+    portFrom: 43000,
+    portTo: 43001,
+  });
+  await repository.recordPreviewWorkspace(fixture.projectId, "main", {
+    ready_at: new Date(),
+    disk_bytes: 1_200_000_000,
+  });
+  await repository.updatePreviewSession(session.id, {
+    head_sha: "head-1",
+    revision: 0,
+    status: "ready",
+  });
+  const current = await repository.getPreviewSession(fixture.projectId, "main");
+  if (!current) throw new Error("Missing preview");
+  expect(await repository.isPreviewCurrent(current)).toBe(true);
+  await repository.saveDraft({
+    projectId: fixture.projectId,
+    branch: "main",
+    path: "docs/intro.md",
+    content: "# New saved version",
+    baseCommitSha: "head-1",
+    expectedRevision: 0,
+    userId: fixture.operatorId,
+  });
+  expect(await repository.isPreviewCurrent(current)).toBe(false);
+  expect((await repository.listProjectPreviews(fixture.projectId))[0]?.status).toBe("updating");
+  await repository.stopPreview(fixture.projectId, "main");
+  expect(await repository.heartbeatPreview(session.id, fixture.operatorId, clientId)).toBe(false);
+  expect(await repository.getPreviewSession(fixture.projectId, "main")).toMatchObject({
+    desired_state: "stopped",
+    user_stopped: true,
+  });
+  expect((await repository.listPreviewInventory(fixture.projectId))[0]).toMatchObject({
+    deleted: false,
+    delete_requested: false,
+    disk_bytes: 1_200_000_000,
   });
 });

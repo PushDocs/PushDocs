@@ -13,13 +13,22 @@ const commandSchema = z.object({
   sessionId: z.string().uuid().optional(),
 });
 
-function previewResponse(session: {
+async function previewResponse(session: {
   id: string;
   last_error: string | null;
   log: string;
   port: number;
   status: string;
+  desired_state: string;
+  user_stopped: boolean;
+  project_id: string;
+  branch: string;
+  revision: number;
+  head_sha: string | null;
 }) {
+  const fresh = session.status !== "ready" || (await repository().isPreviewCurrent(session));
+  const status =
+    session.desired_state === "stopped" ? "stopped" : fresh ? session.status : "starting";
   const message = session.log
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -28,13 +37,14 @@ function previewResponse(session: {
     ?.slice(0, 240);
   return {
     sessionId: session.id,
-    status: session.status,
+    status,
+    manuallyStopped: session.user_stopped,
     error: session.last_error,
     log: session.log,
-    message,
+    message: fresh ? message : "Обновляем файлы предпросмотра…",
     waitingForCapacity:
       session.status === "queued" && session.log.startsWith("Ожидаем свободное место"),
-    url: `http://${previewSettings().host}:${session.port}/`,
+    url: status === "ready" ? `http://${previewSettings().host}:${session.port}/` : undefined,
   };
 }
 
@@ -50,15 +60,15 @@ export async function GET(request: Request, context: Context) {
     if (workspace?.deleted || workspace?.delete_requested)
       return Response.json(
         {
-          status: "failed",
-          error: "Предпросмотр удалён администратором или очищен. Запустите его снова.",
+          status: workspace.delete_requested ? "deleting" : "stopped",
+          manuallyStopped: true,
         },
         {
           headers: { "Cache-Control": "private, no-store" },
         },
       );
     const session = await store.getPreviewSession(projectId, branch);
-    return Response.json(session ? previewResponse(session) : { status: "stopped" }, {
+    return Response.json(session ? await previewResponse(session) : { status: "stopped" }, {
       headers: { "Cache-Control": "private, no-store" },
     });
   } catch (error) {
@@ -85,7 +95,7 @@ export async function POST(request: Request, context: Context) {
         projectId,
         userId: user.id,
       });
-      return Response.json(previewResponse(session));
+      return Response.json(await previewResponse(session));
     }
     if (!command.sessionId) throw new Error("Сессия предпросмотра не указана");
     const current = await store.getPreviewSession(projectId, command.branch);
@@ -98,7 +108,7 @@ export async function POST(request: Request, context: Context) {
       await store.releasePreview(command.sessionId, user.id, command.clientId);
     }
     const session = await store.getPreviewSession(projectId, command.branch);
-    return Response.json(session ? previewResponse(session) : { status: "stopped" });
+    return Response.json(session ? await previewResponse(session) : { status: "stopped" });
   } catch (error) {
     return apiError(error);
   }

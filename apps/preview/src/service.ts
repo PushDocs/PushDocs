@@ -945,13 +945,34 @@ export function createPreviewService(options: PreviewServiceOptions) {
   async function tick(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
     if (shuttingDown) return;
+    const branches = repository.listPreviewWorkspaces
+      ? await repository.listPreviewWorkspaces()
+      : [];
+    const defaults = branches.filter((branch) => branch.full_ref === branch.default_branch);
+    const protectedWorkspaces = new Set(
+      defaults.map((branch) =>
+        workspaceKey({ projectId: branch.project_id, branch: branch.full_ref }),
+      ),
+    );
     const inventory = (await repository.listPreviewInventory?.()) ?? [];
     for (const item of inventory) {
+      const key = workspaceKey({ projectId: item.project_id, branch: item.branch });
+      if (protectedWorkspaces.has(key)) {
+        evictedWorkspaces.delete(key);
+        if (item.deleted || item.delete_requested) {
+          await repository.recordPreviewWorkspace?.(item.project_id, item.branch, {
+            deleted: false,
+            delete_requested: false,
+          });
+          item.deleted = false;
+          item.delete_requested = false;
+        }
+        continue;
+      }
       if (item.deleted || item.delete_requested)
         evictedWorkspaces.add(workspaceKey({ projectId: item.project_id, branch: item.branch }));
       if (!item.delete_requested) continue;
       const ref = { projectId: item.project_id, branch: item.branch, headSha: "" };
-      const key = workspaceKey(ref);
       preparationControllers.get(key)?.abort();
       await preparations.get(key);
       const oldSessions = await repository.listPreviewSessions();
@@ -967,6 +988,26 @@ export function createPreviewService(options: PreviewServiceOptions) {
     }
     await repository.reconcilePreviewLeases();
     const sessions = await repository.listPreviewSessions();
+    // Earlier versions queued every imported branch. Retain existing files, but retire
+    // unrequested preparations so a passive document visit cannot recreate them.
+    for (const item of inventory) {
+      const ref = { projectId: item.project_id, branch: item.branch };
+      if (
+        protectedWorkspaces.has(workspaceKey(ref)) ||
+        item.deleted ||
+        item.delete_requested ||
+        sessions.some(
+          (session) => session.project_id === item.project_id && session.branch === item.branch,
+        ) ||
+        (item.preparation_status !== "queued" && item.preparation_status !== "starting")
+      )
+        continue;
+      if (await workspaces.readCache(ref))
+        await repository.recordPreviewWorkspace?.(item.project_id, item.branch, {
+          preparation_status: "stopped",
+        });
+      else await repository.finishPreviewDeletion?.(item.project_id, item.branch);
+    }
     const sessionIds = new Set(sessions.map((session) => session.id));
     for (const [id, controller] of starting) if (!sessionIds.has(id)) controller.abort();
     for (const [id, active] of running) if (!sessionIds.has(id)) await stopProcess(id, active);
@@ -974,6 +1015,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
       const cutoff = Date.now() - 24 * 60 * 60_000;
       const pruned = await workspaces.prune(
         new Set([
+          ...protectedWorkspaces,
           ...sessions
             .filter((session) => session.desired_state === "running")
             .map((session) => workspaceKey(branchRef(session, ""))),
@@ -1021,7 +1063,12 @@ export function createPreviewService(options: PreviewServiceOptions) {
           item.preparation_status === "starting"
         )
           continue;
-        if (!cached.some((row) => row.projectId === item.project_id && row.branch === item.branch))
+        if (
+          !protectedWorkspaces.has(
+            workspaceKey({ projectId: item.project_id, branch: item.branch }),
+          ) &&
+          !cached.some((row) => row.projectId === item.project_id && row.branch === item.branch)
+        )
           await repository.finishPreviewDeletion?.(item.project_id, item.branch);
       }
       lastInventoryAt = Date.now();
@@ -1069,6 +1116,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
           continue;
         }
         if (revision !== active.revision) {
+          await repository.updatePreviewSession(session.id, {
+            status: "starting",
+            log: "Обновляем файлы предпросмотра…",
+          });
           const updated = await applyOverlay(session, active);
           active.revision = updated.revision;
           if (
@@ -1085,7 +1136,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
               continue;
             }
           }
-          await repository.updatePreviewSession(session.id, { revision: updated.revision });
+          await repository.updatePreviewSession(session.id, {
+            revision: updated.revision,
+            status: "ready",
+          });
         }
       } catch (error) {
         const active = running.get(session.id);
@@ -1099,15 +1153,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
         logger.error(JSON.stringify({ error: message, previewSessionId: session.id }));
       }
     }
-    // Prepare imported branches independently of browser leases, one at a time.
-    if (
-      running.size === 0 &&
-      starting.size === 0 &&
-      preparations.size === 0 &&
-      repository.listPreviewWorkspaces
-    ) {
-      const branches = await repository.listPreviewWorkspaces();
-      for (const branch of branches) {
+    // Keep the default branch deployed. Other branches are prepared only by an explicit start.
+    if (starting.size === 0 && preparations.size === 0) {
+      for (const branch of defaults) {
         const ref = {
           projectId: branch.project_id,
           branch: branch.full_ref.replace(/^refs\/heads\//, ""),
@@ -1121,7 +1169,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             preparation_status: "queued",
           });
       }
-      for (const branch of branches) {
+      for (const branch of defaults) {
         const ref = {
           projectId: branch.project_id,
           branch: branch.full_ref.replace(/^refs\/heads\//, ""),

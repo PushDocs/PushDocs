@@ -1120,6 +1120,7 @@ export class PushDocsRepository extends SecurityRepository {
           .updateTable("preview_sessions")
           .set({
             desired_state: "running",
+            user_stopped: false,
             last_error: null,
             status: "queued",
             updated_at: now,
@@ -1148,6 +1149,43 @@ export class PushDocsRepository extends SecurityRepository {
         .execute();
       return session;
     });
+  }
+
+  async stopPreview(projectId: string, branch: string) {
+    await this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const session = await transaction
+        .selectFrom("preview_sessions")
+        .select("id")
+        .where("project_id", "=", projectId)
+        .where("branch", "=", normalizeBranchRef(branch))
+        .executeTakeFirst();
+      if (!session) return;
+      await transaction.deleteFrom("preview_leases").where("session_id", "=", session.id).execute();
+      await transaction
+        .updateTable("preview_sessions")
+        .set({
+          desired_state: "stopped",
+          user_stopped: true,
+          last_error: null,
+          updated_at: new Date(),
+        })
+        .where("id", "=", session.id)
+        .execute();
+    });
+  }
+
+  async isPreviewCurrent(session: {
+    project_id: string;
+    branch: string;
+    head_sha: string | null;
+    revision: number;
+  }) {
+    const state = await this.getBranchState(session.project_id, session.branch);
+    return (
+      session.head_sha === state.branch.head_commit_sha &&
+      session.revision === (state.changeSet?.revision ?? 0)
+    );
   }
 
   async heartbeatPreview(sessionId: string, userId: string, clientId: string): Promise<boolean> {
@@ -1270,6 +1308,7 @@ export class PushDocsRepository extends SecurityRepository {
       disk_bytes?: number | null;
       expires_at?: Date | null;
       deleted?: boolean;
+      delete_requested?: boolean;
     },
   ) {
     await this.database
@@ -1282,6 +1321,14 @@ export class PushDocsRepository extends SecurityRepository {
   async requestPreviewDeletion(projectId: string, branch: string) {
     await this.transaction(async (transaction) => {
       await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const project = await transaction
+        .selectFrom("projects")
+        .select("default_branch")
+        .where("id", "=", projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (normalizeBranchRef(branch) === project.default_branch)
+        throw new Error("Предпросмотр основной ветки нельзя удалить");
       await transaction
         .insertInto("preview_workspaces")
         .values({
@@ -1310,22 +1357,44 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async finishPreviewDeletion(projectId: string, branch: string) {
-    await this.database
-      .deleteFrom("preview_sessions")
-      .where("project_id", "=", projectId)
-      .where("branch", "=", normalizeBranchRef(branch))
-      .where("desired_state", "=", "stopped")
-      .execute();
-    await this.database
-      .updateTable("preview_workspaces")
-      .set({ deleted: true, delete_requested: false, disk_bytes: 0, expires_at: null })
-      .where("project_id", "=", projectId)
-      .where("branch", "=", normalizeBranchRef(branch))
-      .execute();
+    await this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const ref = normalizeBranchRef(branch);
+      const project = await transaction
+        .selectFrom("projects")
+        .select("default_branch")
+        .where("id", "=", projectId)
+        .executeTakeFirst();
+      if (project?.default_branch === ref) return;
+      const active = await transaction
+        .selectFrom("preview_sessions")
+        .select("id")
+        .where("project_id", "=", projectId)
+        .where("branch", "=", ref)
+        .where("desired_state", "=", "running")
+        .executeTakeFirst();
+      if (active) return;
+      await transaction
+        .deleteFrom("preview_sessions")
+        .where("project_id", "=", projectId)
+        .where("branch", "=", ref)
+        .execute();
+      await transaction
+        .updateTable("preview_workspaces")
+        .set({ deleted: true, delete_requested: false, disk_bytes: 0, expires_at: null })
+        .where("project_id", "=", projectId)
+        .where("branch", "=", ref)
+        .execute();
+    });
   }
 
   async listProjectPreviews(projectId: string) {
-    const [inventory, sessions, drafts, attachments] = await Promise.all([
+    const [project, inventory, sessions, drafts, attachments] = await Promise.all([
+      this.database
+        .selectFrom("projects")
+        .select("default_branch")
+        .where("id", "=", projectId)
+        .executeTakeFirst(),
       this.listPreviewInventory(projectId),
       this.database
         .selectFrom("preview_sessions")
@@ -1351,23 +1420,44 @@ export class PushDocsRepository extends SecurityRepository {
         .execute(),
     ]);
     const branches = new Set([
-      ...inventory.filter((row) => !row.deleted || row.delete_requested).map((row) => row.branch),
+      ...(project ? [project.default_branch] : []),
+      ...inventory
+        .filter(
+          (row) =>
+            (!row.deleted || row.delete_requested) &&
+            (row.ready_at !== null ||
+              row.disk_bytes !== null ||
+              row.preparation_status === "failed" ||
+              row.delete_requested),
+        )
+        .map((row) => row.branch),
       ...sessions.map((row) => row.branch),
     ]);
-    return [...branches]
-      .map((branch) => {
+    const previews = await Promise.all(
+      [...branches].map(async (branch) => {
         const workspace = inventory.find((row) => row.branch === branch);
         const session = sessions.find((row) => row.branch === branch);
+        let status: string = workspace?.preparation_status ?? "queued";
+        if (status === "stopped")
+          status = workspace?.ready_at || workspace?.disk_bytes !== null ? "deployed" : "queued";
+        if (session?.desired_state === "running") {
+          status = session.status;
+          if (status === "ready" && !(await this.isPreviewCurrent(session))) status = "updating";
+        } else if (session?.desired_state === "stopped" && session.status !== "stopped")
+          status = "stopping";
+        if (workspace?.delete_requested) status = "deleting";
         return {
           branch,
-          status: workspace?.delete_requested
-            ? "deleting"
-            : (session?.status ?? workspace?.preparation_status ?? "stopped"),
+          isDefault: branch === project?.default_branch,
+          status,
           createdAt: workspace?.created_at ?? session?.created_at ?? null,
           readyAt: workspace?.ready_at ?? null,
           startupMs: workspace?.startup_ms ?? null,
           diskBytes: workspace?.disk_bytes ?? null,
-          expiresAt: session?.desired_state === "running" ? null : (workspace?.expires_at ?? null),
+          expiresAt:
+            branch === project?.default_branch || session?.desired_state === "running"
+              ? null
+              : (workspace?.expires_at ?? null),
           port: session?.port ?? null,
           error: session?.last_error ?? null,
           changedFiles: new Set(
@@ -1376,8 +1466,11 @@ export class PushDocsRepository extends SecurityRepository {
               .map((row) => row.path),
           ).size,
         };
-      })
-      .sort((a, b) => a.branch.localeCompare(b.branch));
+      }),
+    );
+    return previews.sort(
+      (a, b) => Number(b.isDefault) - Number(a.isDefault) || a.branch.localeCompare(b.branch),
+    );
   }
 
   async listPreviewSessions() {
@@ -1392,9 +1485,19 @@ export class PushDocsRepository extends SecurityRepository {
         "branch_contexts.project_id",
         "branch_contexts.full_ref",
         "branch_contexts.head_commit_sha",
+        "projects.default_branch",
       ])
       .where("projects.status", "!=", "archived")
-      .where("branch_contexts.updated_at", ">", new Date(Date.now() - 7 * 24 * 60 * 60_000))
+      .where((expression) =>
+        expression.or([
+          expression(
+            "branch_contexts.updated_at",
+            ">",
+            new Date(Date.now() - 7 * 24 * 60 * 60_000),
+          ),
+          expression("branch_contexts.full_ref", "=", expression.ref("projects.default_branch")),
+        ]),
+      )
       .where(
         "branch_contexts.id",
         "in",

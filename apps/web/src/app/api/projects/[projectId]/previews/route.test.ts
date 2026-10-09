@@ -1,6 +1,11 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ access: vi.fn(), list: vi.fn(), remove: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  access: vi.fn(),
+  list: vi.fn(),
+  remove: vi.fn(),
+  stop: vi.fn(),
+}));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
@@ -8,10 +13,11 @@ vi.mock("@/lib/server", () => ({
     requireProjectAccess: mocks.access,
     listProjectPreviews: mocks.list,
     requestPreviewDeletion: mocks.remove,
+    stopPreview: mocks.stop,
   }),
 }));
 
-import { DELETE, GET } from "./route";
+import { DELETE, GET, POST } from "./route";
 
 const context = { params: Promise.resolve({ projectId: "project" }) };
 beforeEach(() => {
@@ -51,5 +57,20 @@ it("requires administrator permission before queuing deletion", async () => {
 });
 it("rejects cross-origin deletion before touching the repository", async () => {
   expect((await request("https://evil.test")).status).toBe(400);
+  expect(mocks.remove).not.toHaveBeenCalled();
+});
+
+it("lets project users stop a running preview without requesting workspace deletion", async () => {
+  const response = await POST(
+    new Request("https://cms.test/api", {
+      method: "POST",
+      headers: { Origin: "https://cms.test" },
+      body: JSON.stringify({ branch: "main", action: "stop" }),
+    }),
+    context,
+  );
+  expect(response.status).toBe(202);
+  expect(mocks.access).toHaveBeenLastCalledWith("user", "project", "project:read");
+  expect(mocks.stop).toHaveBeenCalledWith("project", "main");
   expect(mocks.remove).not.toHaveBeenCalled();
 });

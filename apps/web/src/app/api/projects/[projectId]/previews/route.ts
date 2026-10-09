@@ -44,3 +44,20 @@ export async function DELETE(request: Request, context: Context) {
     return apiError(error);
   }
 }
+
+export async function POST(request: Request, context: Context) {
+  try {
+    assertSameOrigin(request);
+    const user = await requireUser();
+    const { projectId } = await context.params;
+    const { branch } = z
+      .object({ branch: z.string().min(1).max(255), action: z.literal("stop") })
+      .parse(await readJsonBody(request));
+    const store = repository();
+    await store.requireProjectAccess(user.id, projectId, "project:read");
+    await store.stopPreview(projectId, branch);
+    return Response.json({ status: "stopping" }, { status: 202 });
+  } catch (error) {
+    return apiError(error);
+  }
+}

@@ -194,6 +194,7 @@ export interface UploadLeasesTable {
 }
 
 export interface PreviewSessionsTable {
+  user_stopped: Generated<boolean>;
   branch: string;
   created_at: GeneratedTimestamp;
   desired_state: Generated<"running" | "stopped">;

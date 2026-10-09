@@ -15,12 +15,13 @@ afterEach(() => {
 const previews = [
   {
     branch: "feature/docs",
+    isDefault: false,
     status: "queued",
     createdAt: "2026-10-09T10:00:00Z",
     readyAt: null,
     startupMs: 1500,
     expiresAt: null,
-    diskBytes: 1048576,
+    diskBytes: 1_250_000_000,
     changedFiles: 3,
     url: "http://preview.test:43000/",
     error: null,
@@ -33,8 +34,9 @@ it("lets readers open queued previews and switch to their branch with complete m
   );
   render(<PreviewList projectId="project" canDelete={false} />);
   await screen.findByText("В очереди");
+  fireEvent.click(screen.getByRole("button", { name: "feature/docs" }));
   expect(screen.getByText("3 файлов")).toBeTruthy();
-  expect(screen.getByText("1 МиБ")).toBeTruthy();
+  expect(screen.getByText("1,3 ГБ")).toBeTruthy();
   expect(screen.getByText("1,5 с")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Открыть предпросмотр" }).getAttribute("href")).toContain(
     "branch=feature%2Fdocs",
@@ -49,12 +51,48 @@ it("shows deletion progress after the administrator deletes a preview", async ()
     Response.json(options?.method === "DELETE" ? { status: "deleting" } : { previews }),
   );
   vi.stubGlobal("fetch", fetcher);
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   render(<PreviewList projectId="project" canDelete />);
-  fireEvent.click(await screen.findByRole("button", { name: "Удалить" }));
-  await waitFor(() => expect(screen.getByText("Удаляется")).toBeTruthy());
+  fireEvent.click(await screen.findByRole("button", { name: "feature/docs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+  expect(fetcher).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ method: "DELETE" }),
+  );
+  expect(screen.getByRole("dialog", { name: "Удалить предпросмотр?" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Удалить предпросмотр" }));
+  await waitFor(() => expect(screen.getByText("В процессе удаления")).toBeTruthy());
   expect(fetcher).toHaveBeenCalledWith(
     "/api/projects/project/previews",
     expect.objectContaining({ method: "DELETE", body: JSON.stringify({ branch: "feature/docs" }) }),
+  );
+});
+
+it("keeps the default preview expanded and protected and offers stop for running previews", async () => {
+  const fetcher = vi.fn(async (_url: string, options?: RequestInit) =>
+    Response.json(
+      options?.method === "POST"
+        ? { status: "stopping" }
+        : {
+            previews: [
+              { ...previews[0], branch: "main", isDefault: true, status: "ready", diskBytes: null },
+            ],
+          },
+    ),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  render(<PreviewList projectId="project" canDelete />);
+  await screen.findByText("Запущен");
+  expect(screen.queryByRole("button", { name: "main" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Удалить" })).toBeNull();
+  expect(screen.getByText("Не удаляется")).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Размер на диске загружается" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
+  await waitFor(() => expect(screen.getByText("Останавливается")).toBeTruthy());
+  expect(fetcher).toHaveBeenCalledWith(
+    "/api/projects/project/previews",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ branch: "main", action: "stop" }),
+    }),
   );
 });
