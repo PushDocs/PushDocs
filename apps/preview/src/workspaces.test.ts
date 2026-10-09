@@ -216,14 +216,14 @@ it("preserves protected caches even when they exceed the entire budget", async (
   expect(await readFile(path.join(tree.workspace, "docs/page.md"), "utf8")).toBe("first");
 });
 
-it("removes expired caches while retaining caches used within three days", async () => {
+it("removes expired caches while retaining caches used within one day", async () => {
   const { first, manager, root } = await fixture();
   const now = Date.now();
   const ref = (days: number) => ({ projectId: "one", branch: `days-${days}`, headSha: first });
-  const refs = [ref(4), ref(2)] as const;
+  const refs = [ref(2), ref(0.5)] as const;
   for (const [index, ref] of refs.entries()) {
     const tree = await manager.ensure(ref, new AbortController().signal);
-    const used = now - (index === 0 ? 4 : 2) * 24 * 60 * 60_000;
+    const used = now - (index === 0 ? 2 : 0.5) * 24 * 60 * 60_000;
     await manager.saveCache(ref, { ...tree.cache, lastUsedAt: used });
     await utimes(
       path.join(root, "preview/metadata", `${workspaceKey(ref)}.json`),
@@ -231,7 +231,7 @@ it("removes expired caches while retaining caches used within three days", async
       used / 1000,
     );
   }
-  const result = await manager.prune(new Set(), now - 3 * 24 * 60 * 60_000, new Set(), Infinity);
+  const result = await manager.prune(new Set(), now - 24 * 60 * 60_000, new Set(), Infinity);
   expect(result.removed).toEqual([workspaceKey(refs[0])]);
   expect(await manager.readCache(refs[1])).not.toBeNull();
 });

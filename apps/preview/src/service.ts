@@ -938,7 +938,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     for (const [id, controller] of starting) if (!sessionIds.has(id)) controller.abort();
     for (const [id, active] of running) if (!sessionIds.has(id)) await stopProcess(id, active);
     if (Date.now() - lastPruneAt > 5 * 60_000) {
-      const cutoff = Date.now() - 3 * 24 * 60 * 60_000;
+      const cutoff = Date.now() - 24 * 60 * 60_000;
       const pruned = await workspaces.prune(
         new Set([
           ...sessions

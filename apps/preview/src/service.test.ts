@@ -126,10 +126,10 @@ it("does not mark a preview ready when its HTTP endpoint returns an error", asyn
 });
 
 it.each([
-  { days: 4, bytes: 100, cacheMaxMb: 8192 },
-  { days: 1, bytes: 2 * 1024 * 1024, cacheMaxMb: 1 },
+  { days: 2, bytes: 100, cacheMaxMb: 8192 },
+  { days: 0.5, bytes: 2 * 1024 * 1024, cacheMaxMb: 1 },
 ])(
-  "cleans caches after three days or above the budget without immediately prewarming them: %j",
+  "cleans caches after one day or above the budget without immediately prewarming them: %j",
   async ({ days, bytes, cacheMaxMb }) => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), "pushdocs-preview-budget-"));
     const ref = { projectId: "project", branch: "stable" };
