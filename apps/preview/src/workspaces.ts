@@ -15,6 +15,7 @@ import path from "node:path";
 
 export type WorkspaceBranch = { projectId: string; branch: string; headSha: string };
 export type WorkspaceCache = {
+  createdAt?: number;
   appliedPaths: string[];
   headSha: string;
   installHash?: string;
@@ -133,7 +134,12 @@ export function createWorkspaceManager(options: {
   ) {
     await atomicWrite(
       cachePath(branch),
-      JSON.stringify({ ...cache, projectId: branch.projectId, branch: branch.branch }),
+      JSON.stringify({
+        ...cache,
+        createdAt: cache.createdAt ?? (await readCache(branch))?.createdAt ?? Date.now(),
+        projectId: branch.projectId,
+        branch: branch.branch,
+      }),
       0o600,
     );
   }
@@ -489,6 +495,49 @@ export function createWorkspaceManager(options: {
     }
   }
 
+  async function inventory() {
+    await initialize();
+    const rows = [];
+    for (const filename of await readdir(metadata)) {
+      if (!/^[a-f0-9]{64}\.json$/.test(filename)) continue;
+      const cache = JSON.parse(
+        await readFile(path.join(metadata, filename), "utf8"),
+      ) as WorkspaceCache & WorkspaceBranch;
+      if (typeof cache.projectId !== "string" || typeof cache.branch !== "string") continue;
+      const info = await stat(path.join(metadata, filename));
+      rows.push({
+        projectId: cache.projectId,
+        branch: cache.branch,
+        createdAt: new Date(cache.createdAt ?? info.birthtimeMs),
+        diskBytes: await diskBytes(workspacePath(cache)),
+        expiresAt: new Date(Math.max(cache.lastUsedAt, info.mtimeMs) + 24 * 60 * 60_000),
+      });
+    }
+    return rows;
+  }
+
+  async function remove(branch: Pick<WorkspaceBranch, "projectId" | "branch">) {
+    await initialize();
+    await locked(branch.projectId, async () => {
+      const workspace = workspacePath(branch);
+      if (await exists(path.join(workspace, ".git"))) {
+        await options.run(
+          [
+            "git",
+            "-C",
+            repositoryPath(branch.projectId),
+            "worktree",
+            "remove",
+            "--force",
+            workspace,
+          ],
+          { cwd: options.root, timeoutMs: 120_000 },
+        );
+      } else await rm(workspace, { recursive: true, force: true });
+      await rm(cachePath(branch), { force: true });
+    });
+  }
+
   async function prune(
     active: Set<string>,
     cutoff: number,
@@ -609,6 +658,8 @@ export function createWorkspaceManager(options: {
     ensure,
     grantReadAccess,
     initialize,
+    inventory,
+    remove,
     prune,
     readCache,
     restore,

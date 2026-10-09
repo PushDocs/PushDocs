@@ -2218,3 +2218,75 @@
   font-size: 11px;
   font-weight: 700;
 }
+
+.preview-list {
+  display: grid;
+  gap: 16px;
+}
+
+.preview-card {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.preview-card-heading,
+.preview-card-heading h2,
+.preview-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.preview-card-heading {
+  justify-content: space-between;
+}
+
+.preview-card-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.preview-state {
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: var(--surface-strong);
+  font-size: 12px;
+}
+
+.preview-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.preview-metadata dt {
+  color: var(--ink-muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.preview-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.preview-error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.preview-site {
+  display: block;
+  margin-top: 20px;
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}

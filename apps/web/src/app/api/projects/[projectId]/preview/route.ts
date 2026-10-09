@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { previewSettings } from "@/lib/preview-settings";
 import { readJsonBody } from "@/lib/request-body";
 import { repository, requireUser } from "@/lib/server";
 import { apiError, assertSameOrigin } from "@/lib/workbench";
@@ -11,23 +12,6 @@ const commandSchema = z.object({
   clientId: z.string().uuid(),
   sessionId: z.string().uuid().optional(),
 });
-
-function previewSettings() {
-  const portFrom = Number(process.env.PUSHDOCS_PREVIEW_PORT_FROM ?? 43000);
-  const portTo = Number(process.env.PUSHDOCS_PREVIEW_PORT_TO ?? 43019);
-  if (
-    !Number.isInteger(portFrom) ||
-    !Number.isInteger(portTo) ||
-    portFrom < 1024 ||
-    portTo > 65535 ||
-    portFrom > portTo ||
-    portTo - portFrom > 99
-  )
-    throw new Error("Диапазон портов предпросмотра настроен неверно");
-  const host = process.env.PUSHDOCS_PREVIEW_PUBLIC_HOST ?? "213.148.1.118";
-  if (!/^[a-zA-Z0-9.-]+$/.test(host)) throw new Error("Адрес предпросмотра настроен неверно");
-  return { host, portFrom, portTo };
-}
 
 function previewResponse(session: {
   id: string;
@@ -61,6 +45,18 @@ export async function GET(request: Request, context: Context) {
     const branch = new URL(request.url).searchParams.get("branch") ?? "";
     const store = repository();
     await store.requireProjectAccess(user.id, projectId, "project:read");
+    const inventory = await store.listPreviewInventory(projectId);
+    const workspace = inventory.find((item) => item.branch === branch);
+    if (workspace?.deleted || workspace?.delete_requested)
+      return Response.json(
+        {
+          status: "failed",
+          error: "Предпросмотр удалён администратором или очищен. Запустите его снова.",
+        },
+        {
+          headers: { "Cache-Control": "private, no-store" },
+        },
+      );
     const session = await store.getPreviewSession(projectId, branch);
     return Response.json(session ? previewResponse(session) : { status: "stopped" }, {
       headers: { "Cache-Control": "private, no-store" },

@@ -321,6 +321,18 @@ export interface Database {
   };
   preview_leases: PreviewLeasesTable;
   preview_sessions: PreviewSessionsTable;
+  preview_workspaces: {
+    preparation_status: Generated<"queued" | "starting" | "stopped" | "failed">;
+    project_id: string;
+    branch: string;
+    created_at: GeneratedTimestamp;
+    ready_at: Timestamp | null;
+    startup_ms: number | null;
+    disk_bytes: number | null;
+    expires_at: Timestamp | null;
+    delete_requested: Generated<boolean>;
+    deleted: Generated<boolean>;
+  };
   attachments: AttachmentsTable;
   branch_contexts: BranchContextsTable;
   change_requests: ChangeRequestsTable;

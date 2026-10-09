@@ -267,3 +267,25 @@ it("evicts interrupted and legacy checkouts without following symlinks outside t
   expect(result.removed.sort()).toEqual([legacyId, "a".repeat(64)].sort());
   expect(await readFile(path.join(outside, "data"))).toHaveLength(1024 * 1024);
 });
+
+it("reports cache disk usage and expiry and removes only the requested branch worktree", async () => {
+  const { first, manager } = await fixture();
+  const ref = { projectId: "project", branch: "stable", headSha: first };
+  const firstWorkspace = await manager.ensure(ref, new AbortController().signal);
+  const other = await manager.ensure({ ...ref, branch: "other" }, new AbortController().signal);
+  const cache = await manager.readCache(ref);
+  if (!cache) throw new Error("Missing cache");
+  const originalCreatedAt = cache.createdAt;
+  await manager.saveCache(ref, { ...cache, lastUsedAt: Date.now() });
+  expect((await manager.readCache(ref))?.createdAt).toBe(originalCreatedAt);
+  const inventory = await manager.inventory();
+  expect(inventory).toHaveLength(2);
+  const row = inventory.find((item) => item.branch === "stable");
+  expect(row?.diskBytes).toBeGreaterThan(0);
+  expect(row?.expiresAt.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
+  await manager.remove(ref);
+  expect(await manager.readCache(ref)).toBeNull();
+  await expect(readFile(path.join(firstWorkspace.workspace, "docs/page.md"))).rejects.toThrow();
+  expect(await readFile(path.join(other.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect((await manager.inventory()).map((item) => item.branch)).toEqual(["other"]);
+});

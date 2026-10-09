@@ -490,6 +490,26 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
                 mcp_consents, mcp_clients, mcp_rate_limits`.execute(database);
             },
           },
+          "018-preview-inventory": {
+            async up(database) {
+              await sql`create table preview_workspaces (
+                preparation_status text not null default 'stopped' check (preparation_status in ('queued', 'starting', 'stopped', 'failed')),
+                project_id uuid not null references projects(id) on delete cascade,
+                branch text not null,
+                created_at timestamptz not null default now(),
+                ready_at timestamptz,
+                startup_ms integer,
+                disk_bytes double precision,
+                expires_at timestamptz,
+                delete_requested boolean not null default false,
+                deleted boolean not null default false,
+                primary key(project_id, branch)
+              )`.execute(database);
+            },
+            async down(database) {
+              await database.schema.dropTable("preview_workspaces").execute();
+            },
+          },
           "016-live-preview-sessions": {
             async up(database) {
               await sql`create table preview_sessions (

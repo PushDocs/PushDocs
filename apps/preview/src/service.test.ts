@@ -168,3 +168,47 @@ it("rejects invalid preview disk budgets", () => {
     "Лимит дискового кеша",
   );
 });
+
+it("processes administrator deletion and suppresses automatic recreation after runner restart", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "pushdocs-preview-delete-"));
+  const ref = { projectId: "project", branch: "main" };
+  const key = workspaceKey(ref);
+  const workspace = path.join(workspaceRoot, "worktrees", key);
+  const gitAccess = vi.fn();
+  let inventory = [
+    { project_id: "project", branch: "main", delete_requested: true, deleted: false },
+  ];
+  const finishPreviewDeletion = vi.fn(async () => {
+    inventory = [{ project_id: "project", branch: "main", delete_requested: false, deleted: true }];
+  });
+  try {
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "draft.md"), "temporary overlay");
+    const repository = {
+      listPreviewInventory: async () => inventory,
+      finishPreviewDeletion,
+      reconcilePreviewLeases: async () => undefined,
+      listPreviewSessions: async () => [],
+      listPreviewWorkspaces: async () => [
+        { project_id: "project", full_ref: "main", head_commit_sha: "a".repeat(40) },
+      ],
+      recordPreviewWorkspace: vi.fn(),
+    };
+    await createPreviewService({
+      workspaceRoot,
+      repository: repository as never,
+      gitAccess,
+    }).tick();
+    await expect(stat(workspace)).rejects.toThrow();
+    expect(finishPreviewDeletion).toHaveBeenCalledWith("project", "main");
+    await createPreviewService({
+      workspaceRoot,
+      repository: repository as never,
+      gitAccess,
+    }).tick();
+    expect(gitAccess).not.toHaveBeenCalled();
+    expect(repository.recordPreviewWorkspace).not.toHaveBeenCalled();
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

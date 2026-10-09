@@ -3079,3 +3079,98 @@ describe("per-user unread comments", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
+
+describe("preview inventory", () => {
+  it("lists queued sessions and dormant cached branches with file counts and metrics", async () => {
+    const fixture = await synchronizedProject();
+    const now = new Date();
+    await repository.recordPreviewWorkspace(fixture.projectId, "cached/branch", {
+      created_at: now,
+      disk_bytes: 1024,
+      startup_ms: 2400,
+      expires_at: now,
+    });
+    await repository.recordPreviewWorkspace(fixture.projectId, "background", {
+      preparation_status: "queued",
+    });
+    const session = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    });
+    await repository.saveDraft({
+      projectId: fixture.projectId,
+      branch: "main",
+      path: "docs/intro.md",
+      content: "# Updated",
+      baseCommitSha: "head-1",
+      userId: fixture.operatorId,
+      expectedRevision: 0,
+    });
+    const previews = await repository.listProjectPreviews(fixture.projectId);
+    expect(previews).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          branch: "main",
+          status: "queued",
+          changedFiles: 1,
+          port: session.port,
+          expiresAt: null,
+        }),
+        expect.objectContaining({
+          branch: "cached/branch",
+          status: "stopped",
+          diskBytes: 1024,
+          startupMs: 2400,
+        }),
+        expect.objectContaining({ branch: "background", status: "queued", port: null }),
+      ]),
+    );
+  });
+
+  it("revokes leases, blocks restart during deletion and lets an explicit request recreate a deleted preview", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    };
+    const session = await repository.acquirePreview(input);
+    await repository.requestPreviewDeletion(fixture.projectId, "main");
+    expect(await repository.getPreviewSession(fixture.projectId, "main")).toBeUndefined();
+    expect(await repository.heartbeatPreview(session.id, fixture.operatorId, input.clientId)).toBe(
+      false,
+    );
+    await expect(repository.acquirePreview(input)).rejects.toThrow("Предпросмотр удаляется");
+    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([
+      expect.objectContaining({ branch: "main", status: "deleting" }),
+    ]);
+    await repository.finishPreviewDeletion(fixture.projectId, "main");
+    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([]);
+    expect(await repository.acquirePreview(input)).toMatchObject({ status: "queued" });
+  });
+
+  it("isolates project inventory and removes stopped sessions after automatic cache cleanup", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    };
+    const session = await repository.acquirePreview(input);
+    await repository.recordPreviewWorkspace(fixture.projectId, "main", { disk_bytes: 2048 });
+    expect(await repository.listProjectPreviews(randomUUID())).toEqual([]);
+    await repository.releasePreview(session.id, fixture.operatorId, input.clientId);
+    await repository.finishPreviewDeletion(fixture.projectId, "main");
+    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual([]);
+  });
+});

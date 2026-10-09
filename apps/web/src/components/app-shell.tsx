@@ -9,6 +9,7 @@ import {
   GitBranch,
   GitPullRequest,
   LogOut,
+  Monitor,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -27,6 +28,7 @@ import { RealtimeRefresh } from "./realtime-refresh";
 const projectNavigation = [
   { icon: BookOpenText, label: "Документы", segment: "documents" },
   { icon: SlidersHorizontal, label: "Изменения", segment: "changes" },
+  { icon: Monitor, label: "Предпросмотр", segment: "previews" },
   { icon: GitPullRequest, label: "PR / MR", segment: "reviews" },
   { icon: Settings, label: "Настройки", segment: "settings" },
 ];

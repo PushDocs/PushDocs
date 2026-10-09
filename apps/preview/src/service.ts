@@ -29,7 +29,13 @@ type PreviewRepository = Pick<
   | "listPreviewWorkspaces"
   | "reconcilePreviewLeases"
   | "updatePreviewSession"
->;
+> &
+  Partial<
+    Pick<
+      PushDocsRepository,
+      "listPreviewInventory" | "recordPreviewWorkspace" | "finishPreviewDeletion"
+    >
+  >;
 
 type PreviewSession = Awaited<ReturnType<PreviewRepository["listPreviewSessions"]>>[number];
 
@@ -348,6 +354,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
   const retryAfter = new Map<string, number>();
   let shuttingDown = false;
   let lastPruneAt = 0;
+  let lastInventoryAt = 0;
   const evictedWorkspaces = new Set<string>();
   const branchRef = (
     session: Pick<PreviewSession, "project_id" | "branch">,
@@ -828,6 +835,12 @@ export function createPreviewService(options: PreviewServiceOptions) {
       await waitUntilReady(child, session.port, controller.signal, () => startupFailure);
       controller.signal.throwIfAborted();
       if (active.stopping) throw new Error(startupFailure ?? "Запуск предпросмотра отменён");
+      await repository.recordPreviewWorkspace?.(session.project_id, session.branch, {
+        ready_at: new Date(),
+        startup_ms: Date.now() - startedAt,
+        deleted: false,
+      });
+      lastInventoryAt = 0;
       await repository.updatePreviewSession(session.id, {
         head_sha: state.headSha,
         revision: state.revision,
@@ -932,6 +945,26 @@ export function createPreviewService(options: PreviewServiceOptions) {
   async function tick(): Promise<void> {
     await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
     if (shuttingDown) return;
+    const inventory = (await repository.listPreviewInventory?.()) ?? [];
+    for (const item of inventory) {
+      if (item.deleted || item.delete_requested)
+        evictedWorkspaces.add(workspaceKey({ projectId: item.project_id, branch: item.branch }));
+      if (!item.delete_requested) continue;
+      const ref = { projectId: item.project_id, branch: item.branch, headSha: "" };
+      const key = workspaceKey(ref);
+      preparationControllers.get(key)?.abort();
+      await preparations.get(key);
+      const oldSessions = await repository.listPreviewSessions();
+      // Deleted database sessions are stopped by the orphan sweep below. Also wait for their
+      // startup tasks before removing the worktree, so no process can recreate it mid-delete.
+      const liveIds = new Set(oldSessions.map((session) => session.id));
+      for (const [id, controller] of starting) if (!liveIds.has(id)) controller.abort();
+      await Promise.all([...startTasks].filter(([id]) => !liveIds.has(id)).map(([, task]) => task));
+      for (const [id, active] of running) if (!liveIds.has(id)) await stopProcess(id, active);
+      await workspaces.remove(ref);
+      await repository.finishPreviewDeletion?.(item.project_id, item.branch);
+      lastInventoryAt = 0;
+    }
     await repository.reconcilePreviewLeases();
     const sessions = await repository.listPreviewSessions();
     const sessionIds = new Set(sessions.map((session) => session.id));
@@ -966,6 +999,33 @@ export function createPreviewService(options: PreviewServiceOptions) {
           "Кеш предпросмотров превышает лимит: активные рабочие каталоги защищены от очистки.",
         );
     }
+    if (repository.recordPreviewWorkspace && Date.now() - lastInventoryAt > 60_000) {
+      const cached = await workspaces.inventory();
+      for (const item of cached) {
+        const old = inventory.find(
+          (row) => row.project_id === item.projectId && row.branch === item.branch,
+        );
+        if (old?.delete_requested || old?.deleted) continue;
+        await repository.recordPreviewWorkspace(item.projectId, item.branch, {
+          created_at: item.createdAt,
+          disk_bytes: item.diskBytes,
+          expires_at: item.expiresAt,
+        });
+      }
+      for (const item of inventory) {
+        if (
+          item.deleted ||
+          item.delete_requested ||
+          item.disk_bytes === null ||
+          item.preparation_status === "queued" ||
+          item.preparation_status === "starting"
+        )
+          continue;
+        if (!cached.some((row) => row.projectId === item.project_id && row.branch === item.branch))
+          await repository.finishPreviewDeletion?.(item.project_id, item.branch);
+      }
+      lastInventoryAt = Date.now();
+    }
     for (const session of sessions) {
       try {
         const active = running.get(session.id);
@@ -981,6 +1041,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             if (session.status === "queued") {
               if (running.size + starting.size < maxActive) {
                 const key = workspaceKey(branchRef(session, ""));
+                evictedWorkspaces.delete(key);
                 for (const [other, controller] of preparationControllers)
                   if (other !== key) controller.abort();
                 const task = start(session)
@@ -1045,7 +1106,22 @@ export function createPreviewService(options: PreviewServiceOptions) {
       preparations.size === 0 &&
       repository.listPreviewWorkspaces
     ) {
-      for (const branch of await repository.listPreviewWorkspaces()) {
+      const branches = await repository.listPreviewWorkspaces();
+      for (const branch of branches) {
+        const ref = {
+          projectId: branch.project_id,
+          branch: branch.full_ref.replace(/^refs\/heads\//, ""),
+        };
+        if (evictedWorkspaces.has(workspaceKey(ref))) continue;
+        const known = inventory.find(
+          (row) => row.project_id === ref.projectId && row.branch === ref.branch,
+        );
+        if (!known)
+          await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
+            preparation_status: "queued",
+          });
+      }
+      for (const branch of branches) {
         const ref = {
           projectId: branch.project_id,
           branch: branch.full_ref.replace(/^refs\/heads\//, ""),
@@ -1055,9 +1131,20 @@ export function createPreviewService(options: PreviewServiceOptions) {
         if (evictedWorkspaces.has(key) || (retryAfter.get(key) ?? 0) > Date.now()) continue;
         const cache = await workspaces.readCache(ref);
         const working = await repository.listChangedWorkingFiles(ref.projectId, ref.branch);
-        if (cache?.headSha === ref.headSha && cache.revision === (working.changeSet?.revision ?? 0))
+        if (
+          cache?.headSha === ref.headSha &&
+          cache.revision === (working.changeSet?.revision ?? 0)
+        ) {
+          await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
+            preparation_status: "stopped",
+          });
           continue;
+        }
         const controller = new AbortController();
+        const preparationStartedAt = Date.now();
+        await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
+          preparation_status: "starting",
+        });
         preparationControllers.set(key, controller);
         const session = sessions.find(
           (item) => item.project_id === ref.projectId && item.branch === ref.branch,
@@ -1070,8 +1157,17 @@ export function createPreviewService(options: PreviewServiceOptions) {
               { project_id: ref.projectId, branch: ref.branch } as PreviewSession,
               { workspace: prepared.workspace, appliedPaths: new Set(prepared.cache.appliedPaths) },
             );
+            await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
+              preparation_status: "stopped",
+              ready_at: new Date(),
+              startup_ms: Date.now() - preparationStartedAt,
+            });
+            lastInventoryAt = 0;
           } catch (error) {
             if (!controller.signal.aborted) {
+              await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
+                preparation_status: "failed",
+              });
               retryAfter.set(key, Date.now() + 60_000);
               logger.error(JSON.stringify({ error: String(error), previewWorkspace: key }));
             }

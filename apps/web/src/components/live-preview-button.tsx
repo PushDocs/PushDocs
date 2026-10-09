@@ -13,10 +13,21 @@ type PreviewState = {
   waitingForCapacity?: boolean;
 };
 
-export function LivePreviewButton({ projectId, branch }: { projectId: string; branch: string }) {
+export function LivePreviewButton({
+  projectId,
+  branch,
+  onReady,
+}: {
+  projectId: string;
+  branch: string;
+  onReady?: (url: string | null) => void;
+}) {
   const [state, setState] = useState<PreviewState>({ status: "queued" });
   const [attempt, setAttempt] = useState(0);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  useEffect(() => {
+    onReady?.(state.status === "ready" ? (state.url ?? null) : null);
+  }, [state.status, state.url, onReady]);
 
   useEffect(() => {
     const endpoint = `/api/projects/${projectId}/preview?attempt=${attempt}`;

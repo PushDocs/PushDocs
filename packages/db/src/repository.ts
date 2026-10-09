@@ -1046,6 +1046,20 @@ export class PushDocsRepository extends SecurityRepository {
     return this.transaction(async (transaction) => {
       await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
       const now = new Date();
+      const workspace = await transaction
+        .selectFrom("preview_workspaces")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("branch", "=", branch)
+        .executeTakeFirst();
+      if (workspace?.delete_requested)
+        throw new Error("Предпросмотр удаляется. Дождитесь завершения.");
+      if (workspace?.deleted)
+        await transaction
+          .deleteFrom("preview_workspaces")
+          .where("project_id", "=", input.projectId)
+          .where("branch", "=", branch)
+          .execute();
       await transaction.deleteFrom("preview_leases").where("expires_at", "<", now).execute();
       const leased = new Set(
         (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
@@ -1237,6 +1251,133 @@ export class PushDocsRepository extends SecurityRepository {
           )
           .execute();
     });
+  }
+
+  async listPreviewInventory(projectId?: string) {
+    let query = this.database.selectFrom("preview_workspaces").selectAll();
+    if (projectId) query = query.where("project_id", "=", projectId);
+    return query.execute();
+  }
+
+  async recordPreviewWorkspace(
+    projectId: string,
+    branch: string,
+    values: {
+      preparation_status?: "queued" | "starting" | "stopped" | "failed";
+      created_at?: Date;
+      ready_at?: Date | null;
+      startup_ms?: number | null;
+      disk_bytes?: number | null;
+      expires_at?: Date | null;
+      deleted?: boolean;
+    },
+  ) {
+    await this.database
+      .insertInto("preview_workspaces")
+      .values({ project_id: projectId, branch: normalizeBranchRef(branch), ...values })
+      .onConflict((conflict) => conflict.columns(["project_id", "branch"]).doUpdateSet(values))
+      .execute();
+  }
+
+  async requestPreviewDeletion(projectId: string, branch: string) {
+    await this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      await transaction
+        .insertInto("preview_workspaces")
+        .values({
+          project_id: projectId,
+          branch: normalizeBranchRef(branch),
+          delete_requested: true,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["project_id", "branch"]).doUpdateSet({ delete_requested: true }),
+        )
+        .execute();
+      const sessions = await transaction
+        .selectFrom("preview_sessions")
+        .select("id")
+        .where("project_id", "=", projectId)
+        .where("branch", "=", normalizeBranchRef(branch))
+        .execute();
+      for (const session of sessions) {
+        await transaction
+          .deleteFrom("preview_leases")
+          .where("session_id", "=", session.id)
+          .execute();
+        await transaction.deleteFrom("preview_sessions").where("id", "=", session.id).execute();
+      }
+    });
+  }
+
+  async finishPreviewDeletion(projectId: string, branch: string) {
+    await this.database
+      .deleteFrom("preview_sessions")
+      .where("project_id", "=", projectId)
+      .where("branch", "=", normalizeBranchRef(branch))
+      .where("desired_state", "=", "stopped")
+      .execute();
+    await this.database
+      .updateTable("preview_workspaces")
+      .set({ deleted: true, delete_requested: false, disk_bytes: 0, expires_at: null })
+      .where("project_id", "=", projectId)
+      .where("branch", "=", normalizeBranchRef(branch))
+      .execute();
+  }
+
+  async listProjectPreviews(projectId: string) {
+    const [inventory, sessions, drafts, attachments] = await Promise.all([
+      this.listPreviewInventory(projectId),
+      this.database
+        .selectFrom("preview_sessions")
+        .selectAll()
+        .where("project_id", "=", projectId)
+        .execute(),
+      this.database
+        .selectFrom("draft_files")
+        .innerJoin("change_sets", "change_sets.id", "draft_files.change_set_id")
+        .innerJoin("branch_contexts", "branch_contexts.id", "change_sets.branch_context_id")
+        .select(["branch_contexts.full_ref as branch", "draft_files.path"])
+        .where("change_sets.project_id", "=", projectId)
+        .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
+        .execute(),
+      this.database
+        .selectFrom("attachments")
+        .innerJoin("change_sets", "change_sets.id", "attachments.change_set_id")
+        .innerJoin("branch_contexts", "branch_contexts.id", "change_sets.branch_context_id")
+        .select(["branch_contexts.full_ref as branch", "attachments.repository_path as path"])
+        .where("attachments.project_id", "=", projectId)
+        .where("attachments.status", "=", "ready")
+        .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
+        .execute(),
+    ]);
+    const branches = new Set([
+      ...inventory.filter((row) => !row.deleted || row.delete_requested).map((row) => row.branch),
+      ...sessions.map((row) => row.branch),
+    ]);
+    return [...branches]
+      .map((branch) => {
+        const workspace = inventory.find((row) => row.branch === branch);
+        const session = sessions.find((row) => row.branch === branch);
+        return {
+          branch,
+          status: workspace?.delete_requested
+            ? "deleting"
+            : (session?.status ?? workspace?.preparation_status ?? "stopped"),
+          createdAt: workspace?.created_at ?? session?.created_at ?? null,
+          readyAt: workspace?.ready_at ?? null,
+          startupMs: workspace?.startup_ms ?? null,
+          diskBytes: workspace?.disk_bytes ?? null,
+          expiresAt: session?.desired_state === "running" ? null : (workspace?.expires_at ?? null),
+          port: session?.port ?? null,
+          error: session?.last_error ?? null,
+          changedFiles: new Set(
+            [...drafts, ...attachments]
+              .filter((row) => row.branch === branch)
+              .map((row) => row.path),
+          ).size,
+        };
+      })
+      .sort((a, b) => a.branch.localeCompare(b.branch));
   }
 
   async listPreviewSessions() {

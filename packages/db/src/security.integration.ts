@@ -64,6 +64,7 @@ try {
   // Later migrations must be rolled back too, otherwise Kysely rejects the broken history.
   await sql`
     drop table mcp_audit, mcp_calls, mcp_tokens, mcp_codes, mcp_grants, mcp_consents, mcp_clients, mcp_rate_limits;
+    drop table preview_workspaces;
     drop table preview_leases;
     drop table preview_sessions;
     drop table comment_reads;
