@@ -29,6 +29,7 @@ type PreviewRepository = Pick<
   | "listPreviewWorkspaces"
   | "reconcilePreviewLeases"
   | "updatePreviewSession"
+  | "completePreviewStartup"
 > &
   Partial<
     Pick<
@@ -835,18 +836,16 @@ export function createPreviewService(options: PreviewServiceOptions) {
       await waitUntilReady(child, session.port, controller.signal, () => startupFailure);
       controller.signal.throwIfAborted();
       if (active.stopping) throw new Error(startupFailure ?? "Запуск предпросмотра отменён");
-      await repository.recordPreviewWorkspace?.(session.project_id, session.branch, {
-        preparation_status: "stopped",
-        ready_at: new Date(),
-        startup_ms: Date.now() - startedAt,
-        deleted: false,
-      });
-      lastInventoryAt = 0;
-      await repository.updatePreviewSession(session.id, {
-        head_sha: state.headSha,
+      const completed = await repository.completePreviewStartup(session.id, {
+        headSha: state.headSha,
         revision: state.revision,
-        status: "ready",
+        startupMs: Date.now() - startedAt,
       });
+      if (!completed) {
+        await stopProcess(session.id, active);
+        return;
+      }
+      lastInventoryAt = 0;
       logger.log(
         JSON.stringify({
           previewSessionId: session.id,
@@ -1079,6 +1078,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
         const active = running.get(session.id);
         if (session.desired_state === "stopped") {
           starting.get(session.id)?.abort();
+          await startTasks.get(session.id);
           if (active) await stopProcess(session.id, active);
           if (session.status !== "stopped")
             await repository.updatePreviewSession(session.id, { status: "stopped" });

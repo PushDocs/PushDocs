@@ -120,6 +120,17 @@ it("updates only changed files, preserves dependencies across commits and reinst
         ],
         updatePreviewSession: async (id: string, values: object) =>
           Object.assign(sessions.find((item) => item.id === id) ?? {}, values),
+        completePreviewStartup: async (
+          id: string,
+          values: { headSha: string; revision: number },
+        ) => {
+          Object.assign(sessions.find((item) => item.id === id) ?? {}, {
+            status: "ready",
+            head_sha: values.headSha,
+            revision: values.revision,
+          });
+          return true;
+        },
       } as never,
       decryptSecret: (value) => value,
     });

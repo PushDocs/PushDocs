@@ -6,7 +6,12 @@ import type {
   ProjectSummary,
   ProviderKind,
 } from "@pushdocs/contracts";
-import { assertCan, normalizeBranchRef, type ProjectAction } from "@pushdocs/domain";
+import {
+  assertCan,
+  normalizeBranchRef,
+  type ProjectAction,
+  previewLifecycle,
+} from "@pushdocs/domain";
 import { sql } from "kysely";
 import * as Y from "yjs";
 import {
@@ -1437,16 +1442,12 @@ export class PushDocsRepository extends SecurityRepository {
       [...branches].map(async (branch) => {
         const workspace = inventory.find((row) => row.branch === branch);
         const session = sessions.find((row) => row.branch === branch);
-        let status: string = workspace?.preparation_status ?? "queued";
-        if (status === "stopped")
-          status = workspace?.ready_at || workspace?.disk_bytes !== null ? "deployed" : "queued";
-        if (session?.desired_state === "running") {
-          status = session.status;
-          if (status === "ready" && !(await this.isPreviewCurrent(session))) status = "updating";
-        } else if (session?.desired_state === "stopped" && session.status !== "stopped")
-          status = "stopping";
-        else if (session?.status === "stopped" && workspace?.ready_at) status = "deployed";
-        if (workspace?.delete_requested) status = "deleting";
+        const { status } = previewLifecycle({
+          session,
+          workspace,
+          contentCurrent:
+            session?.status === "ready" ? await this.isPreviewCurrent(session) : false,
+        });
         return {
           branch,
           isDefault: branch === project?.default_branch,
@@ -1522,11 +1523,57 @@ export class PushDocsRepository extends SecurityRepository {
       status?: "queued" | "starting" | "ready" | "failed" | "stopped";
     },
   ): Promise<void> {
-    await this.database
+    let query = this.database
       .updateTable("preview_sessions")
       .set({ ...values, updated_at: new Date() })
-      .where("id", "=", sessionId)
-      .execute();
+      .where("id", "=", sessionId);
+    if (values.status && values.status !== "stopped")
+      query = query.where("desired_state", "=", "running");
+    await query.execute();
+  }
+
+  async completePreviewStartup(
+    sessionId: string,
+    values: { headSha: string; revision: number; startupMs: number },
+  ): Promise<boolean> {
+    return this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const session = await transaction
+        .selectFrom("preview_sessions")
+        .selectAll()
+        .where("id", "=", sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (session?.desired_state !== "running" || session.status !== "starting") return false;
+      const workspace = await transaction
+        .selectFrom("preview_workspaces")
+        .selectAll()
+        .where("project_id", "=", session.project_id)
+        .where("branch", "=", session.branch)
+        .executeTakeFirst();
+      if (workspace?.delete_requested || workspace?.deleted) return false;
+      const now = new Date();
+      await new PushDocsRepository(transaction).recordPreviewWorkspace(
+        session.project_id,
+        session.branch,
+        {
+          preparation_status: "stopped",
+          ready_at: now,
+          startup_ms: values.startupMs,
+        },
+      );
+      await transaction
+        .updateTable("preview_sessions")
+        .set({
+          head_sha: values.headSha,
+          revision: values.revision,
+          status: "ready",
+          updated_at: now,
+        })
+        .where("id", "=", sessionId)
+        .execute();
+      return true;
+    });
   }
 
   async listBranches(projectId: string) {

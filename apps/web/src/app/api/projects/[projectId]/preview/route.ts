@@ -1,3 +1,4 @@
+import { type PreviewRuntimeStatus, previewLifecycle } from "@pushdocs/domain";
 import { z } from "zod";
 import { previewSettings } from "@/lib/preview-settings";
 import { readJsonBody } from "@/lib/request-body";
@@ -18,8 +19,8 @@ async function previewResponse(session: {
   last_error: string | null;
   log: string;
   port: number;
-  status: string;
-  desired_state: string;
+  status: PreviewRuntimeStatus;
+  desired_state: "running" | "stopped";
   user_stopped: boolean;
   project_id: string;
   branch: string;
@@ -27,8 +28,7 @@ async function previewResponse(session: {
   head_sha: string | null;
 }) {
   const fresh = session.status !== "ready" || (await repository().isPreviewCurrent(session));
-  const status =
-    session.desired_state === "stopped" ? "stopped" : fresh ? session.status : "starting";
+  const { runtimeStatus: status, canOpen } = previewLifecycle({ session, contentCurrent: fresh });
   const message = session.log
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -44,7 +44,7 @@ async function previewResponse(session: {
     message: fresh ? message : "Обновляем файлы предпросмотра…",
     waitingForCapacity:
       session.status === "queued" && session.log.startsWith("Ожидаем свободное место"),
-    url: status === "ready" ? `http://${previewSettings().host}:${session.port}/` : undefined,
+    url: canOpen ? `http://${previewSettings().host}:${session.port}/` : undefined,
   };
 }
 

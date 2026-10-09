@@ -9,6 +9,7 @@ import {
   McpRepository,
   PushDocsRepository,
 } from "@pushdocs/db";
+import { previewLifecycle } from "@pushdocs/domain";
 import { z } from "zod";
 import { externalPreviewUrl } from "../external-preview";
 import { previewSettings } from "../preview-settings";
@@ -625,6 +626,10 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
         const inventory = (await s.store.listProjectPreviews(i.projectId)).find(
           (item) => item.branch === i.branch,
         );
+        const workspace = (await s.store.listPreviewInventory(i.projectId)).find(
+          (item) => item.branch === i.branch,
+        );
+        const lifecycle = previewLifecycle({ session, workspace, contentCurrent });
         return {
           ...c.snapshot,
           inventory: inventory
@@ -634,17 +639,9 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
                 url: inventory.port === null ? null : `http://${host}:${inventory.port}/`,
               }
             : null,
-          status:
-            session?.desired_state !== "running"
-              ? "stopped"
-              : session.status === "ready" && !contentCurrent
-                ? "starting"
-                : session.status,
+          status: lifecycle.runtimeStatus,
           stage: session?.log.split("\n").at(-1)?.slice(0, 240),
-          previewUrl:
-            session?.desired_state === "running" && session.status === "ready" && contentCurrent
-              ? `http://${host}:${session.port}/`
-              : null,
+          previewUrl: lifecycle.canOpen && session ? `http://${host}:${session.port}/` : null,
           appliedSha: session?.head_sha,
           appliedRevision: session?.revision,
           contentCurrent,

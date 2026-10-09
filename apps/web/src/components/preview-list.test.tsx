@@ -27,6 +27,23 @@ const previews = [
     error: null,
   },
 ];
+it("identifies completed metrics as previous creation while restarting the site", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        previews: [
+          { ...previews[0], isDefault: true, status: "starting", readyAt: "2026-10-09T10:00:00Z" },
+        ],
+      }),
+    ),
+  );
+  render(<PreviewList projectId="project" canDelete={false} />);
+  await screen.findByText("В процессе создания");
+  expect(screen.getByText("Предыдущее создание")).toBeTruthy();
+  expect(screen.getByText("Время предыдущего создания")).toBeTruthy();
+  expect(screen.getByText("1,5 мин")).toBeTruthy();
+});
 it("lets readers open queued previews and switch to their branch with complete metadata", async () => {
   vi.stubGlobal(
     "fetch",

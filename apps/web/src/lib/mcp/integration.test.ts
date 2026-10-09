@@ -1044,6 +1044,46 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       await c.close();
     }
   });
+  it("keeps API state stopped when startup completion races with an explicit stop", async () => {
+    vi.stubEnv("PUSHDOCS_PREVIEW_PUBLIC_HOST", "preview.test");
+    const access = await grant(["pushdocs:read"]);
+    const c = await client(access.access_token);
+    const session = await repo.acquirePreview({
+      projectId,
+      branch: "main",
+      userId,
+      clientId: "browser",
+      portFrom: 44000,
+      portTo: 44010,
+    });
+    await repo.updatePreviewSession(session.id, { status: "starting" });
+    try {
+      await Promise.all([
+        repo.completePreviewStartup(session.id, {
+          headSha: "main-sha",
+          revision: 0,
+          startupMs: 123_000,
+        }),
+        repo.stopPreview(projectId, "main"),
+      ]);
+      expect((await repo.getPreviewSession(projectId, "main"))?.desired_state).toBe("stopped");
+      const result = await c.callTool({
+        name: "get_preview_status",
+        arguments: { projectId, branch: "main" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ status: "stopped", previewUrl: null });
+      expect(
+        await repo.completePreviewStartup(session.id, {
+          headSha: "main-sha",
+          revision: 0,
+          startupMs: 1,
+        }),
+      ).toBe(false);
+    } finally {
+      await c.close();
+    }
+  });
   it("isolates agent and browser preview leases and expires revoked access", async () => {
     const access = await grant(),
       clientId = `mcp:${access.principal.grantId}`;

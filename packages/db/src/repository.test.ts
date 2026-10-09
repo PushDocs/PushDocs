@@ -3081,6 +3081,53 @@ describe("per-user unread comments", () => {
 });
 
 describe("preview inventory", () => {
+  it("completes startup atomically and rejects late completion after stop or deletion", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "feature",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    };
+    const session = await repository.acquirePreview(input);
+    const completed = { headSha: "head-1", revision: 0, startupMs: 123_000 };
+    expect(await repository.completePreviewStartup(session.id, completed)).toBe(false);
+    await repository.updatePreviewSession(session.id, { status: "starting" });
+    expect(await repository.completePreviewStartup(session.id, completed)).toBe(true);
+    expect(await repository.getPreviewSession(fixture.projectId, "feature")).toMatchObject({
+      status: "ready",
+    });
+    expect((await repository.listPreviewInventory(fixture.projectId))[0]).toMatchObject({
+      preparation_status: "stopped",
+      ready_at: expect.any(Date),
+      startup_ms: 123_000,
+    });
+    await repository.stopPreview(fixture.projectId, "feature");
+    for (const status of ["starting", "ready", "failed", "queued"] as const) {
+      await repository.updatePreviewSession(session.id, { status });
+      expect((await repository.getPreviewSession(fixture.projectId, "feature"))?.status).toBe(
+        "ready",
+      );
+    }
+    await repository.updatePreviewSession(session.id, { status: "stopped" });
+    expect(
+      await repository.completePreviewStartup(session.id, { ...completed, startupMs: 999 }),
+    ).toBe(false);
+    expect(await repository.getPreviewSession(fixture.projectId, "feature")).toMatchObject({
+      status: "stopped",
+    });
+    expect((await repository.listPreviewInventory(fixture.projectId))[0]?.startup_ms).toBe(123_000);
+    await repository.acquirePreview(input);
+    expect(await repository.completePreviewStartup(session.id, completed)).toBe(false);
+    await repository.updatePreviewSession(session.id, { status: "starting" });
+    await repository.requestPreviewDeletion(fixture.projectId, "feature");
+    expect(await repository.completePreviewStartup(session.id, completed)).toBe(false);
+    expect((await repository.listPreviewInventory(fixture.projectId))[0]?.delete_requested).toBe(
+      true,
+    );
+  });
   it("shows a completed workspace as deployed after its site has stopped", async () => {
     const fixture = await synchronizedProject();
     const session = await repository.acquirePreview({

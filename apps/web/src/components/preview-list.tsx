@@ -26,7 +26,7 @@ const statuses: Record<string, string> = {
   ready: "Запущен",
   deployed: "Развернут",
   failed: "Ошибка",
-  stopped: "Развернут",
+  stopped: "Остановлен",
   stopping: "Останавливается",
   deleting: "В процессе удаления",
 };
@@ -190,7 +190,11 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                 <div id={contentId} hidden={!isExpanded}>
                   <dl className="preview-metadata">
                     <div>
-                      <dt>Создан</dt>
+                      <dt>
+                        {item.readyAt && ["queued", "starting", "updating"].includes(item.status)
+                          ? "Предыдущее создание"
+                          : "Создан"}
+                      </dt>
                       <dd>
                         {date(
                           item.readyAt ??
@@ -201,7 +205,11 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                       </dd>
                     </div>
                     <div>
-                      <dt>Время создания</dt>
+                      <dt>
+                        {item.readyAt && ["queued", "starting", "updating"].includes(item.status)
+                          ? "Время предыдущего создания"
+                          : "Время создания"}
+                      </dt>
                       <dd>
                         {item.startupMs === null
                           ? "—"
