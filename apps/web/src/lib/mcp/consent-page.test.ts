@@ -35,6 +35,22 @@ describe("OAuth consent presentation and browser policy", () => {
     expect(html).toContain('name="decision" value="allow"');
     expect(html).toContain('name="decision" value="deny"');
   });
+  it("submits only selected permissions inside the consent form", async () => {
+    const html = await consentPage({
+      ...input,
+      scopes: ["pushdocs:read", "pushdocs:write"],
+      selectedScopes: ["pushdocs:read"],
+    }).text();
+    const form = /<form\b[^>]*>([\s\S]*?)<\/form>/.exec(html)?.[1] ?? "";
+    expect(form).toContain('name="scopes" value="pushdocs:read" checked');
+    expect(form).toContain('name="scopes" value="pushdocs:write">');
+    const retry = await consentPage({
+      ...input,
+      selectedScopes: [],
+      error: "Выберите право",
+    }).text();
+    expect(retry).not.toContain('value="pushdocs:read" checked');
+  });
   it("provides an empty state and readable recovery instead of raw JSON", async () => {
     const empty = await consentPage({ ...input, projects: [] }).text();
     expect(empty).toContain('value="allow" disabled');

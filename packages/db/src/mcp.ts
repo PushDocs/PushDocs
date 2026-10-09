@@ -103,7 +103,13 @@ export class McpRepository {
       )
     ).rows[0]?.request;
   }
-  async authorize(userId: string, nonce: string, projects: string[], approved = true) {
+  async authorize(
+    userId: string,
+    nonce: string,
+    projects: string[],
+    approved = true,
+    selectedScopes?: string[],
+  ) {
     return this.transaction(async (tx) => {
       const request = (
         await sql<{ request: AuthorizationRequest }>`delete from mcp_consents
@@ -114,6 +120,9 @@ export class McpRepository {
       if (!request)
         throw new McpError("invalid_request", "Consent expired. Start authorization again.");
       if (!approved) return { code: null, request };
+      const scopes = [...new Set(selectedScopes ?? request.scopes)];
+      if (!scopes.length || scopes.some((scope) => !request.scopes.includes(scope)))
+        throw new McpError("invalid_scope", "Select at least one requested permission.");
       if (!projects.length || projects.length > 100)
         throw new McpError("invalid_request", "Select at least one project.");
       const memberships = await tx
@@ -134,7 +143,7 @@ export class McpRepository {
         await sql<{
           id: string;
         }>`insert into mcp_grants(user_id,client_id,scopes,projects,resource,security_stamp)
-        values(${userId},${request.clientId},${JSON.stringify(request.scopes)}::jsonb,${JSON.stringify([...new Set(projects)])}::jsonb,${request.resource},
+        values(${userId},${request.clientId},${JSON.stringify(scopes)}::jsonb,${JSON.stringify([...new Set(projects)])}::jsonb,${request.resource},
           ${tokenDigest(user.password_hash + (user.totp_secret ?? ""))}) returning id`.execute(tx)
       ).rows[0];
       if (!grant) throw new Error("Grant creation failed");

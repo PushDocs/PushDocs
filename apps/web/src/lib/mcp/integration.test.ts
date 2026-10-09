@@ -412,7 +412,7 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
           "Выберите хотя бы один проект",
         );
         expect(await page.locator('input[name="nonce"]').inputValue()).toBe(nonce);
-        await page.getByRole("checkbox").first().check();
+        await page.locator('input[name="projects"]').first().check();
         await page.getByRole("button", { name: "Разрешить", exact: true }).click();
         await page.waitForURL(
           (url) => url.hostname === "localhost" && url.pathname === "/callback",
@@ -428,7 +428,12 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
           new Request(`${base}/oauth/authorize`, {
             method: "POST",
             headers: { Origin: base, "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ nonce, decision: "allow", projects: projectId }),
+            body: new URLSearchParams({
+              nonce,
+              decision: "allow",
+              projects: projectId,
+              scopes: "pushdocs:read",
+            }),
           }),
         );
         expect(replay.status).toBe(400);
@@ -498,7 +503,12 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
     const nonce = /name="nonce" value="([^"]+)"/.exec(html)?.[1];
     expect(nonce).toBeTruthy();
     const approval = await authorizePost(
-      request("/oauth/authorize", { nonce: nonce ?? "", decision: "allow", projects: projectId }),
+      request("/oauth/authorize", {
+        nonce: nonce ?? "",
+        decision: "allow",
+        projects: projectId,
+        scopes: "pushdocs:write",
+      }),
     );
     expect(approval.status).toBe(303);
     const callback = new URL(approval.headers.get("location") ?? "");
@@ -526,6 +536,27 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       }),
     );
     expect(valid.status).toBe(200);
+    const tokens = await valid.json();
+    expect(tokens.scope).toBe("pushdocs:write");
+    expect((await auth.authenticate(tokens.access_token)).scopes).toEqual(["pushdocs:write"]);
+  });
+  it("rejects empty or expanded permission selections without consuming consent", async () => {
+    const nonce = await auth.consent(userId, {
+      clientId,
+      redirectUri: "http://localhost:45678/callback",
+      resource,
+      challenge: pkceChallenge(opaque() + opaque()),
+      scopes: ["pushdocs:read"],
+    });
+    await expect(auth.authorize(userId, nonce, [projectId], true, [])).rejects.toMatchObject({
+      code: "invalid_scope",
+    });
+    await expect(
+      auth.authorize(userId, nonce, [projectId], true, ["pushdocs:submit"]),
+    ).rejects.toMatchObject({ code: "invalid_scope" });
+    expect(
+      (await auth.authorize(userId, nonce, [projectId], true, ["pushdocs:read"])).code,
+    ).toBeTruthy();
   });
   it("searches imported documents with unsupported MDX through MCP", async () => {
     const access = await grant(["pushdocs:read"]);

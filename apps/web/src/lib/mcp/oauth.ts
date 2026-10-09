@@ -162,7 +162,8 @@ export async function authorizeGet(request: Request) {
       redirectUri,
       resource: resourceUri(),
       challenge: query.get("code_challenge") ?? "",
-      scopes: [...new Set(scopes)],
+      // The user may grant any supported permission, beyond the client's initial selection.
+      scopes: [...mcpScopes],
       state: query.get("state") ?? undefined,
     };
     const nonce = await mcpStore().consent(user.id, auth);
@@ -172,6 +173,7 @@ export async function authorizeGet(request: Request) {
       userName: user.displayName,
       nonce,
       scopes: auth.scopes,
+      selectedScopes: [...new Set(scopes)],
       redirectUri,
       projects,
     });
@@ -207,7 +209,13 @@ export async function authorizePost(request: Request) {
         "Эта форма уже использована или срок её действия истёк. Вернитесь в приложение и начните подключение заново.",
       );
     const selected = form.getAll("projects");
-    if (form.get("decision") === "allow" && !selected.length) {
+    const selectedScopes = form.getAll("scopes");
+    if (
+      form.get("decision") === "allow" &&
+      (!selected.length ||
+        !selectedScopes.length ||
+        selectedScopes.some((scope) => !pending.scopes.includes(scope)))
+    ) {
       const client = await mcpStore().client(pending.clientId);
       return consentPage({
         clientName: client?.name ?? "Приложение",
@@ -216,7 +224,13 @@ export async function authorizePost(request: Request) {
         scopes: pending.scopes,
         redirectUri: pending.redirectUri,
         projects: await repository().listProjects(user.id),
-        error: "Выберите хотя бы один проект, к которому хотите предоставить доступ.",
+        selectedProjects: selected,
+        selectedScopes,
+        error: !selectedScopes.length
+          ? "Выберите хотя бы одно разрешение."
+          : selectedScopes.some((scope) => !pending.scopes.includes(scope))
+            ? "Выберите разрешения из списка доступных."
+            : "Выберите хотя бы один проект, к которому хотите предоставить доступ.",
       });
     }
     const { code, request: auth } = await mcpStore().authorize(
@@ -224,6 +238,7 @@ export async function authorizePost(request: Request) {
       nonce,
       selected,
       form.get("decision") === "allow",
+      selectedScopes,
     );
     const url = new URL(auth.redirectUri);
     if (code) url.searchParams.set("code", code);
