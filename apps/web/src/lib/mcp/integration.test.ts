@@ -175,7 +175,19 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
   afterAll(async () => {
     await closeDatabase();
     if (admin) {
-      await sql.raw(`drop database if exists ${name} with (force)`).execute(admin);
+      // Pool shutdown can resolve before PostgreSQL observes the closing sockets.
+      // Wait for our connections instead of killing them during their shutdown.
+      let remaining = 0;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const result = await sql<{
+          count: string;
+        }>`select count(*) from pg_stat_activity where datname=${name}`.execute(admin);
+        remaining = Number(result.rows[0]?.count ?? 0);
+        if (remaining === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(remaining, "Fixture connections remained after pool shutdown").toBe(0);
+      await sql.raw(`drop database if exists ${name}`).execute(admin);
       await admin.destroy();
     }
   });
