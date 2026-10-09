@@ -19,7 +19,7 @@ const previews = [
     status: "queued",
     createdAt: "2026-10-09T10:00:00Z",
     readyAt: null,
-    startupMs: 1500,
+    startupMs: 90_000,
     expiresAt: null,
     diskBytes: 1_250_000_000,
     changedFiles: 3,
@@ -37,7 +37,7 @@ it("lets readers open queued previews and switch to their branch with complete m
   fireEvent.click(screen.getByRole("button", { name: "feature/docs" }));
   expect(screen.getByText("3 файлов")).toBeTruthy();
   expect(screen.getByText("1,3 ГБ")).toBeTruthy();
-  expect(screen.getByText("1,5 с")).toBeTruthy();
+  expect(screen.getByText("1,5 мин")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Открыть предпросмотр" }).getAttribute("href")).toContain(
     "branch=feature%2Fdocs",
   );

@@ -205,7 +205,7 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                       <dd>
                         {item.startupMs === null
                           ? "—"
-                          : `${(item.startupMs / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} с`}
+                          : `${(item.startupMs / 60_000).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} мин`}
                       </dd>
                     </div>
                     <div>
@@ -249,7 +249,9 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                     </div>
                     <div>
                       <dt>URL</dt>
-                      <dd>{item.url ? <code>{item.url}</code> : "Назначится при запуске"}</dd>
+                      <dd className="preview-url">
+                        {item.url ? <code>{item.url}</code> : "Назначится при запуске"}
+                      </dd>
                     </div>
                   </dl>
                   {item.error ? (

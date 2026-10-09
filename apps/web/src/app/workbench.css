@@ -2272,6 +2272,16 @@
   margin-bottom: 5px;
 }
 
+.preview-metadata > div {
+  min-width: 0;
+}
+
+.preview-metadata .preview-url {
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
 .preview-metadata dd {
   margin: 0;
   overflow-wrap: anywhere;
