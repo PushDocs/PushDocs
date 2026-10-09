@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimeMemoryMb } from "../../apps/preview/src/resources";
-import { createPreviewService, run } from "../../apps/preview/src/service";
+import {
+  createPreviewService,
+  type PreviewServiceOptions,
+  run,
+} from "../../apps/preview/src/service";
 import { createWorkspaceManager } from "../../apps/preview/src/workspaces";
 
 const root = await mkdtemp("/data/previews/ci-runtime-");
 const uid = 11000;
+type PreviewRepository = PreviewServiceOptions["repository"];
 try {
   await chmod(root, 0o711);
   const source = path.join(root, "source");
@@ -180,19 +185,34 @@ setInterval(()=>{},1000);`,
     gitAccess: async () => ({ remote: source, env: process.env }),
     repository: {
       reconcilePreviewLeases: async () => {},
-      listPreviewSessions: async () => [session],
+      listPreviewSessions: async () =>
+        [session] as Awaited<ReturnType<PreviewRepository["listPreviewSessions"]>>,
       listPreviewWorkspaces: async () => [],
-      getProjectSyncTarget: async () => ({ root_path: "." }),
-      listChangedWorkingFiles: async () => ({
-        branch: { head_commit_sha: lifecycleHead },
-        files: [],
-      }),
+      getProjectSyncTarget: async () =>
+        ({ root_path: "." }) as Awaited<ReturnType<PreviewRepository["getProjectSyncTarget"]>>,
+      listChangedWorkingFiles: async () =>
+        ({
+          branch: { head_commit_sha: lifecycleHead },
+          files: [],
+        }) as Awaited<ReturnType<PreviewRepository["listChangedWorkingFiles"]>>,
       listPreviewAttachments: async () => [],
       updatePreviewSession: async (_id: string, values: { status?: string }) => {
         if (values.status === "failed") failureWrites++;
-        return Object.assign(session, values);
+        Object.assign(session, values);
       },
-    } as never,
+      completePreviewStartup: async (
+        _id: string,
+        values: { headSha: string; revision: number },
+      ) => {
+        if (session.desired_state !== "running" || session.status !== "starting") return false;
+        Object.assign(session, {
+          status: "ready",
+          head_sha: values.headSha,
+          revision: values.revision,
+        });
+        return true;
+      },
+    } satisfies PreviewRepository,
   };
   let service = createPreviewService(lifecycleOptions);
   try {
