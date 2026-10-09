@@ -1,4 +1,8 @@
-import { type PreviewRuntimeStatus, previewLifecycle } from "@pushdocs/domain";
+import {
+  browserPreviewIdleTtlMs,
+  type PreviewRuntimeStatus,
+  previewLifecycle,
+} from "@pushdocs/domain";
 import { z } from "zod";
 import { previewSettings } from "@/lib/preview-settings";
 import { readJsonBody } from "@/lib/request-body";
@@ -8,7 +12,7 @@ import { apiError, assertSameOrigin } from "@/lib/workbench";
 type Context = { params: Promise<{ projectId: string }> };
 
 const commandSchema = z.object({
-  action: z.enum(["acquire", "heartbeat", "release"]),
+  action: z.enum(["acquire", "attach", "heartbeat", "release"]),
   branch: z.string().min(1).max(255),
   clientId: z.string().uuid(),
   sessionId: z.string().uuid().optional(),
@@ -84,6 +88,15 @@ export async function POST(request: Request, context: Context) {
     const command = commandSchema.parse(await readJsonBody(request));
     const store = repository();
     await store.requireProjectAccess(user.id, projectId, "project:read");
+    if (command.action === "attach") {
+      const session = await store.attachPreview({
+        branch: command.branch,
+        clientId: command.clientId,
+        projectId,
+        userId: user.id,
+      });
+      return Response.json(session ? await previewResponse(session) : { status: "stopped" });
+    }
     if (command.action === "acquire") {
       await store.getBranchState(projectId, command.branch);
       const { portFrom, portTo } = previewSettings();
@@ -105,7 +118,12 @@ export async function POST(request: Request, context: Context) {
       const active = await store.heartbeatPreview(command.sessionId, user.id, command.clientId);
       if (!active) throw new Error("Сессия предпросмотра завершена");
     } else {
-      await store.releasePreview(command.sessionId, user.id, command.clientId);
+      await store.releasePreview(
+        command.sessionId,
+        user.id,
+        command.clientId,
+        browserPreviewIdleTtlMs,
+      );
     }
     const session = await store.getPreviewSession(projectId, command.branch);
     return Response.json(session ? await previewResponse(session) : { status: "stopped" });

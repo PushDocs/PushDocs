@@ -553,6 +553,20 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               await sql`drop table if exists preview_leases, preview_sessions`.execute(database);
             },
           },
+          "020-preview-idle-stop": {
+            async up(database) {
+              await database.schema
+                .alterTable("preview_leases")
+                .addColumn("released_at", "timestamptz")
+                .execute();
+            },
+            async down(database) {
+              await database.schema
+                .alterTable("preview_leases")
+                .dropColumn("released_at")
+                .execute();
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

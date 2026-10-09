@@ -1,4 +1,5 @@
 export type PreviewRuntimeStatus = "queued" | "starting" | "ready" | "failed" | "stopped";
+export const browserPreviewIdleTtlMs = 3_600_000;
 
 export function previewLifecycle(input: {
   session?: { desired_state: "running" | "stopped"; status: PreviewRuntimeStatus };

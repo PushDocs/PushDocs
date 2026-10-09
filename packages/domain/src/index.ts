@@ -1,6 +1,6 @@
 import type { CheckRunSummary, ProjectRole } from "@pushdocs/contracts";
 
-export { type PreviewRuntimeStatus, previewLifecycle } from "./preview";
+export { browserPreviewIdleTtlMs, type PreviewRuntimeStatus, previewLifecycle } from "./preview";
 
 export type ProjectAction =
   | "project:read"

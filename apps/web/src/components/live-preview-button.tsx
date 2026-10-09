@@ -25,15 +25,17 @@ export function LivePreviewButton(props: Props) {
 
 function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props) {
   const [state, setState] = useState<PreviewState>({ status: "stopped" });
-  const [requested, setRequested] = useState(autoStart);
-  const [attempt, setAttempt] = useState(0);
+  const requested = useRef(autoStart);
+  const ownsLease = useRef(false);
+  const mounted = useRef(true);
+  const queuedSince = useRef(Date.now());
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [clientId] = useState(() => crypto.randomUUID());
   const sessionId = useRef<string | undefined>(undefined);
   const endpoint = `/api/projects/${projectId}/preview`;
   const command = useCallback(
-    async (action: "acquire" | "heartbeat" | "release", keepalive = false) => {
-      const response = await fetch(`${endpoint}?attempt=${attempt}`, {
+    async (action: "acquire" | "attach" | "heartbeat" | "release", keepalive = false) => {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, branch, clientId, sessionId: sessionId.current }),
@@ -42,9 +44,13 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
       const result = (await response.json()) as PreviewState;
       if (!response.ok) throw new Error(result.error ?? "Не удалось запустить предпросмотр");
       if (result.sessionId) sessionId.current = result.sessionId;
+      if (action === "acquire" || action === "attach")
+        ownsLease.current = Boolean(
+          result.sessionId && ["queued", "starting", "ready"].includes(result.status),
+        );
       return result;
     },
-    [attempt, branch, clientId, endpoint],
+    [branch, clientId, endpoint],
   );
   const readStatus = useCallback(async () => {
     const response = await fetch(`${endpoint}?${new URLSearchParams({ branch })}`, {
@@ -60,8 +66,8 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
   }, [state.status, state.url, onReady]);
   useEffect(() => {
     let disposed = false;
+    mounted.current = true;
     let fetching = false;
-    let queuedSince = Date.now();
     const fail = (cause: unknown) => {
       if (!disposed)
         setState({
@@ -75,18 +81,31 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
       try {
         let result = await readStatus();
         if (disposed) return;
-        if (requested && result.status === "stopped" && !result.manuallyStopped) {
+        if (requested.current && result.status === "stopped" && !result.manuallyStopped) {
           result = await command("acquire");
-          queuedSince = Date.now();
+          queuedSince.current = Date.now();
         } else if (result.manuallyStopped || result.status === "deleting") {
-          setRequested(false);
+          requested.current = false;
+          ownsLease.current = false;
+        } else if (
+          !ownsLease.current &&
+          result.sessionId &&
+          ["queued", "starting", "ready"].includes(result.status)
+        ) {
+          result = await command("attach");
         }
-        if (disposed) return;
+        if (disposed) {
+          if (ownsLease.current) {
+            ownsLease.current = false;
+            await command("release", true).catch(() => undefined);
+          }
+          return;
+        }
         if (
-          requested &&
+          requested.current &&
           result.status === "queued" &&
           !result.waitingForCapacity &&
-          Date.now() - queuedSince > 30_000
+          Date.now() - queuedSince.current > 30_000
         )
           setState({
             ...result,
@@ -95,7 +114,7 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
               "Сервис предпросмотра не начал запуск за 30 секунд. Повторите попытку или проверьте его работу на сервере.",
           });
         else {
-          if (result.status !== "queued") queuedSince = Date.now();
+          if (result.status !== "queued") queuedSince.current = Date.now();
           setState(result);
         }
       } catch (cause) {
@@ -105,7 +124,7 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
       }
     };
     const start = async () => {
-      if (!requested) {
+      if (!requested.current) {
         await refresh();
         return;
       }
@@ -114,6 +133,7 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
         setState({ status: "queued" });
         const result = await command("acquire");
         if (disposed) {
+          ownsLease.current = false;
           await command("release", true).catch(() => undefined);
           return;
         }
@@ -126,22 +146,45 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
     };
     void start();
     const statusTimer = setInterval(() => void refresh(), 1500);
-    const heartbeatTimer = requested
-      ? setInterval(() => void command("heartbeat").catch(() => undefined), 15_000)
-      : undefined;
+    const heartbeatTimer = setInterval(() => {
+      if (ownsLease.current)
+        void command("heartbeat").catch(() => {
+          ownsLease.current = false;
+        });
+    }, 15_000);
+    const release = () => {
+      if (ownsLease.current && sessionId.current) {
+        ownsLease.current = false;
+        void command("release", true).catch(() => undefined);
+      }
+    };
+    window.addEventListener("pagehide", release);
     return () => {
       disposed = true;
+      mounted.current = false;
       clearInterval(statusTimer);
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (requested && sessionId.current) void command("release", true).catch(() => undefined);
+      clearInterval(heartbeatTimer);
+      window.removeEventListener("pagehide", release);
+      release();
     };
-  }, [command, readStatus, requested]);
+  }, [command, readStatus]);
 
   function start() {
     setDismissedError(null);
     setState({ status: "queued" });
-    setRequested(true);
-    setAttempt((value) => value + 1);
+    requested.current = true;
+    queuedSince.current = Date.now();
+    void command("acquire")
+      .then((result) => {
+        if (mounted.current) setState(result);
+        else {
+          ownsLease.current = false;
+          void command("release", true).catch(() => undefined);
+        }
+      })
+      .catch((cause) => {
+        if (mounted.current) setState({ status: "failed", error: String(cause) });
+      });
   }
 
   if (state.status === "ready" && state.url)
@@ -156,10 +199,10 @@ function PreviewControl({ projectId, branch, autoStart = false, onReady }: Props
           event.preventDefault();
           const tab = window.open("about:blank", "_blank");
           if (tab) tab.opener = null;
-          void (requested ? readStatus() : command("acquire"))
+          void (ownsLease.current ? readStatus() : command("acquire"))
             .then((result) => {
               setState(result);
-              if (!requested) setRequested(true);
+              requested.current = true;
               if (result.status === "ready" && result.url && tab) tab.location.replace(result.url);
               else tab?.close();
             })

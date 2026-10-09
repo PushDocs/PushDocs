@@ -10,6 +10,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+it("attaches to a running preview on returning to documents and starts a new grace period on exit", async () => {
+  const commands: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      commands.push(init?.body ? JSON.parse(String(init.body)).action : "status");
+      return Response.json({ status: "ready", sessionId: "session", url: "http://preview.test/" });
+    }),
+  );
+  const view = render(<LivePreviewButton projectId="project" branch="main" />);
+  await screen.findByRole("link", { name: "Открыть предпросмотр" });
+  expect(commands).toContain("attach");
+  expect(commands).not.toContain("acquire");
+  view.unmount();
+  await waitFor(() => expect(commands).toContain("release"));
+});
 
 it("keeps a capacity queue visible without reporting the runner as broken after 30 seconds", async () => {
   vi.useFakeTimers();

@@ -8,6 +8,7 @@ import type {
 } from "@pushdocs/contracts";
 import {
   assertCan,
+  browserPreviewIdleTtlMs,
   normalizeBranchRef,
   type ProjectAction,
   previewLifecycle,
@@ -1065,7 +1066,7 @@ export class PushDocsRepository extends SecurityRepository {
           .where("project_id", "=", input.projectId)
           .where("branch", "=", branch)
           .execute();
-      await transaction.deleteFrom("preview_leases").where("expires_at", "<", now).execute();
+      await new PushDocsRepository(transaction).expirePreviewLeases(now);
       const leased = new Set(
         (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
           (row) => row.session_id,
@@ -1138,6 +1139,7 @@ export class PushDocsRepository extends SecurityRepository {
         .insertInto("preview_leases")
         .values({
           client_id: input.clientId,
+          released_at: null,
           expires_at: new Date(
             now.getTime() + Math.min(1_800_000, Math.max(60_000, input.leaseTtlMs ?? 60_000)),
           ),
@@ -1146,6 +1148,7 @@ export class PushDocsRepository extends SecurityRepository {
         })
         .onConflict((conflict) =>
           conflict.columns(["session_id", "user_id", "client_id"]).doUpdateSet({
+            released_at: null,
             expires_at: new Date(
               now.getTime() + Math.min(1_800_000, Math.max(60_000, input.leaseTtlMs ?? 60_000)),
             ),
@@ -1200,12 +1203,38 @@ export class PushDocsRepository extends SecurityRepository {
       .where("session_id", "=", sessionId)
       .where("user_id", "=", userId)
       .where("client_id", "=", clientId)
+      .where("released_at", "is", null)
       .executeTakeFirst();
     return result.numUpdatedRows === 1n;
   }
 
-  async releasePreview(sessionId: string, userId: string, clientId: string): Promise<void> {
+  async releasePreview(
+    sessionId: string,
+    userId: string,
+    clientId: string,
+    idleTtlMs = 0,
+  ): Promise<void> {
     await this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      if (idleTtlMs > 0) {
+        const session = await transaction
+          .selectFrom("preview_sessions")
+          .select("desired_state")
+          .where("id", "=", sessionId)
+          .executeTakeFirst();
+        if (session?.desired_state === "running") {
+          const now = new Date();
+          await transaction
+            .updateTable("preview_leases")
+            .set({ released_at: now, expires_at: new Date(now.getTime() + idleTtlMs) })
+            .where("session_id", "=", sessionId)
+            .where("user_id", "=", userId)
+            .where("client_id", "=", clientId)
+            .where("released_at", "is", null)
+            .execute();
+        }
+        return;
+      }
       await transaction
         .deleteFrom("preview_leases")
         .where("session_id", "=", sessionId)
@@ -1236,8 +1265,85 @@ export class PushDocsRepository extends SecurityRepository {
       .executeTakeFirst();
   }
 
+  async attachPreview(input: {
+    projectId: string;
+    branch: string;
+    userId: string;
+    clientId: string;
+  }) {
+    return this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
+      const now = new Date();
+      await new PushDocsRepository(transaction).expirePreviewLeases(now);
+      const session = await transaction
+        .selectFrom("preview_sessions")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("branch", "=", normalizeBranchRef(input.branch))
+        .where("desired_state", "=", "running")
+        .where("status", "!=", "failed")
+        .executeTakeFirst();
+      if (!session) return undefined;
+      const lease = await transaction
+        .selectFrom("preview_leases")
+        .select("session_id")
+        .where("session_id", "=", session.id)
+        .where("expires_at", ">", now)
+        .executeTakeFirst();
+      if (!lease) return undefined;
+      await transaction
+        .deleteFrom("preview_leases")
+        .where("session_id", "=", session.id)
+        .where("released_at", "is not", null)
+        .execute();
+      await transaction
+        .insertInto("preview_leases")
+        .values({
+          session_id: session.id,
+          user_id: input.userId,
+          client_id: input.clientId,
+          released_at: null,
+          expires_at: new Date(now.getTime() + 60_000),
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["session_id", "user_id", "client_id"]).doUpdateSet({
+            released_at: null,
+            expires_at: new Date(now.getTime() + 60_000),
+          }),
+        )
+        .execute();
+      return session;
+    });
+  }
+
+  private async expirePreviewLeases(now: Date) {
+    const abandoned = await this.database
+      .selectFrom("preview_leases")
+      .selectAll()
+      .where("expires_at", "<", now)
+      .where("released_at", "is", null)
+      .where("client_id", "not like", "mcp:%")
+      .execute();
+    for (const lease of abandoned) {
+      await this.database
+        .updateTable("preview_leases")
+        .set({
+          released_at: lease.expires_at,
+          expires_at: new Date(lease.expires_at.getTime() + browserPreviewIdleTtlMs),
+        })
+        .where("session_id", "=", lease.session_id)
+        .where("user_id", "=", lease.user_id)
+        .where("client_id", "=", lease.client_id)
+        .where("released_at", "is", null)
+        .where("expires_at", "<", now)
+        .execute();
+    }
+    await this.database.deleteFrom("preview_leases").where("expires_at", "<", now).execute();
+  }
+
   async reconcilePreviewLeases(): Promise<void> {
     await this.transaction(async (transaction) => {
+      await sql`select pg_advisory_xact_lock(734922)`.execute(transaction);
       const agentLeases = await transaction
         .selectFrom("preview_leases")
         .innerJoin("preview_sessions", "preview_sessions.id", "preview_leases.session_id")
@@ -1270,7 +1376,7 @@ export class PushDocsRepository extends SecurityRepository {
             .execute();
         }
       }
-      await transaction.deleteFrom("preview_leases").where("expires_at", "<", new Date()).execute();
+      await new PushDocsRepository(transaction).expirePreviewLeases(new Date());
       const leased = new Set(
         (await transaction.selectFrom("preview_leases").select("session_id").execute()).map(
           (row) => row.session_id,
@@ -1394,7 +1500,7 @@ export class PushDocsRepository extends SecurityRepository {
   }
 
   async listProjectPreviews(projectId: string) {
-    const [project, inventory, sessions, drafts, attachments] = await Promise.all([
+    const [project, inventory, sessions, drafts, attachments, leases] = await Promise.all([
       this.database
         .selectFrom("projects")
         .select("default_branch")
@@ -1423,6 +1529,18 @@ export class PushDocsRepository extends SecurityRepository {
         .where("attachments.status", "=", "ready")
         .where("change_sets.status", "in", ["open", "conflicted", "submitting"])
         .execute(),
+      this.database
+        .selectFrom("preview_leases")
+        .innerJoin("preview_sessions", "preview_sessions.id", "preview_leases.session_id")
+        .select([
+          "preview_leases.session_id",
+          "preview_leases.client_id",
+          "preview_leases.released_at",
+          "preview_leases.expires_at",
+        ])
+        .where("preview_sessions.project_id", "=", projectId)
+        .where("preview_leases.expires_at", ">", new Date())
+        .execute(),
     ]);
     const branches = new Set([
       ...(project ? [project.default_branch] : []),
@@ -1448,10 +1566,19 @@ export class PushDocsRepository extends SecurityRepository {
           contentCurrent:
             session?.status === "ready" ? await this.isPreviewCurrent(session) : false,
         });
+        const sessionLeases = leases.filter((lease) => lease.session_id === session?.id);
+        const browserLeases = sessionLeases.filter((lease) => !lease.client_id.startsWith("mcp:"));
+        const idleStopAt =
+          session?.desired_state === "running" &&
+          browserLeases.length > 0 &&
+          browserLeases.every((lease) => lease.released_at !== null)
+            ? new Date(Math.max(...sessionLeases.map((lease) => lease.expires_at.getTime())))
+            : null;
         return {
           branch,
           isDefault: branch === project?.default_branch,
           status,
+          idleStopAt,
           createdAt: workspace?.created_at ?? session?.created_at ?? null,
           readyAt: workspace?.ready_at ?? null,
           startupMs: workspace?.startup_ms ?? null,

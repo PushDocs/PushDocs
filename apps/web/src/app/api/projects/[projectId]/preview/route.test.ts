@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   session: vi.fn(),
   current: vi.fn(),
   acquire: vi.fn(),
+  attach: vi.fn(),
+  release: vi.fn(),
   branch: vi.fn(),
 }));
 vi.mock("server-only", () => ({}));
@@ -17,6 +19,8 @@ vi.mock("@/lib/server", () => ({
     getPreviewSession: mocks.session,
     isPreviewCurrent: mocks.current,
     acquirePreview: mocks.acquire,
+    attachPreview: mocks.attach,
+    releasePreview: mocks.release,
     getBranchState: mocks.branch,
   }),
 }));
@@ -43,7 +47,32 @@ beforeEach(() => {
   mocks.inventory.mockResolvedValue([]);
   mocks.session.mockResolvedValue(session);
   mocks.acquire.mockResolvedValue(session);
+  mocks.attach.mockResolvedValue(session);
   mocks.current.mockResolvedValue(true);
+});
+it("attaches document visits to existing previews without acquiring a new one and releases with one hour grace", async () => {
+  const request = (action: string) =>
+    new Request("https://cms.test/api", {
+      method: "POST",
+      headers: { Origin: "https://cms.test" },
+      body: JSON.stringify({
+        action,
+        branch: "main",
+        clientId: "00000000-0000-4000-8000-000000000001",
+        sessionId: "00000000-0000-4000-8000-000000000002",
+      }),
+    });
+  await POST(request("attach"), context);
+  expect(mocks.attach).toHaveBeenCalled();
+  expect(mocks.acquire).not.toHaveBeenCalled();
+  mocks.session.mockResolvedValue({ ...session, id: "00000000-0000-4000-8000-000000000002" });
+  await POST(request("release"), context);
+  expect(mocks.release).toHaveBeenCalledWith(
+    "00000000-0000-4000-8000-000000000002",
+    "user",
+    "00000000-0000-4000-8000-000000000001",
+    3_600_000,
+  );
 });
 it("withholds an outdated preview URL until the saved revision and imported commit are applied", async () => {
   mocks.current.mockResolvedValue(false);

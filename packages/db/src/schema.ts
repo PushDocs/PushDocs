@@ -210,6 +210,7 @@ export interface PreviewSessionsTable {
 }
 
 export interface PreviewLeasesTable {
+  released_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   client_id: string;
   expires_at: Timestamp;
   session_id: string;

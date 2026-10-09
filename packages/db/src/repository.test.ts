@@ -2111,6 +2111,100 @@ describe("job lifecycle", () => {
 });
 
 describe("live preview lifecycle", () => {
+  it("keeps a preview for one hour after leaving, cancels the timer on return and resets it on the next exit", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-09T10:00:00Z"));
+    try {
+      const fixture = await synchronizedProject();
+      const input = {
+        projectId: fixture.projectId,
+        branch: "main",
+        userId: fixture.operatorId,
+        clientId: randomUUID(),
+        portFrom: 43000,
+        portTo: 43001,
+      };
+      const session = await repository.acquirePreview(input);
+      await repository.releasePreview(session.id, fixture.operatorId, input.clientId, 3_600_000);
+      expect((await repository.listProjectPreviews(fixture.projectId))[0]?.idleStopAt).toEqual(
+        new Date("2026-10-09T11:00:00Z"),
+      );
+      expect(
+        await repository.heartbeatPreview(session.id, fixture.operatorId, input.clientId),
+      ).toBe(false);
+      vi.setSystemTime(new Date("2026-10-09T10:10:00Z"));
+      await repository.releasePreview(session.id, fixture.operatorId, input.clientId, 3_600_000);
+      expect((await repository.listProjectPreviews(fixture.projectId))[0]?.idleStopAt).toEqual(
+        new Date("2026-10-09T11:00:00Z"),
+      );
+      vi.setSystemTime(new Date("2026-10-09T10:30:00Z"));
+      const returned = { ...input, clientId: randomUUID() };
+      expect(await repository.attachPreview(returned)).toMatchObject({
+        id: session.id,
+        desired_state: "running",
+      });
+      expect((await repository.listProjectPreviews(fixture.projectId))[0]?.idleStopAt).toBeNull();
+      vi.setSystemTime(new Date("2026-10-09T10:45:00Z"));
+      await repository.heartbeatPreview(session.id, fixture.operatorId, returned.clientId);
+      await repository.releasePreview(session.id, fixture.operatorId, returned.clientId, 3_600_000);
+      expect((await repository.listProjectPreviews(fixture.projectId))[0]?.idleStopAt).toEqual(
+        new Date("2026-10-09T11:45:00Z"),
+      );
+      vi.setSystemTime(new Date("2026-10-09T11:44:59Z"));
+      await repository.reconcilePreviewLeases();
+      expect((await repository.getPreviewSession(fixture.projectId, "main"))?.desired_state).toBe(
+        "running",
+      );
+      vi.setSystemTime(new Date("2026-10-09T11:45:01Z"));
+      await repository.reconcilePreviewLeases();
+      expect((await repository.getPreviewSession(fixture.projectId, "main"))?.desired_state).toBe(
+        "stopped",
+      );
+      expect(await repository.attachPreview(returned)).toBeUndefined();
+      expect(await repository.attachPreview({ ...returned, branch: "uncreated" })).toBeUndefined();
+      await repository.acquirePreview(returned);
+      await repository.stopPreview(fixture.projectId, "main");
+      await repository.releasePreview(session.id, fixture.operatorId, returned.clientId, 3_600_000);
+      expect((await repository.getPreviewSession(fixture.projectId, "main"))?.desired_state).toBe(
+        "stopped",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps active tabs alive and schedules an hour of grace after a lost browser heartbeat", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    };
+    const session = await repository.acquirePreview(input);
+    const second = randomUUID();
+    await repository.acquirePreview({ ...input, clientId: second });
+    await repository.releasePreview(session.id, fixture.operatorId, input.clientId, 3_600_000);
+    expect((await repository.listProjectPreviews(fixture.projectId))[0]?.idleStopAt).toBeNull();
+    const expired = new Date(Date.now() - 1000);
+    await database
+      .updateTable("preview_leases")
+      .set({ expires_at: expired })
+      .where("client_id", "=", second)
+      .execute();
+    await repository.reconcilePreviewLeases();
+    expect((await repository.getPreviewSession(fixture.projectId, "main"))?.desired_state).toBe(
+      "running",
+    );
+    const lease = await database
+      .selectFrom("preview_leases")
+      .selectAll()
+      .where("client_id", "=", second)
+      .executeTakeFirstOrThrow();
+    expect(lease.released_at).toEqual(expired);
+    expect(lease.expires_at.getTime() - expired.getTime()).toBe(3_600_000);
+  });
   it("shares one session and stops it only after the last browser lease is released", async () => {
     const fixture = await synchronizedProject();
     const first = await repository.acquirePreview({

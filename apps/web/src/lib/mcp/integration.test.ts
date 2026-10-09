@@ -1122,6 +1122,11 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       getDatabase(),
     );
     await repo.reconcilePreviewLeases();
+    expect((await repo.getPreviewSession(projectId, "main"))?.desired_state).toBe("running");
+    await sql`update preview_leases set expires_at=now()-interval '2 hours' where session_id=${session.id}`.execute(
+      getDatabase(),
+    );
+    await repo.reconcilePreviewLeases();
     expect((await repo.getPreviewSession(projectId, "main"))?.desired_state).toBe("stopped");
   });
 });

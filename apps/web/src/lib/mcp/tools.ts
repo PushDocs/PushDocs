@@ -554,7 +554,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "list_previews",
-    "List all project previews, including queued, deployed, running and deleting previews. Returns default branch, creation timestamps, completed startup duration in milliseconds and minutes, scheduled workspace deletion, disk bytes, changed file count, stage and assigned URL. An assigned URL does not mean the site is running. Reading this list does not start previews.",
+    "List all project previews, including queued, deployed, running and deleting previews. Returns default branch, creation timestamps, completed startup duration in milliseconds and minutes, idle auto-stop deadline, scheduled workspace deletion, disk bytes, changed file count, stage and assigned URL. An assigned URL does not mean the site is running. Reading this list does not start previews.",
     { projectId, ...paging },
     "pushdocs:read",
     false,
