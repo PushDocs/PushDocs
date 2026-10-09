@@ -1003,6 +1003,47 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       await rm(directory, { recursive: true, force: true });
     }
   }, 30_000);
+  it("lists preview inventory with read scope without starting sites", async () => {
+    const access = await grant(["pushdocs:read"]);
+    const c = await client(access.access_token);
+    await repo.recordPreviewWorkspace(projectId, "main", {
+      ready_at: new Date("2026-10-09T10:00:00Z"),
+      startup_ms: 136_200,
+      disk_bytes: 3_400_000_000,
+    });
+    try {
+      const tools = await c.listTools();
+      expect(tools.tools.find((t) => t.name === "list_previews")?.annotations?.readOnlyHint).toBe(
+        true,
+      );
+      const result = await c.callTool({ name: "list_previews", arguments: { projectId } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        total: 1,
+        items: [
+          {
+            branch: "main",
+            isDefault: true,
+            status: "deployed",
+            startupMs: 136_200,
+            startupMinutes: 2.27,
+            diskBytes: 3_400_000_000,
+            changedFiles: expect.any(Number),
+            expiresAt: null,
+            url: null,
+          },
+        ],
+      });
+      expect(await repo.listPreviewSessions()).toEqual([]);
+      const denied = await c.callTool({
+        name: "list_previews",
+        arguments: { projectId: randomUUID() },
+      });
+      expect(denied.isError).toBe(true);
+    } finally {
+      await c.close();
+    }
+  });
   it("isolates agent and browser preview leases and expires revoked access", async () => {
     const access = await grant(),
       clientId = `mcp:${access.principal.grantId}`;

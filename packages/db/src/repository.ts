@@ -1445,6 +1445,7 @@ export class PushDocsRepository extends SecurityRepository {
           if (status === "ready" && !(await this.isPreviewCurrent(session))) status = "updating";
         } else if (session?.desired_state === "stopped" && session.status !== "stopped")
           status = "stopping";
+        else if (session?.status === "stopped" && workspace?.ready_at) status = "deployed";
         if (workspace?.delete_requested) status = "deleting";
         return {
           branch,
@@ -1459,6 +1460,10 @@ export class PushDocsRepository extends SecurityRepository {
               ? null
               : (workspace?.expires_at ?? null),
           port: session?.port ?? null,
+          stage:
+            session?.desired_state === "running"
+              ? session.log.trim().split("\n").at(-1)?.slice(0, 240) || null
+              : null,
           error: session?.last_error ?? null,
           changedFiles: new Set(
             [...drafts, ...attachments]

@@ -836,6 +836,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
       controller.signal.throwIfAborted();
       if (active.stopping) throw new Error(startupFailure ?? "Запуск предпросмотра отменён");
       await repository.recordPreviewWorkspace?.(session.project_id, session.branch, {
+        preparation_status: "stopped",
         ready_at: new Date(),
         startup_ms: Date.now() - startedAt,
         deleted: false,

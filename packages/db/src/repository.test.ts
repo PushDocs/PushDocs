@@ -3081,6 +3081,30 @@ describe("per-user unread comments", () => {
 });
 
 describe("preview inventory", () => {
+  it("shows a completed workspace as deployed after its site has stopped", async () => {
+    const fixture = await synchronizedProject();
+    const session = await repository.acquirePreview({
+      projectId: fixture.projectId,
+      branch: "feature",
+      userId: fixture.operatorId,
+      clientId: randomUUID(),
+      portFrom: 43000,
+      portTo: 43001,
+    });
+    await repository.recordPreviewWorkspace(fixture.projectId, "feature", {
+      preparation_status: "starting",
+      ready_at: new Date(),
+      startup_ms: 136_200,
+      disk_bytes: 3_400_000_000,
+    });
+    await repository.stopPreview(fixture.projectId, "feature");
+    await repository.updatePreviewSession(session.id, { status: "stopped" });
+    expect(await repository.listProjectPreviews(fixture.projectId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ branch: "feature", status: "deployed", startupMs: 136_200 }),
+      ]),
+    );
+  });
   it("lists queued sessions and dormant cached branches with file counts and metrics", async () => {
     const fixture = await synchronizedProject();
     const now = new Date();

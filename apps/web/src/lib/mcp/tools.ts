@@ -11,6 +11,7 @@ import {
 } from "@pushdocs/db";
 import { z } from "zod";
 import { externalPreviewUrl } from "../external-preview";
+import { previewSettings } from "../preview-settings";
 import { ProjectService } from "../project-service";
 import { compressImage, documentImages, fixSpelling, spelling } from "./quality";
 
@@ -65,6 +66,7 @@ const toolScopes: Record<string, string> = Object.fromEntries([
     "check_spelling",
     "list_document_images",
     "get_preview_status",
+    "list_previews",
     "plan_document_template",
   ].map((name) => [name, "pushdocs:read"]),
   ...[
@@ -549,6 +551,25 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
       return { results, changeSetRevision: expectedRevision };
     },
   );
+  tool(
+    "list_previews",
+    "List all project previews, including queued, deployed, running and deleting previews. Returns default branch, creation timestamps, completed startup duration in milliseconds and minutes, scheduled workspace deletion, disk bytes, changed file count, stage and assigned URL. An assigned URL does not mean the site is running. Reading this list does not start previews.",
+    { projectId, ...paging },
+    "pushdocs:read",
+    false,
+    async (s, i) => {
+      const { host } = previewSettings();
+      const previews = await s.store.listProjectPreviews(i.projectId);
+      return page(
+        previews.map((item) => ({
+          ...item,
+          startupMinutes: item.startupMs === null ? null : item.startupMs / 60_000,
+          url: item.port === null ? null : `http://${host}:${item.port}/`,
+        })),
+        i,
+      );
+    },
+  );
   for (const action of ["start", "status", "stop"] as const)
     tool(
       action === "start"
@@ -601,8 +622,18 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
         if (!host || !/^[a-zA-Z0-9.-]+$/.test(host))
           throw new McpError("PREVIEW_FAILED", "Preview public host is not configured.");
         const contentCurrent = session ? await s.store.isPreviewCurrent(session) : false;
+        const inventory = (await s.store.listProjectPreviews(i.projectId)).find(
+          (item) => item.branch === i.branch,
+        );
         return {
           ...c.snapshot,
+          inventory: inventory
+            ? {
+                ...inventory,
+                startupMinutes: inventory.startupMs === null ? null : inventory.startupMs / 60_000,
+                url: inventory.port === null ? null : `http://${host}:${inventory.port}/`,
+              }
+            : null,
           status:
             session?.desired_state !== "running"
               ? "stopped"
