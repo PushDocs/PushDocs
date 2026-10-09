@@ -2376,15 +2376,28 @@
   vertical-align: middle;
 }
 
-.live-preview-start {
+.live-preview-start,
+.preview-open {
   background: #2563eb;
   border-color: #2563eb;
   color: white;
 }
 
-.live-preview-start:hover:not(:disabled) {
+.live-preview-start:hover:not(:disabled),
+.preview-open:hover {
   background: #1d4ed8;
   border-color: #1d4ed8;
+}
+
+.preview-stop {
+  background: #facc15;
+  border-color: #facc15;
+  color: #422006;
+}
+
+.preview-stop:hover:not(:disabled) {
+  background: #eab308;
+  border-color: #eab308;
 }
 
 .preview-card-heading {

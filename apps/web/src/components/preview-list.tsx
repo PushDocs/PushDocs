@@ -269,7 +269,7 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                   ) : null}
                   <div className="preview-card-actions">
                     <a
-                      className="pd-button pd-button--secondary"
+                      className="pd-button preview-open"
                       href={`/projects/${projectId}/previews/view?${new URLSearchParams({ branch: item.branch })}`}
                       target="_blank"
                       rel="noreferrer"
@@ -289,7 +289,7 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                     </button>
                     {item.status === "ready" || item.status === "updating" ? (
                       <button
-                        className="pd-button pd-button--secondary"
+                        className="pd-button preview-stop"
                         type="button"
                         disabled={pending === item.branch}
                         onClick={() => void command(item.branch, "stop")}
