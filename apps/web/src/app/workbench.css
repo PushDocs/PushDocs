@@ -896,6 +896,11 @@
   border-radius: 10px;
   box-shadow: var(--shadow);
 }
+.wb-component-list {
+  max-height: min(480px, var(--component-menu-space, calc(100dvh - 16px)));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
 .wb-popover strong {
   font-size: 12px;
 }

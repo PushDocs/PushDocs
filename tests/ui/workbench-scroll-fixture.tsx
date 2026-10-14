@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { ComponentInsertMenu } from "../../apps/web/src/components/component-insert-menu";
 import { DocumentTabs } from "../../apps/web/src/components/document-tabs";
 import { FileExplorer } from "../../apps/web/src/components/file-explorer";
 import { SourceEditor, type SourceEditorHandle } from "../../apps/web/src/components/source-editor";
@@ -59,6 +60,16 @@ export function WorkbenchScrollFixture() {
                   <button type="button" onClick={() => setSplit(true)}>
                     Две панели
                   </button>
+                </div>
+                <div className="wb-format">
+                  <ComponentInsertMenu
+                    components={Array.from({ length: 30 }, (_, index) => ({
+                      label: `Component ${String(index).padStart(2, "0")}`,
+                      snippet: `<Component${index} />`,
+                    }))}
+                    readOnly={false}
+                    onInsert={(snippet) => setText((current) => `${current}\n${snippet}`)}
+                  />
                 </div>
                 <div className={`wb-document-body${split ? " wb-split-view" : ""}`}>
                   <SourceEditor

@@ -8,12 +8,9 @@ import {
   ArrowRight,
   Bold,
   Check,
-  ChevronDown,
   Columns2,
   Heading2,
   MoreHorizontal,
-  Plus,
-  Puzzle,
   Search,
   Table2,
   Trash2,
@@ -33,6 +30,7 @@ import {
   CollaborativeDocument,
   hasSharedDraft,
 } from "./collaborative-document";
+import { ComponentInsertMenu } from "./component-insert-menu";
 import { DiffViewer } from "./diff-viewer";
 import { DocumentPreview } from "./document-preview";
 import { DocumentTabs } from "./document-tabs";
@@ -1572,27 +1570,11 @@ export function Workbench({
                     </button>
                     <span className="wb-format-separator" />
                     {components.length ? (
-                      <details className="wb-disclosure">
-                        <summary>
-                          <Puzzle size={16} /> Компонент <ChevronDown size={12} />
-                        </summary>
-                        <div className="wb-popover wb-component-list" role="menu">
-                          {components.map((item) => (
-                            <button
-                              key={`${item.label}:${item.snippet}`}
-                              type="button"
-                              role="menuitem"
-                              disabled={readOnly}
-                              onClick={(event) => {
-                                insert(`\n${item.snippet}\n`);
-                                event.currentTarget.closest("details")?.removeAttribute("open");
-                              }}
-                            >
-                              {item.label}
-                            </button>
-                          ))}
-                        </div>
-                      </details>
+                      <ComponentInsertMenu
+                        components={components}
+                        readOnly={readOnly}
+                        onInsert={(snippet) => insert(`\n${snippet}\n`)}
+                      />
                     ) : null}
                     <button
                       type="button"
