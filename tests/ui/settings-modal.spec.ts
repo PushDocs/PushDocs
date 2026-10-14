@@ -489,7 +489,7 @@ test("failed submission can be retried from the modal without entering another c
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
-test("media modal keeps maximum height and packs image actions into its card's bottom right corner", async ({
+test("media modal keeps maximum height and shows labelled replacement and deletion actions", async ({
   page,
 }, testInfo) => {
   const paths = [
@@ -521,7 +521,14 @@ test("media modal keeps maximum height and packs image actions into its card's b
       return route.fulfill({ json: { saved: true } });
     }
     return route.fulfill({
-      json: { assets, revision: 7, role: "editor", status: "open", locale: "ru" },
+      json: {
+        assets,
+        uploadDirectory: "static",
+        revision: 7,
+        role: "editor",
+        status: "open",
+        locale: "ru",
+      },
     });
   });
   await page.goto(`${baseURL}/?media`);
@@ -540,13 +547,14 @@ test("media modal keeps maximum height and packs image actions into its card's b
   for (const card of await page.locator(".media-card").all()) {
     const actions = card.locator(".media-actions");
     const icons = await actions.locator(":scope > *").all();
-    expect(icons).toHaveLength(3);
+    expect(icons).toHaveLength(4);
     const boxes = await Promise.all(icons.map((icon) => icon.boundingBox()));
     expect(new Set(boxes.map((box) => box?.y)).size).toBe(1);
     for (const icon of icons) {
-      await expect(icon).toHaveText("");
       await expect(icon.locator("svg")).toHaveCount(1);
     }
+    await expect(actions.getByRole("button", { name: /^Заменить / })).toHaveText("Заменить");
+    await expect(actions.getByRole("button", { name: /^Удалить / })).toHaveText("Удалить");
     const cardBox = await card.boundingBox();
     const actionBox = await actions.boundingBox();
     expect(
@@ -576,4 +584,22 @@ test("media modal keeps maximum height and packs image actions into its card's b
     page.getByRole("button", { name: "Удалить static/favicon.svg", exact: true }),
   ).toBeVisible();
   expect(commands[1]).toMatchObject({ action: "revert", path: "static/favicon.svg", revision: 7 });
+  await page.getByRole("button", { name: "Заменить static/favicon.svg", exact: true }).click();
+  await expect(page.getByText("Имя и путь сохранятся.", { exact: false })).toBeVisible();
+  await expect(page.locator(".media-card")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("media-replacement.png") });
+  await page.getByRole("button", { name: "Отменить замену", exact: true }).click();
+  await page.getByLabel("Загрузить файлы", { exact: true }).setInputFiles({
+    name: "favicon.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+  });
+  const collision = page.getByRole("alertdialog", { name: "Файл уже существует" });
+  await expect(collision).toBeVisible();
+  await expect(collision.getByRole("button", { name: "Заменить", exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("media-upload-collision.png") });
+  await page.keyboard.press("Escape");
+  await expect(collision).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(page.getByLabel("Загрузить файлы", { exact: true })).toBeEnabled();
 });

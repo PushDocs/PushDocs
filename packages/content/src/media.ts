@@ -57,6 +57,7 @@ export function mediaCatalog(input: {
           .filter(
             (file) =>
               file.status !== "delete" &&
+              /\.mdx?$/i.test(file.path) &&
               (file.content.includes(name) || file.content.includes(encodeURIComponent(name))),
           )
           .map((file) => file.path),

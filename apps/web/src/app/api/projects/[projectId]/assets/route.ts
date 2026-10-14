@@ -88,7 +88,7 @@ export async function POST(request: Request, context: Context) {
       mediaType,
       sizeBytes: stored.size,
       sha256: stored.sha256,
-      createOnly: repositoryUpload,
+      createOnly: query.get("replace") !== "true",
       expectedRevision: Number(query.get("revision")),
     });
     const urlRoot = location.url.slice(0, location.url.lastIndexOf("/"));

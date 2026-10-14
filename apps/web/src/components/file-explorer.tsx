@@ -65,6 +65,7 @@ export function FileExplorer({
   storageKey,
   onAction,
   canEdit,
+  actionReason,
   revealDirectory,
   selected,
   statuses,
@@ -79,8 +80,9 @@ export function FileExplorer({
 }: {
   paths: string[];
   storageKey?: string;
-  onAction?: (action: "rename" | "move" | "copy", path: string) => void;
+  onAction?: (action: "rename" | "move" | "copy" | "replace" | "delete", path: string) => void;
   canEdit?: (path: string) => boolean;
+  actionReason?: (action: "replace" | "delete", path: string) => string;
   revealDirectory?: string;
   selected: string;
   statuses: Map<string, string>;
@@ -334,6 +336,22 @@ export function FileExplorer({
             </>
           ) : (
             <>
+              {(["replace", "delete"] as const).map((action) => {
+                const reason = actionReason?.(action, menu.path);
+                return (
+                  <button
+                    key={action}
+                    role="menuitem"
+                    type="button"
+                    title={reason || undefined}
+                    disabled={readOnly || busy || !!reason}
+                    onClick={() => onAction?.(action, menu.path)}
+                  >
+                    {action === "replace" ? "Заменить файл" : "Удалить файл"}
+                    {reason ? <small>{reason}</small> : null}
+                  </button>
+                );
+              })}
               <button
                 role="menuitem"
                 type="button"

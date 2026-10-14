@@ -1,7 +1,8 @@
 "use client";
 
-import { assetLocation } from "@pushdocs/content/config";
+import { assetLocation, isEditableFile } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
+import { isMediaFile } from "@pushdocs/content/media";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import { Select } from "@pushdocs/ui";
 import {
@@ -52,6 +53,7 @@ import { rememberProjectBranch } from "./project-context";
 import { QuickOpen } from "./quick-open";
 import { planReplacement, ReplacePreview } from "./replace-preview";
 import { SourceEditor, type SourceEditorHandle } from "./source-editor";
+import { AssetUsages, useUploadConflict } from "./upload-conflict";
 import { useFileComments } from "./use-file-comments";
 
 export interface WorkingFile {
@@ -156,6 +158,9 @@ export function Workbench({
   );
   const [replaceAttachment, setReplaceAttachment] = useState<string>();
   const [mediaMode, setMediaMode] = useState<"library" | "insert">("library");
+  const uploadConflict = useUploadConflict();
+  const [deleteUsages, setDeleteUsages] = useState<string[]>([]);
+  const [deleteCheck, setDeleteCheck] = useState<"loading" | "ready" | "error">("ready");
   const [deleteResultPath, setDeleteResultPath] = useState("");
   const [mediaBusy, setMediaBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
@@ -908,6 +913,40 @@ export function Workbench({
     setTabs(remaining);
   }
 
+  function fileActionReason(action: "replace" | "delete", path: string) {
+    if (state.role === "reader") return "Нужна роль редактора";
+    if (state.status !== "open") return "Дождитесь завершения отправки или разрешите конфликты";
+    if (fileStatuses.get(path) === "delete") return "Файл уже отмечен для удаления";
+    if (action === "replace") return isMediaFile(path) ? "" : "Замена доступна для вложений";
+    if (path === ".pushdocs/config.json" && state.role !== "admin")
+      return "Нужна роль администратора";
+    return isMediaFile(path) || isEditableFile(state.config, path)
+      ? ""
+      : "Удаление запрещено настройками проекта";
+  }
+  async function prepareDelete(path: string) {
+    if (fileActionReason("delete", path)) return;
+    setDeleteResultPath("");
+    setDeleteUsages([]);
+    setDeleteCheck(isMediaFile(path) ? "loading" : "ready");
+    setDialog("delete");
+    if (!isMediaFile(path)) return;
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/media?${new URLSearchParams({ branch, document: article })}`,
+        { cache: "no-store" },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      setDeleteUsages(
+        result.assets.find((asset: { path: string }) => asset.path === path)?.usages ?? [],
+      );
+      setDeleteCheck("ready");
+    } catch {
+      setDeleteCheck("error");
+    }
+  }
+
   async function mutate(payload: Record<string, unknown>, nextPath?: string) {
     /* v8 ignore next -- callers already keep their operation dialog open after a tested save failure. */
     if (!(await save())) return;
@@ -1278,6 +1317,7 @@ export function Workbench({
               state.files.some((file) => file.path === path && file.status !== "delete") &&
               !state.uploads?.some((file) => file.path === path)
             }
+            actionReason={fileActionReason}
             onAction={async (action, path) => {
               if (action === "copy") {
                 try {
@@ -1288,7 +1328,14 @@ export function Workbench({
                 }
                 return;
               }
-              if (await openFile(path)) setDialog(action);
+              if (await openFile(path)) {
+                if (action === "delete") await prepareDelete(path);
+                else if (action === "replace") {
+                  setReplaceAttachment(path);
+                  setMediaMode("library");
+                  setDialog("media");
+                } else setDialog(action);
+              }
             }}
             storageKey={`pushdocs:folders:${projectId}:${branch}`}
             paths={explorerPaths}
@@ -1314,13 +1361,15 @@ export function Workbench({
                   branch,
                   reload: load,
                   onProgress: setUploadProgress,
+                  onConflict: uploadConflict.ask,
                 });
                 if (result.uploaded.length) {
                   setRevealDirectory(directory);
                 }
                 setNotice(
-                  [`Загружено файлов: ${result.uploaded.length}`, ...result.errors].join(". "),
+                  result.uploaded.length ? `Загружено файлов: ${result.uploaded.length}` : "",
                 );
+                setError(result.errors.join(". "));
               } catch (cause) {
                 setNotice(
                   cause instanceof Error ? cause.message : "Не удалось обновить список файлов",
@@ -1518,8 +1567,9 @@ export function Workbench({
                         <button
                           className="wb-danger"
                           type="button"
-                          disabled={readOnly}
-                          onClick={() => setDialog("delete")}
+                          disabled={readOnly || !!fileActionReason("delete", selected)}
+                          title={fileActionReason("delete", selected) || undefined}
+                          onClick={() => void prepareDelete(selected)}
                           aria-label="Удалить документ"
                         >
                           <Trash2 size={15} /> Удалить документ
@@ -1638,7 +1688,8 @@ export function Workbench({
                       <div className="wb-actions wb-binary-actions">
                         <button
                           type="button"
-                          disabled={projectReadOnly}
+                          disabled={busy || !!fileActionReason("replace", selected)}
+                          title={fileActionReason("replace", selected) || undefined}
                           onClick={() => {
                             setReplaceAttachment(selected);
                             setMediaMode("library");
@@ -1675,11 +1726,9 @@ export function Workbench({
                         <button
                           className="wb-danger-button"
                           type="button"
-                          disabled={projectReadOnly}
-                          onClick={() => {
-                            setDeleteResultPath("");
-                            setDialog("delete");
-                          }}
+                          disabled={busy || !!fileActionReason("delete", selected)}
+                          title={fileActionReason("delete", selected) || undefined}
+                          onClick={() => void prepareDelete(selected)}
                         >
                           <Trash2 aria-hidden size={15} /> Удалить файл
                         </button>
@@ -1820,6 +1869,7 @@ export function Workbench({
           ) : null}
         </section>
       </div>
+      {uploadConflict.panel}
       {dialog ? (
         <div className="wb-modal-backdrop">
           <section
@@ -1991,10 +2041,26 @@ export function Workbench({
                   <small>Пустая папка сохраняется с файлом .gitkeep.</small>
                 ) : null}
                 {dialog === "delete" ? (
-                  <p>
-                    Файл {selected} будет помечен для удаления. До отправки в Git удаление можно
-                    отменить.
-                  </p>
+                  <>
+                    <p>
+                      Файл {selected} будет помечен для удаления. До отправки в Git удаление можно
+                      отменить.
+                    </p>
+                    {isMediaFile(selected) ? (
+                      deleteCheck === "loading" ? (
+                        <p role="status">Проверяем ссылки на файл…</p>
+                      ) : deleteCheck === "error" ? (
+                        <div role="alert">
+                          Не удалось проверить ссылки.{" "}
+                          <button type="button" onClick={() => void prepareDelete(selected)}>
+                            Повторить проверку
+                          </button>
+                        </div>
+                      ) : (
+                        <AssetUsages paths={deleteUsages} />
+                      )
+                    ) : null}
+                  </>
                 ) : null}
                 {dialog === "move" || dialog === "rename" ? (
                   <p>
@@ -2067,7 +2133,11 @@ export function Workbench({
                 <button
                   className={dialog === "delete" ? "wb-danger-button" : "wb-primary"}
                   type="submit"
-                  disabled={busy}
+                  disabled={
+                    busy ||
+                    (dialog === "delete" &&
+                      (deleteCheck !== "ready" || !!fileActionReason("delete", selected)))
+                  }
                 >
                   {busy
                     ? dialog === "branch"

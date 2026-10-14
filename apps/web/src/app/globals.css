@@ -3145,8 +3145,15 @@ textarea:where(:not(.monaco-editor *)):focus {
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   margin-top: auto;
+}
+.media-actions > button:not(.media-icon-action) {
+  min-height: 32px;
+  height: 32px;
+  padding: 6px 8px;
+  font-size: 12px;
+  gap: 6px;
 }
 .media-actions > .media-icon-action {
   display: inline-flex;

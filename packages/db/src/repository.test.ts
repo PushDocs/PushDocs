@@ -2366,6 +2366,41 @@ describe("working tree projection", () => {
       "# Intro\n",
     );
   });
+  it("replaces a deleted repository image at the same path and clears its deletion atomically", async () => {
+    const fixture = await synchronizedProject();
+    const path = "static/img/a.png";
+    await repository.replaceImportedDocuments(fixture.projectId, "main", "head-1", [], [path]);
+    await repository.stageFiles({
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path, content: null }],
+    });
+    expect((await repository.listWorkingFiles(fixture.projectId, "main")).files).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path, status: "delete" })]),
+    );
+    await repository.recordAttachment({
+      branch: "main",
+      projectId: fixture.projectId,
+      repositoryPath: path,
+      originalName: "a.png",
+      mediaType: "image/png",
+      sizeBytes: 1,
+      sha256: "a".repeat(64),
+      storageKey: "replacement",
+      expectedRevision: 1,
+      createOnly: false,
+    });
+    expect(
+      (await repository.listWorkingFiles(fixture.projectId, "main")).files.some(
+        (file) => file.path === path && file.status === "delete",
+      ),
+    ).toBe(false);
+    expect(await repository.listAttachmentsForBranch(fixture.projectId, "main")).toEqual([
+      expect.objectContaining({ repository_path: path, sha256: "a".repeat(64) }),
+    ]);
+  });
   it("never overwrites existing uploads or file-directory collisions in create-only mode", async () => {
     const fixture = await synchronizedProject();
     const input = {

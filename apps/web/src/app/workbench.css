@@ -1300,6 +1300,13 @@
 }
 .wb-binary-actions {
   justify-content: center;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
 }
 .wb-operation-result {
   display: grid;
@@ -1881,7 +1888,7 @@
   min-height: 16px;
 }
 .wb-media-modal .asset-grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr));
   gap: 12px;
 }
 .wb-media-modal .media-card {
@@ -2413,4 +2420,21 @@
 
 .preview-state {
   white-space: nowrap;
+}
+
+.wb-upload-conflict {
+  z-index: 120;
+}
+.wb-asset-usages ul {
+  max-height: 180px;
+  overflow: auto;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+.wb-explorer-menu small {
+  display: block;
+  white-space: normal;
+}
+.wb-upload-conflict strong {
+  overflow-wrap: anywhere;
 }

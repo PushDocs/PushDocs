@@ -3028,6 +3028,13 @@ export class PushDocsRepository extends SecurityRepository {
         })
         .returning(["id", "original_name", "status"])
         .executeTakeFirstOrThrow();
+      // Uploading at a deleted path restores that file in the same revision.
+      await transaction
+        .deleteFrom("draft_files")
+        .where("change_set_id", "=", changeSet.id)
+        .where("path", "=", input.repositoryPath)
+        .where("operation", "=", "delete")
+        .execute();
       await transaction
         .updateTable("change_sets")
         .set({ revision: changeSet.revision + 1, updated_at: new Date() })

@@ -444,3 +444,46 @@ it("reads and saves imported text while VPN initialization is unavailable", asyn
   expect(mocks.stage).toHaveBeenCalled();
   expect(mocks.provider).not.toHaveBeenCalled();
 });
+it("deletes and restores uploaded media without granting text editing access to binaries", async () => {
+  const path = "static/img/new.png";
+  for (const file of [
+    { path, content: null },
+    { path, revert: true },
+  ]) {
+    expect(
+      (await request({ action: "files", branch: "main", expectedRevision: 7, files: [file] }))
+        .status,
+    ).toBe(200);
+  }
+  expect(
+    (
+      await request({
+        action: "files",
+        branch: "main",
+        expectedRevision: 7,
+        files: [{ path, content: "binary as text" }],
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await request({
+        action: "files",
+        branch: "main",
+        expectedRevision: 7,
+        files: [{ path: "missing.png", content: null }],
+      })
+    ).status,
+  ).toBe(400);
+  role = "reader";
+  expect(
+    (
+      await request({
+        action: "files",
+        branch: "main",
+        expectedRevision: 7,
+        files: [{ path, content: null }],
+      })
+    ).status,
+  ).toBe(403);
+});

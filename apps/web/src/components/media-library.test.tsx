@@ -15,6 +15,7 @@ const state = {
       usages: ["docs/intro.md"],
     },
   ],
+  uploadDirectory: "static/img/uploads",
   revision: 3,
   status: "open",
   role: "editor",
@@ -250,7 +251,9 @@ it("uses project upload settings, retains a successful first upload and retries 
     });
   });
   expect(sent.map((item) => item.name)).toEqual(["a.png", "b.pdf"]);
-  expect(new URL(sent[0]?.url ?? "", "http://localhost").searchParams.has("path")).toBe(false);
+  expect(new URL(sent[0]?.url ?? "", "http://localhost").searchParams.get("path")).toBe(
+    "static/img/uploads/a.png",
+  );
   expect(sent[0]?.url).toContain("replace=false");
   expect(screen.getByRole("alert").textContent).toContain("Revision changed");
   fail = false;
@@ -403,3 +406,60 @@ it("filters attachments by the article without redundant branch and changes capt
   expect(screen.queryByText("docs/fix")).toBeNull();
   expect(screen.queryByText("Выбрать файлы")).toBeNull();
 });
+it.each(["replace", "rename", "skip"])(
+  "resolves a same-name media upload with %s",
+  async (decision) => {
+    const sent: string[] = [];
+    class Request extends EventTarget {
+      upload = new EventTarget();
+      timeout = 0;
+      status = 200;
+      responseText = "{}";
+      open(_method: string, url: string) {
+        sent.push(url);
+      }
+      send() {
+        this.dispatchEvent(new Event("load"));
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", Request);
+    vi.mocked(fetch).mockImplementation(async () =>
+      Response.json({ ...state, uploadDirectory: "static/img" }),
+    );
+    await act(async () => {
+      render(<MediaLibrary projectId="p" branch="main" document="docs/intro.md" />);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
+        target: { files: [new File(["new"], "a.png")] },
+      });
+    });
+    expect(sent).toHaveLength(0);
+    expect(screen.getByRole("alertdialog", { name: "Файл уже существует" })).toBeTruthy();
+    expect(screen.getByText(/Файл обновится во всех документах/)).toBeTruthy();
+    await act(async () => {
+      if (decision === "rename") {
+        fireEvent.change(screen.getByRole("textbox", { name: "Новое имя файла" }), {
+          target: { value: "b.png" },
+        });
+        fireEvent.submit(
+          screen
+            .getByRole("button", { name: "Сохранить под другим именем" })
+            .closest("form") as HTMLFormElement,
+        );
+      } else
+        fireEvent.click(
+          screen.getByRole("button", {
+            name: decision === "replace" ? "Заменить" : "Пропустить",
+          }),
+        );
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(sent).toHaveLength(decision === "skip" ? 0 : 1);
+    if (decision !== "skip") {
+      const query = new URL(sent[0] ?? "", "https://local.test").searchParams;
+      expect(query.get("path")).toBe(`static/img/${decision === "rename" ? "b" : "a"}.png`);
+      expect(query.get("replace")).toBe(String(decision === "replace"));
+    }
+  },
+);

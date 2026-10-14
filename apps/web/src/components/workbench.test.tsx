@@ -173,6 +173,10 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url, options) => {
+      if (String(_url).includes("/media?"))
+        return Response.json({
+          assets: [{ path: "static/img/photo.jpg", usages: ["docs/a.mdx"] }],
+        });
       if (!options?.body) return Response.json(structuredClone(state));
       const input = JSON.parse(options.body);
       requests.push(input);
@@ -1457,6 +1461,7 @@ it("groups binary file actions and confirms deletion with a result dialog", asyn
   await click("Удалить файл");
   expect(screen.getByRole("heading", { name: "Удалить файл" })).toBeTruthy();
   expect(screen.getByText(/будет помечен для удаления/)).toBeTruthy();
+  expect(screen.getByText("Возможные ссылки в документах: 1.")).toBeTruthy();
   await click("Подтвердить удаление");
   expect(requests.at(-1)).toMatchObject({
     files: [{ path: "static/img/photo.jpg", content: null }],
@@ -1775,4 +1780,49 @@ it("saves pending editor changes before a sidebar branch switch", async () => {
   expect(state.files[0]?.content).toBe("unsaved before switching");
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=release%2F2");
   expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("release/2");
+});
+it("explains blocked deletion in the explorer before opening a confirmation", async () => {
+  state.repositoryPaths = ["scripts/setup.sh"];
+  render(<Workbench projectId="project" projectName="Docs" branch="main" initial={state} />);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("treeitem", { name: "scripts" }));
+  });
+  fireEvent.contextMenu(screen.getByRole("treeitem", { name: "setup.sh" }));
+  const remove = screen.getByRole("menuitem", { name: /Удалить файл/ });
+  expect(remove).toHaveProperty("disabled", true);
+  expect(remove.title).toBe("Удаление запрещено настройками проекта");
+  fireEvent.click(remove);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+it("does not confirm media deletion while its usage check fails and offers a retry", async () => {
+  state.uploads = [{ path: "static/img/photo.jpg" }];
+  const original = vi.mocked(fetch).getMockImplementation();
+  let fail = true;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("/media?") && fail)
+      return Response.json({ error: "Offline" }, { status: 500 });
+    return original?.(url, options) as Promise<Response>;
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={state}
+      initialPath="static/img/photo.jpg"
+    />,
+  );
+  await click("Удалить файл");
+  expect(screen.getByRole("button", { name: "Подтвердить удаление" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  expect(requests).toHaveLength(0);
+  fail = false;
+  await click("Повторить проверку");
+  expect(screen.getByText("Возможные ссылки в документах: 1.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Подтвердить удаление" })).toHaveProperty(
+    "disabled",
+    false,
+  );
 });

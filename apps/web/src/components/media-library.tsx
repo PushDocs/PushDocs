@@ -1,9 +1,11 @@
 "use client";
 
+import { safePath } from "@pushdocs/content/config";
 import { Button } from "@pushdocs/ui";
 import { ExternalLink, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AssetUsages, useUploadConflict } from "./upload-conflict";
 
 interface Asset {
   path: string;
@@ -15,6 +17,7 @@ interface Asset {
 }
 interface MediaState {
   assets: Asset[];
+  uploadDirectory?: string;
   revision: number;
   status: string;
   role: string;
@@ -44,8 +47,13 @@ export function MediaLibrary({
   uploadOnly?: boolean;
   onUploadComplete?: (assets: Array<{ path: string; url: string }>) => void;
 }) {
+  const conflict = useUploadConflict();
+  const [localReplacePath, setLocalReplacePath] = useState<string>();
+  const replacementPath = replacePath ?? localReplacePath;
   const [state, setState] = useState<MediaState>();
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const uploadRegion = useRef<HTMLElement>(null);
   const [query, setQuery] = useState(initialQuery);
   const [onlyArticle, setOnlyArticle] = useState(false);
   const [selected, setSelected] = useState<Asset>();
@@ -80,7 +88,7 @@ export function MediaLibrary({
   async function upload(files: File[]) {
     /* v8 ignore next -- upload controls are disabled for all three guarded states. */
     if (readOnly || busy || uploading.current) return;
-    if (replacePath && files.length > 1) {
+    if (replacementPath && files.length > 1) {
       setError("Для замены выберите один файл.");
       return;
     }
@@ -93,7 +101,9 @@ export function MediaLibrary({
     setBusy(true);
     setRetry(false);
     setError("");
+    setSuccess("");
     const uploadedPaths: string[] = [];
+    let uploadedCount = 0;
     try {
       while (pending.current.length) {
         const file = pending.current[0];
@@ -101,14 +111,42 @@ export function MediaLibrary({
         if (!file) break;
         if (file.size > 64 * 1024 * 1024) throw new Error(`${file.name}: лимит 64 МиБ`);
         const current = await reload();
+        let targetPath = replacementPath;
+        let replace = !!replacementPath;
+        if (!targetPath && current.uploadDirectory !== undefined) {
+          targetPath = safePath(
+            `${current.uploadDirectory ? `${current.uploadDirectory}/` : ""}${file.name}`,
+          );
+          while (current.assets.some((asset) => asset.path === targetPath)) {
+            const decision = await conflict.ask(targetPath);
+            if (decision.action === "skip") {
+              targetPath = undefined;
+              break;
+            }
+            if (decision.action === "replace") {
+              replace = true;
+              break;
+            }
+            if (!decision.name || /[/\\]/.test(decision.name))
+              throw new Error("Введите имя файла без папок");
+            targetPath = safePath(
+              `${current.uploadDirectory ? `${current.uploadDirectory}/` : ""}${decision.name}`,
+            );
+          }
+          if (!targetPath) {
+            pending.current.shift();
+            continue;
+          }
+        }
         const params = new URLSearchParams({
           branch,
           name: file.name,
           document,
           locale: current.locale,
           revision: String(current.revision),
-          replace: String(!!replacePath),
-          ...(replacePath ? { path: replacePath } : {}),
+          replace: String(replace),
+          ...(targetPath ? { path: targetPath } : {}),
+          ...(replacementPath ? { destination: "repository" } : {}),
         });
         setProgress({ name: file.name, percent: 0 });
         const uploadedPath = await new Promise<string | undefined>((resolve, reject) => {
@@ -149,9 +187,12 @@ export function MediaLibrary({
         transfer.current = undefined;
         pending.current.shift();
         if (uploadedPath) uploadedPaths.push(uploadedPath);
+        uploadedCount++;
+        setSuccess(`Загружено файлов: ${uploadedCount}`);
         await onChanged?.(uploadedPath);
       }
       const refreshed = await reload();
+      setLocalReplacePath(undefined);
       if (uploadOnly && uploadedPaths.length) {
         const uploadedAssets = uploadedPaths.flatMap((path) => {
           const asset = refreshed.assets.find((item) => item.path === path);
@@ -164,7 +205,9 @@ export function MediaLibrary({
         }
       }
     } catch (cause) {
-      setError(String(cause));
+      setError(
+        `Не удалось загрузить ${pending.current[0]?.name ?? "файл"}: ${cause instanceof Error ? cause.message : "Ошибка загрузки"}`,
+      );
       setRetry(pending.current.length > 0);
       await reload().catch(() => undefined);
       await onChanged?.().catch(() => undefined);
@@ -204,6 +247,7 @@ export function MediaLibrary({
       setBusy(false);
     }
   }
+  const showLibrary = !uploadOnly && !replacementPath;
   const assets = state?.assets.filter(
     (asset) =>
       asset.path.toLowerCase().includes(query.toLowerCase()) &&
@@ -211,12 +255,34 @@ export function MediaLibrary({
   );
   return (
     <section className="media-library" aria-label="Медиатека">
-      {replacePath ? (
-        <p>
-          Заменить файл: <strong>{replacePath}</strong>
+      {conflict.panel}
+      {state && readOnly ? (
+        <p role="status">
+          {state.role === "reader"
+            ? "У вас роль читателя. Для замены и удаления нужна роль редактора."
+            : "Замена и удаление станут доступны после завершения отправки или разрешения конфликтов."}
         </p>
       ) : null}
+      {replacementPath ? (
+        <div>
+          <p>
+            Заменить файл: <strong>{replacementPath}</strong>
+          </p>
+          <p>Имя и путь сохранятся. Файл обновится во всех документах, где он используется.</p>
+          {state ? (
+            <AssetUsages
+              paths={state.assets.find((asset) => asset.path === replacementPath)?.usages ?? []}
+            />
+          ) : null}
+          {localReplacePath ? (
+            <Button type="button" disabled={busy} onClick={() => setLocalReplacePath(undefined)}>
+              Отменить замену
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <section
+        ref={uploadRegion}
         className="media-upload"
         aria-label="Загрузка файлов"
         onDragOver={(event) => event.preventDefault()}
@@ -233,7 +299,7 @@ export function MediaLibrary({
           <input
             type="file"
             aria-label="Загрузить файлы"
-            multiple={!replacePath && !uploadOnly}
+            multiple={!replacementPath && !uploadOnly}
             disabled={readOnly || busy}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
@@ -266,7 +332,7 @@ export function MediaLibrary({
           </Button>
         ) : null}
       </section>
-      {!uploadOnly ? (
+      {showLibrary ? (
         <>
           <div className="media-toolbar">
             <label>
@@ -302,13 +368,18 @@ export function MediaLibrary({
           ) : null}
         </>
       ) : null}
+      {success ? <p role="status">{success}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {!state ? <p role="status">Загружаем медиатеку…</p> : null}
-      {!uploadOnly && selected ? (
+      {showLibrary && selected ? (
         <section className="media-confirm" aria-label="Удаление файла">
           <h2>Удалить {selected.path}?</h2>
           <p>Удаление попадёт в общий набор изменений. В Git файл останется до отправки коммита.</p>
-          {selected.usages.length ? <p>Ссылки на этот файл могут быть в статьях:</p> : null}
+          <p>
+            {selected.usages.length
+              ? `Возможные ссылки в документах: ${selected.usages.length}`
+              : "Ссылки в документах не найдены."}
+          </p>
           <ul>
             {selected.usages.map((filePath) => (
               <li key={filePath}>
@@ -335,7 +406,7 @@ export function MediaLibrary({
           </Button>
         </section>
       ) : null}
-      {!uploadOnly ? (
+      {showLibrary ? (
         <div className="asset-grid">
           {assets?.map((asset) => (
             <article className="media-card" key={asset.path}>
@@ -389,35 +460,57 @@ export function MediaLibrary({
                     <Link2 aria-hidden size={16} />
                   </Button>
                 ) : null}
-                {asset.canDelete ? (
+                {asset.status !== "delete" ? (
                   <Button
                     type="button"
                     disabled={readOnly || busy}
-                    className="media-icon-action"
-                    tone={asset.status === "delete" ? "secondary" : "danger"}
-                    title={asset.status === "delete" ? "Отменить удаление" : "Удалить"}
-                    aria-label={`${asset.status === "delete" ? "Отменить удаление" : "Удалить"} ${asset.path}`}
+                    aria-label={`Заменить ${asset.path}`}
                     onClick={() => {
-                      if (asset.status === "delete") void mutate(asset, "revert");
-                      else setSelected(asset);
+                      setSelected(undefined);
+                      setLocalReplacePath(asset.path);
+                      uploadRegion.current?.scrollIntoView?.({
+                        block: "start",
+                        behavior: "smooth",
+                      });
                     }}
                   >
-                    {asset.status === "delete" ? (
-                      <Undo2 aria-hidden size={16} />
-                    ) : (
-                      <Trash2 aria-hidden size={16} />
-                    )}
+                    <Upload aria-hidden size={16} /> Заменить
                   </Button>
                 ) : null}
+                <Button
+                  type="button"
+                  disabled={readOnly || busy || !asset.canDelete}
+                  tone={asset.status === "delete" ? "secondary" : "danger"}
+                  title={
+                    !asset.canDelete
+                      ? "Удаление запрещено настройками проекта"
+                      : asset.status === "delete"
+                        ? "Отменить удаление"
+                        : "Удалить"
+                  }
+                  aria-label={`${asset.status === "delete" ? "Отменить удаление" : "Удалить"} ${asset.path}`}
+                  onClick={() => {
+                    if (asset.status === "delete") void mutate(asset, "revert");
+                    else setSelected(asset);
+                  }}
+                >
+                  {asset.status === "delete" ? (
+                    <Undo2 aria-hidden size={16} />
+                  ) : (
+                    <Trash2 aria-hidden size={16} />
+                  )}
+                  {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
+                </Button>
               </div>
+              {!asset.canDelete ? <small>Удаление запрещено настройками проекта</small> : null}
             </article>
           ))}
         </div>
       ) : null}
-      {!uploadOnly && state && state.assets.length > 0 && assets?.length === 0 ? (
+      {showLibrary && state && state.assets.length > 0 && assets?.length === 0 ? (
         <p>Файлы не найдены.</p>
       ) : null}
-      {!uploadOnly && state?.assets.length === 0 ? <p>В этой ветке пока нет медиафайлов.</p> : null}
+      {showLibrary && state?.assets.length === 0 ? <p>В этой ветке пока нет медиафайлов.</p> : null}
     </section>
   );
 }

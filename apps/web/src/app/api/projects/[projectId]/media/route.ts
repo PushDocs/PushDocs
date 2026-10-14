@@ -1,4 +1,4 @@
-import { isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
+import { assetLocation, isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { apiError, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
@@ -40,6 +40,10 @@ export async function GET(request: Request, context: Context) {
             size: Number(file.size_bytes),
           })),
         }),
+        uploadDirectory: assetLocation(config, locale, document, "placeholder")
+          .path.split("/")
+          .slice(0, -1)
+          .join("/"),
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",
         role: access.role,

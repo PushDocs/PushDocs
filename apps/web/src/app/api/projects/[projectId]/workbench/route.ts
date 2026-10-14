@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
+import { isMediaFile, parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
 import { validateBranchName } from "@pushdocs/providers";
 import { z } from "zod";
 import { providerForConnection } from "@/lib/provider";
@@ -222,7 +222,20 @@ export async function POST(request: Request, context: Context) {
           )
         : command.files;
     for (const file of files) {
-      assertEditable(config, file.path, access.role);
+      safePath(file.path);
+      if (isMediaFile(file.path) && (file.content === null || ("revert" in file && file.revert))) {
+        const uploads = state.changeSet
+          ? await store.listAttachmentsForChangeSet(projectId, state.changeSet.id)
+          : [];
+        if (
+          !state.branch.repository_paths.includes(file.path) &&
+          !state.files.some((item) => item.path === file.path) &&
+          !uploads.some((item) => item.repository_path === file.path)
+        )
+          throw new Error("Файл не найден в текущей ветке");
+      } else {
+        assertEditable(config, file.path, access.role);
+      }
       if (file.path === ".pushdocs/config.json" && file.content) parseProjectConfig(file.content);
     }
     if (command.action === "template") {

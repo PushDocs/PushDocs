@@ -246,3 +246,13 @@ it("uploads explorer assets at the requested repository location without media-r
   expect((await upload({ destination: "repository", path: ".git/config.png" })).status).toBe(400);
   expect((await upload({ destination: "repository", path: "config.json" })).status).toBe(400);
 });
+it("allows an explicit replacement at an arbitrary repository path", async () => {
+  const repositoryPath = "staticLocalized/ru/img/subscribers/summary.png";
+  state.branch.repository_paths = [repositoryPath];
+  expect(
+    (await upload({ destination: "repository", path: repositoryPath, replace: "true" })).status,
+  ).toBe(200);
+  expect(mocks.record).toHaveBeenCalledWith(
+    expect.objectContaining({ repositoryPath, createOnly: false }),
+  );
+});

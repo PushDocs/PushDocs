@@ -68,3 +68,45 @@ it("preserves existing drafts, skips invalid text and continues with the remaini
   expect(result.errors).toHaveLength(2);
   expect(request).toHaveBeenCalledTimes(1);
 });
+it("replaces an existing image only after an explicit collision decision", async () => {
+  const request = vi.fn().mockImplementation(async () => new Response("{}"));
+  vi.stubGlobal("fetch", request);
+  const reload = vi.fn().mockResolvedValue({ ...state, repositoryPaths: ["a.png"] });
+  const onConflict = vi.fn().mockResolvedValue({ action: "replace" });
+  const result = await uploadExplorerFiles({
+    files: [new File(["new image"], "a.png")],
+    directory: "",
+    projectId: "p",
+    branch: "main",
+    reload,
+    onProgress: vi.fn(),
+    onConflict,
+  });
+  expect(onConflict).toHaveBeenCalledWith("a.png");
+  expect(result.uploaded).toEqual(["a.png"]);
+  expect(
+    new URL(request.mock.calls[0]?.[0], "https://local.test").searchParams.get("replace"),
+  ).toBe("true");
+});
+it("keeps both files when a collision is renamed and skips without sending when cancelled", async () => {
+  const request = vi.fn().mockImplementation(async () => new Response("{}"));
+  vi.stubGlobal("fetch", request);
+  const reload = vi.fn().mockResolvedValue({ ...state, uploads: [{ path: "a.png" }] });
+  const result = await uploadExplorerFiles({
+    files: [new File(["new"], "a.png"), new File(["skip"], "a.png")],
+    directory: "",
+    projectId: "p",
+    branch: "main",
+    reload,
+    onProgress: vi.fn(),
+    onConflict: vi
+      .fn()
+      .mockResolvedValueOnce({ action: "rename", name: "b.png" })
+      .mockResolvedValue({ action: "skip" }),
+  });
+  expect(result).toEqual({ uploaded: ["b.png"], errors: [] });
+  expect(request).toHaveBeenCalledTimes(1);
+  const query = new URL(request.mock.calls[0]?.[0], "https://local.test").searchParams;
+  expect(query.get("path")).toBe("b.png");
+  expect(query.get("replace")).toBe("false");
+});
