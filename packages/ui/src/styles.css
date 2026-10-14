@@ -59,6 +59,12 @@
   color: white;
 }
 
+.pd-button--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, black);
+  border-color: color-mix(in srgb, var(--danger) 88%, black);
+  color: white;
+}
+
 .pd-select {
   align-items: center;
   background: var(--paper);

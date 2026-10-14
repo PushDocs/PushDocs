@@ -1032,13 +1032,15 @@
 .workbench .wb-danger {
   color: var(--danger);
 }
-.workbench .wb-danger-button {
+.workbench :is(.wb-danger-button, .pd-button--danger) {
   background: var(--danger);
   border-color: var(--danger);
   color: white;
 }
-.workbench .wb-danger-button:hover:not(:disabled) {
+.workbench :is(.wb-danger-button, .pd-button--danger):hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 88%, black);
+  border-color: color-mix(in srgb, var(--danger) 88%, black);
+  color: white;
 }
 .wb-format {
   gap: 3px;

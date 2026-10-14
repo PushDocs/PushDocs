@@ -11,6 +11,7 @@ interface Asset {
   path: string;
   url: string | null;
   canDelete: boolean;
+  inRepository: boolean;
   status: string;
   size: number | null;
   usages: string[];
@@ -222,6 +223,7 @@ export function MediaLibrary({
     /* v8 ignore next -- mutation controls are absent or disabled in these states. */
     if (!state || readOnly || busy) return;
     setBusy(true);
+    setSuccess("");
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -241,6 +243,8 @@ export function MediaLibrary({
       await reload();
       await onChanged?.();
       setError("");
+      if (action === "delete")
+        setSuccess(asset.inRepository ? "Файл отмечен для удаления" : "Файл удалён");
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -374,7 +378,11 @@ export function MediaLibrary({
       {showLibrary && selected ? (
         <section className="media-confirm" aria-label="Удаление файла">
           <h2>Удалить {selected.path}?</h2>
-          <p>Удаление попадёт в общий набор изменений. В Git файл останется до отправки коммита.</p>
+          <p>
+            {selected.inRepository
+              ? "Удаление попадёт в общий набор изменений. В Git файл останется до отправки коммита."
+              : "Файл будет удалён."}
+          </p>
           <p>
             {selected.usages.length
               ? `Возможные ссылки в документах: ${selected.usages.length}`

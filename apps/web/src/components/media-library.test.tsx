@@ -10,6 +10,7 @@ const state = {
       path: "static/img/a.png",
       url: "/img/a.png",
       canDelete: true,
+      inRepository: true,
       status: "clean",
       size: null,
       usages: ["docs/intro.md"],
@@ -461,5 +462,37 @@ it.each(["replace", "rename", "skip"])(
       expect(query.get("path")).toBe(`static/img/${decision === "rename" ? "b" : "a"}.png`);
       expect(query.get("replace")).toBe(String(decision === "replace"));
     }
+  },
+);
+it.each([false, true])(
+  "distinguishes a new upload from an uploaded replacement when deleting: inRepository=%s",
+  async (inRepository) => {
+    let removed = false;
+    const asset = { ...state.assets[0], inRepository, status: "upload" };
+    vi.mocked(fetch).mockImplementation(async (_url, options) => {
+      if (options?.method === "POST") {
+        removed = true;
+        return Response.json({ saved: true });
+      }
+      return Response.json({
+        ...state,
+        assets: removed ? (inRepository ? [{ ...asset, status: "delete" }] : []) : [asset],
+      });
+    });
+    await act(async () => {
+      render(<MediaLibrary projectId="p" branch="main" document="docs/intro.md" />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Удалить static/img/a.png" }));
+    expect(!!screen.queryByText(/В Git файл останется/)).toBe(inRepository);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Подтвердить удаление" }));
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      inRepository ? "Файл отмечен для удаления" : "Файл удалён",
+    );
+    expect(!!screen.queryByRole("button", { name: "Отменить удаление static/img/a.png" })).toBe(
+      inRepository,
+    );
+    expect(screen.queryByRole("region", { name: "Удаление файла" })).toBeNull();
   },
 );

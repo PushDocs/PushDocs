@@ -15,7 +15,7 @@ import {
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
 import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
-import { SearchableSelect, Select } from "../../packages/ui/src";
+import { Button, SearchableSelect, Select } from "../../packages/ui/src";
 import { CollaborationFixture } from "./collaboration-fixture";
 import { WorkbenchScrollFixture } from "./workbench-scroll-fixture";
 import "../../packages/ui/src/styles.css";
@@ -270,6 +270,18 @@ function App() {
       <main className="page">
         <DiffViewer before="old" after="new" />
         <DiffViewer before="before" after="after" />
+      </main>
+    );
+  if (new URLSearchParams(window.location.search).has("danger-buttons"))
+    return (
+      <main className="page">
+        <Button tone="danger">Удалить снаружи редактора</Button>
+        <div className="workbench">
+          <Button tone="danger">Удалить из медиатеки</Button>
+          <button type="button" className="wb-danger-button">
+            Подтвердить удаление
+          </button>
+        </div>
       </main>
     );
   if (new URLSearchParams(window.location.search).has("media"))

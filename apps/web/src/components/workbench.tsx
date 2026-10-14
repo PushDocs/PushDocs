@@ -220,6 +220,9 @@ export function Workbench({
   const [replacement, setReplacement] = useState("");
   const endpoint = `/api/projects/${projectId}/workbench`;
   const projectReadOnly = state.role === "reader" || state.status !== "open";
+  const selectedInRepository =
+    state.repositoryPaths.includes(selected) ||
+    state.files.some((file) => file.path === selected && file.status !== "add");
   const uploaded = state.uploads?.some((file) => file.path === selected) ?? false;
   const active = state.files.find(
     (file) => file.path === selected && (!uploaded || file.status === "delete"),
@@ -893,10 +896,12 @@ export function Workbench({
     return true;
   }
 
-  async function closeFile(filePath: string) {
+  async function closeFile(filePath: string, { deleted = false } = {}) {
     if (!(await save())) return;
     setClosedTabs((current) =>
-      [...current.filter((path) => path !== filePath), filePath].slice(-20),
+      deleted
+        ? current.filter((path) => path !== filePath)
+        : [...current.filter((path) => path !== filePath), filePath].slice(-20),
     );
     const remaining = tabs.filter((path) => path !== filePath);
     if (filePath === selected) {
@@ -1135,9 +1140,16 @@ export function Workbench({
       );
     } else if (dialog === "delete") {
       const deletedPath = selected;
+      const inRepository = selectedInRepository;
       if (await mutate({ action: "files", files: [{ path: deletedPath, content: null }] })) {
-        setDeleteResultPath(deletedPath);
-        setDialog("deleteResult");
+        if (inRepository) {
+          setDeleteResultPath(deletedPath);
+          setDialog("deleteResult");
+        } else {
+          clearDraft(draftKey(projectId, branch, deletedPath, state.ownerId));
+          await closeFile(deletedPath, { deleted: true });
+          setNotice("Файл удалён");
+        }
       }
     } else if (dialog === "template") {
       try {
@@ -1967,7 +1979,16 @@ export function Workbench({
                 initialQuery={replaceAttachment?.split("/").at(-1)}
                 uploadOnly={mediaMode === "insert" && !replaceAttachment}
                 onChanged={async (path) => {
-                  await load();
+                  const next = await load();
+                  if (
+                    !path &&
+                    selected &&
+                    !next.repositoryPaths.includes(selected) &&
+                    !next.files.some((file) => file.path === selected) &&
+                    !next.uploads?.some((file) => file.path === selected)
+                  ) {
+                    await closeFile(selected, { deleted: true });
+                  }
                   if (path) setRevealDirectory(path.slice(0, path.lastIndexOf("/")));
                 }}
                 onInsert={
@@ -2043,8 +2064,9 @@ export function Workbench({
                 {dialog === "delete" ? (
                   <>
                     <p>
-                      Файл {selected} будет помечен для удаления. До отправки в Git удаление можно
-                      отменить.
+                      {selectedInRepository
+                        ? `Файл ${selected} будет помечен для удаления. До отправки в Git удаление можно отменить.`
+                        : `Файл ${selected} будет удалён.`}
                     </p>
                     {isMediaFile(selected) ? (
                       deleteCheck === "loading" ? (

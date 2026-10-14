@@ -50,6 +50,7 @@ export function mediaCatalog(input: {
               ? `/${encodePath(filePath.slice("static/".length))}`
               : relativeLink(input.document, filePath),
         canDelete: true,
+        inRepository: input.paths.includes(filePath),
         status: deleted.has(filePath) ? "delete" : uploads.has(filePath) ? "upload" : "clean",
         size: uploads.get(filePath) ?? null,
         // This is an intentionally conservative candidate list, not a JavaScript/MDX evaluator.

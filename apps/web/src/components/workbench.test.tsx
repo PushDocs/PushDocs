@@ -1826,3 +1826,42 @@ it("does not confirm media deletion while its usage check fails and offers a ret
     false,
   );
 });
+it.each(["static/img/photo.jpg", "docs/new.md"])(
+  "removes an uncommitted file without a staged-deletion result or an open tab: %s",
+  async (path) => {
+    const image = path.endsWith(".jpg");
+    if (image) state.uploads = [{ path }];
+    else {
+      const source = state.files[0];
+      if (!source) throw new Error("Missing fixture");
+      state.files.push({ ...source, path, content: "# New", baseContent: "", status: "add" });
+    }
+    const original = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (options?.body && JSON.parse(String(options.body)).files?.[0]?.content === null) {
+        state.uploads = [];
+        state.files = state.files.filter((file) => file.path !== path);
+        state.revision++;
+        return Response.json({ saved: true });
+      }
+      if (!original) throw new Error("Missing fixture");
+      return original(url, options);
+    });
+    render(
+      <Workbench
+        projectId="project"
+        projectName="Docs"
+        branch="main"
+        initial={state}
+        initialPath={path}
+      />,
+    );
+    await click(image ? "Удалить файл" : "Удалить документ");
+    expect(screen.queryByText(/помечен для удаления|До отправки в Git/)).toBeNull();
+    await click("Подтвердить удаление");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Файл удалён");
+    expect(screen.queryByRole("treeitem", { name: path.split("/").at(-1) })).toBeNull();
+    expect(screen.queryByRole("tab", { name: path.split("/").at(-1) })).toBeNull();
+  },
+);

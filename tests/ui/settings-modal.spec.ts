@@ -501,6 +501,7 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
     path,
     url: `/${path}`,
     canDelete: true,
+    inRepository: true,
     status: "clean",
     size: null,
     usages: [],
@@ -602,4 +603,27 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
   await expect(collision).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await expect(page.getByLabel("Загрузить файлы", { exact: true })).toBeEnabled();
+});
+test("danger buttons keep white text and readable contrast on hover", async ({ page }) => {
+  await page.goto(`${baseURL}/?danger-buttons`);
+  for (const button of await page.getByRole("button").all()) {
+    await button.hover();
+    const colors = await button.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rgb =
+        style.backgroundColor
+          .match(/[\d.]+/g)
+          ?.slice(0, 3)
+          .map(Number) ?? [];
+      const channels = rgb.map((value) => {
+        const s = value / 255;
+        return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      const luminance =
+        (channels[0] ?? 0) * 0.2126 + (channels[1] ?? 0) * 0.7152 + (channels[2] ?? 0) * 0.0722;
+      return { foreground: style.color, contrastWithWhite: 1.05 / (luminance + 0.05) };
+    });
+    expect(colors.foreground).toBe("rgb(255, 255, 255)");
+    expect(colors.contrastWithWhite).toBeGreaterThanOrEqual(4.5);
+  }
 });
