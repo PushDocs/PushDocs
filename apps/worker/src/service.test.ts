@@ -85,6 +85,7 @@ function repository(): WorkerRepository {
     getProjectSyncTarget: vi.fn().mockResolvedValue(syncTarget),
     requireProjectAccess: vi.fn().mockResolvedValue({ role: "editor" }),
     savePreparedCommit: vi.fn(),
+    savePreparedBranchMerge: vi.fn(),
     discardRejectedCommit: vi.fn(),
     withGitRefLock: vi.fn(async (_key, operation) => operation()),
     listActiveProjectIds: vi.fn().mockResolvedValue([]),
@@ -98,6 +99,7 @@ function repository(): WorkerRepository {
 }
 
 const syncTarget = {
+  connection_id: "connection",
   base_url: "https://gitlab.test",
   default_branch: "main",
   kind: "gitlab" as const,
@@ -1811,5 +1813,200 @@ describe("MCP worker authorization and review metadata", () => {
       },
     );
     expect(client.commitFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe("merging the default branch before a review exists", () => {
+  function setup() {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(submissionTarget as never);
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "merge-job",
+      attempts: 1,
+      kind: "branch.merge",
+      created_at: new Date("2026-10-16T00:00:00Z"),
+      payload: { projectId: "project", branch: "docs/task", sourceBranch: "main", userId: "actor" },
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([
+      { name: "main", sha: "main-head" },
+      { name: "docs/task", sha: "merged-head" },
+    ]);
+    const transport = {
+      prepareMerge: vi.fn().mockResolvedValue({
+        branch: "docs/task",
+        parentSha: "task-head",
+        sourceSha: "main-head",
+        sha: "merged-head",
+      }),
+      publish: vi.fn().mockResolvedValue({ sha: "merged-head", alreadyApplied: false }),
+    };
+    const service = createService({
+      repository: port,
+      createProvider: () => client,
+      createMergeTransport: () => transport,
+      decryptSecret: () => "token",
+      logger: { error: vi.fn() },
+    });
+    return { port, client, transport, service };
+  }
+  it("publishes under the destination lock and imports documents without creating a review", async () => {
+    const { port, client, transport, service } = setup();
+    await service.runJob();
+    expect(port.withGitRefLock).toHaveBeenCalledWith(
+      "https://gitlab.test:42:docs/task",
+      expect.any(Function),
+    );
+    expect(transport.prepareMerge).toHaveBeenCalledWith({
+      branch: "docs/task",
+      sourceBranch: "main",
+      createdAt: "2026-10-16T00:00:00.000Z",
+    });
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "docs/task",
+      "merged-head",
+      [],
+      [],
+    );
+    expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+    expect(port.completeJob).toHaveBeenCalledWith("merge-job", 1);
+  });
+  it("journals the result before pushing and restores it after a post-push import failure", async () => {
+    const { port, client, transport, service } = setup();
+    const prepared = {
+      branch: "docs/task",
+      parentSha: "task-head",
+      sourceSha: "main-head",
+      sha: "merged-head",
+      targetKey: JSON.stringify([
+        submissionTarget.connection_id,
+        submissionTarget.base_url,
+        submissionTarget.provider_repository_id,
+        submissionTarget.clone_url,
+        submissionTarget.kind,
+      ]),
+    };
+    vi.mocked(client.listFiles).mockRejectedValueOnce(new Error("Import unavailable"));
+    await service.runJob();
+    expect(port.savePreparedBranchMerge).toHaveBeenCalledWith("merge-job", 1, prepared);
+    expect(vi.mocked(port.savePreparedBranchMerge).mock.invocationCallOrder[0]).toBeLessThan(
+      transport.publish.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(port.failJob).toHaveBeenCalledWith(
+      "merge-job",
+      expect.stringContaining("Слияние подтверждено в Git"),
+      true,
+      1,
+    );
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      id: "merge-job",
+      attempts: 2,
+      kind: "branch.merge",
+      created_at: new Date("2026-10-16T00:00:00Z"),
+      payload: {
+        projectId: "project",
+        branch: "docs/task",
+        sourceBranch: "main",
+        userId: "actor",
+        preparedMerge: prepared,
+      },
+    } as never);
+    await service.runJob();
+    expect(transport.prepareMerge).toHaveBeenLastCalledWith({
+      branch: "docs/task",
+      sourceBranch: "main",
+      createdAt: "2026-10-16T00:00:00.000Z",
+      prepared: {
+        branch: prepared.branch,
+        parentSha: prepared.parentSha,
+        sourceSha: prepared.sourceSha,
+        sha: prepared.sha,
+      },
+    });
+    expect(port.completeJob).toHaveBeenCalledWith("merge-job", 2);
+  });
+
+  it("does not replay a prepared merge into a changed repository", async () => {
+    const { port, transport, service } = setup();
+    const job = await port.claimNextJob();
+    if (!job) throw new Error("Missing fixture job");
+    const preparedMerge = {
+      branch: "docs/task",
+      parentSha: "task-head",
+      sourceSha: "main-head",
+      sha: "merged-head",
+      targetKey: JSON.stringify([
+        submissionTarget.connection_id,
+        submissionTarget.base_url,
+        submissionTarget.provider_repository_id,
+        submissionTarget.clone_url,
+        submissionTarget.kind,
+      ]),
+    };
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      ...job,
+      attempts: 2,
+      payload: { ...(job.payload as Record<string, unknown>), preparedMerge },
+    });
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue({
+      ...submissionTarget,
+      clone_url: "https://gitlab.test/another/docs.git",
+      provider_repository_id: "99",
+    } as never);
+    await service.runJob();
+    expect(transport.prepareMerge).not.toHaveBeenCalled();
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalledWith(
+      "merge-job",
+      expect.stringContaining("изменились после подготовки"),
+      false,
+      2,
+    );
+  });
+
+  it("does not push if the durable journal cannot be saved", async () => {
+    const { port, transport, service } = setup();
+    vi.mocked(port.savePreparedBranchMerge).mockRejectedValue(new Error("Database unavailable"));
+    await service.runJob();
+    expect(transport.publish).not.toHaveBeenCalled();
+  });
+
+  it("refuses protected destinations and a changed default branch", async () => {
+    const { port, client, transport, service } = setup();
+    vi.mocked(client.listBranches).mockResolvedValue([
+      { name: "docs/task", sha: "head", protected: true },
+    ]);
+    await service.runJob();
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalledWith(
+      "merge-job",
+      expect.stringContaining("Защищённую"),
+      false,
+      1,
+    );
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue({
+      ...submissionTarget,
+      default_branch: "stable",
+    } as never);
+    await service.runJob();
+    expect(port.failJob).toHaveBeenLastCalledWith(
+      "merge-job",
+      expect.stringContaining("Основная ветка"),
+      false,
+      1,
+    );
+  });
+  it("rechecks permission before pushing and does not retry revoked access", async () => {
+    const { port, transport, service } = setup();
+    vi.mocked(port.requireProjectAccess)
+      .mockResolvedValueOnce({ role: "editor" } as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Permission revoked"), { code: "ACCESS_DENIED" }),
+      );
+    await service.runJob();
+    expect(transport.prepareMerge).toHaveBeenCalled();
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenCalledWith("merge-job", "Permission revoked", false, 1);
   });
 });

@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => {
       createDraftDocument: vi.fn(),
       deleteSession: vi.fn(),
       enqueueBranchSync: vi.fn(),
+      enqueueBranchMerge: vi.fn(),
       enqueueBranchSyncIfStale: vi.fn(),
       enqueueReviewCreation: vi.fn(),
       getProjectJob: vi.fn(),
@@ -1665,4 +1666,24 @@ it("does not bypass verification when the security user no longer exists", async
     ),
   ).toEqual({ error: "Пользователь не найден. Войдите снова." });
   expect(mocks.repo.manageMember).not.toHaveBeenCalled();
+});
+
+it("queues the configured default branch merge without creating a review", async () => {
+  mocks.repo.getProjectSettings.mockResolvedValue({ default_branch: "stable" });
+  await startGitOperationAction({ projectId, branch: "docs/task", mergeDefault: true });
+  expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
+  expect(mocks.repo.enqueueBranchMerge).toHaveBeenCalledWith({
+    projectId,
+    branch: "docs/task",
+    sourceBranch: "stable",
+    userId: "user",
+  });
+  expect(mocks.repo.enqueueReviewCreation).not.toHaveBeenCalled();
+  await expect(
+    startGitOperationAction({ projectId, branch: "stable", mergeDefault: true }),
+  ).rejects.toThrow("Выберите ветку задачи");
+  mocks.repo.requireProjectAccess.mockRejectedValueOnce(new Error("denied"));
+  await expect(
+    startGitOperationAction({ projectId, branch: "docs/task", mergeDefault: true }),
+  ).rejects.toThrow("denied");
 });

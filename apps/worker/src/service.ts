@@ -10,7 +10,7 @@ import {
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { createProvider, type GitProvider, type ProviderFileChange } from "@pushdocs/providers";
 import { prepareVpnAccess, type VpnAccess, type VpnConnection } from "@pushdocs/vpn";
-import { GitTransport, type GitTransportOptions } from "./git-transport";
+import { BranchMergeConflictError, GitTransport, type GitTransportOptions } from "./git-transport";
 
 class BranchNotFoundError extends Error {
   constructor(branch: string) {
@@ -48,6 +48,7 @@ export type WorkerRepository = Pick<
   | "replaceImportedDocuments"
   | "requireProjectAccess"
   | "requireMcpGrant"
+  | "savePreparedBranchMerge"
   | "savePreparedCommit"
   | "withGitRefLock"
   | "discardRejectedCommit"
@@ -61,6 +62,9 @@ interface ProviderInput {
 }
 
 export interface WorkerServiceOptions {
+  createMergeTransport?: (
+    input: GitTransportOptions,
+  ) => Pick<GitTransport, "prepareMerge" | "publish">;
   createGitTransport?: (input: GitTransportOptions) => Pick<GitTransport, "prepare" | "publish">;
   gitRoot?: string;
   attachmentsRoot?: string;
@@ -346,6 +350,124 @@ export function createWorkerService(options: WorkerServiceOptions) {
     );
   }
 
+  function gitTransportOptions(
+    target: NonNullable<Awaited<ReturnType<WorkerRepository["getProjectSyncTarget"]>>>,
+    operationId: string,
+    access: Pick<VpnAccess, "gitProxyUrl">,
+  ): GitTransportOptions {
+    const token = decrypt(target.secret_encrypted);
+    const remote = new URL(target.clone_url);
+    const connection = new URL(target.base_url);
+    // GitLab behind an HTTPS proxy can advertise an HTTP clone URL for the same host.
+    if (
+      remote.protocol === "http:" &&
+      connection.protocol === "https:" &&
+      remote.hostname === connection.hostname &&
+      !remote.port &&
+      !connection.port
+    ) {
+      remote.protocol = "https:";
+    }
+    if (remote.origin !== connection.origin) throw new CloneOriginMismatchError();
+    return {
+      directory: path.join(
+        path.resolve(options.gitRoot ?? process.env.PUSHDOCS_GIT_CACHE_DIR ?? "./data/git"),
+        createHash("sha256").update(operationId).digest("hex"),
+      ),
+      remote: remote.href,
+      authorization: `Authorization: Basic ${Buffer.from(`${target.kind === "gitlab" ? "oauth2" : "x-access-token"}:${token}`).toString("base64")}`,
+      proxyUrl: access.gitProxyUrl,
+    };
+  }
+
+  function mergeTargetKey(target: Parameters<typeof gitTransportOptions>[0]) {
+    return JSON.stringify([
+      target.connection_id,
+      target.base_url,
+      target.provider_repository_id,
+      target.clone_url,
+      target.kind,
+    ]);
+  }
+
+  async function mergeBranch(
+    payload: unknown,
+    operationId: string,
+    createdAt: string,
+    attempt: number,
+  ) {
+    const projectId = projectIdFromPayload(payload);
+    const branch = stringFromPayload(payload, "branch");
+    const sourceBranch = stringFromPayload(payload, "sourceBranch");
+    const userId = stringFromPayload(payload, "userId");
+    await repository.requireProjectAccess(userId, projectId, "branch:push");
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    if (sourceBranch !== target.default_branch || branch === target.default_branch)
+      throw new BranchMergeConflictError(
+        "Основная ветка проекта изменилась. Обновите страницу и повторите операцию.",
+      );
+    const targetKey = mergeTargetKey(target);
+    const journal = (payload as Record<string, unknown>).preparedMerge;
+    if (journal && stringFromPayload(journal, "targetKey") !== targetKey)
+      throw new BranchMergeConflictError(
+        "Репозиторий или подключение изменились после подготовки слияния. Исходная операция остановлена.",
+      );
+    await repository.withGitRefLock(
+      `${target.base_url}:${target.provider_repository_id}:${branch}`,
+      async () => {
+        const { provider, access } = await providerAccessFor(target);
+        const branches = await provider.listBranches(target.provider_repository_id);
+        const destination = branches.find((item) => item.name === branch);
+        if (!destination) throw new BranchNotFoundError(branch);
+        if (destination.protected)
+          throw new BranchMergeConflictError(
+            "Защищённую ветку нельзя обновить слиянием из PushDocs.",
+          );
+        const transport = (options.createMergeTransport ?? ((input) => new GitTransport(input)))(
+          gitTransportOptions(target, operationId, access),
+        );
+        const savedMerge = journal
+          ? {
+              branch: stringFromPayload(journal, "branch"),
+              parentSha: stringFromPayload(journal, "parentSha"),
+              sourceSha: stringFromPayload(journal, "sourceSha"),
+              sha: stringFromPayload(journal, "sha"),
+            }
+          : undefined;
+        const prepared = await transport.prepareMerge({
+          branch,
+          sourceBranch,
+          createdAt,
+          ...(savedMerge ? { prepared: savedMerge } : {}),
+        });
+        if (savedMerge && prepared.sha !== savedMerge.sha)
+          throw new BranchMergeConflictError(
+            "Не удалось восстановить исходный коммит слияния. Отправка остановлена.",
+          );
+        await repository.savePreparedBranchMerge(operationId, attempt, { ...prepared, targetKey });
+        await repository.requireProjectAccess(userId, projectId, "branch:push");
+        const currentTarget = await repository.getProjectSyncTarget(projectId);
+        if (
+          !currentTarget ||
+          mergeTargetKey(currentTarget) !== targetKey ||
+          currentTarget.default_branch !== sourceBranch
+        )
+          throw new BranchMergeConflictError(
+            "Подключение или основная ветка проекта изменились. Повторите операцию.",
+          );
+        await transport.publish(prepared);
+        try {
+          await synchronizeBranchLocked(projectId, branch, provider);
+        } catch (error) {
+          throw new Error(
+            `Слияние подтверждено в Git, но документы не обновлены: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      },
+    );
+  }
+
   async function submitChangeSet(payload: unknown): Promise<void> {
     const target = await repository.getChangeSetSubmission(
       stringFromPayload(payload, "changeSetId"),
@@ -543,29 +665,9 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const operationId =
       target.prepared_commit?.operationId ?? stringFromPayload(payload, "operationId");
     const createdAt = target.prepared_commit?.createdAt ?? stringFromPayload(payload, "createdAt");
-    const token = decrypt(target.secret_encrypted);
-    const remote = new URL(target.clone_url);
-    const connection = new URL(target.base_url);
-    // GitLab behind an HTTPS proxy can advertise an HTTP clone URL for the same host.
-    if (
-      remote.protocol === "http:" &&
-      connection.protocol === "https:" &&
-      remote.hostname === connection.hostname &&
-      !remote.port &&
-      !connection.port
-    ) {
-      remote.protocol = "https:";
-    }
-    if (remote.origin !== connection.origin) throw new CloneOriginMismatchError();
-    const transport = (options.createGitTransport ?? ((input) => new GitTransport(input)))({
-      directory: path.join(
-        path.resolve(options.gitRoot ?? process.env.PUSHDOCS_GIT_CACHE_DIR ?? "./data/git"),
-        createHash("sha256").update(operationId).digest("hex"),
-      ),
-      remote: remote.href,
-      authorization: `Authorization: Basic ${Buffer.from(`${target.kind === "gitlab" ? "oauth2" : "x-access-token"}:${token}`).toString("base64")}`,
-      proxyUrl: access.gitProxyUrl,
-    });
+    const transport = (options.createGitTransport ?? ((input) => new GitTransport(input)))(
+      gitTransportOptions(target, operationId, access),
+    );
     const prepared = await transport.prepare({
       branch: target.branch,
       changes,
@@ -660,6 +762,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
           projectIdFromPayload(job.payload),
           stringFromPayload(job.payload, "branch"),
         );
+      } else if (job.kind === "branch.merge") {
+        await mergeBranch(
+          job.payload,
+          job.id,
+          new Date(job.created_at).toISOString(),
+          job.attempts,
+        );
       } else if (job.kind === "branch.create") {
         await createBranch(job.payload, (progress, counts) =>
           counts
@@ -718,6 +827,12 @@ export function createWorkerService(options: WorkerServiceOptions) {
         job.kind === "change-set.submit" && error instanceof CloneOriginMismatchError;
       const permanentBranchFailure =
         error instanceof BranchNotFoundError ||
+        error instanceof BranchMergeConflictError ||
+        (job.kind === "branch.merge" &&
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          ["ACCESS_DENIED", "PROVIDER_CONFLICT"].includes(String(error.code))) ||
         (job.kind === "branch.create" &&
           (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
             (typeof error === "object" &&

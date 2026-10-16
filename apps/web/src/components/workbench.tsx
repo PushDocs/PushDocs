@@ -26,6 +26,7 @@ import {
   startBackgroundBranchSyncAction,
   startGitOperationAction,
 } from "@/app/actions";
+import { BranchOperations } from "./branch-operations";
 import {
   CollaborationError,
   CollaborativeDocument,
@@ -97,6 +98,7 @@ type Dialog =
 export function Workbench({
   projectId,
   projectName,
+  defaultBranch,
   branch,
   initial,
   initialPath,
@@ -131,6 +133,9 @@ export function Workbench({
     initial.files[0]?.path ??
     "";
   const [selected, setSelected] = useState(firstPath);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const [gitBusy, setGitBusy] = useState(false);
   const [tabs, setTabs] = useState<string[]>(firstPath ? [firstPath] : []);
   const sessionKey = `pushdocs:tabs:${projectId}:${branch}`;
   const initialSession = useRef({ initial, firstPath, initialPath });
@@ -219,7 +224,7 @@ export function Workbench({
   const [replace, setReplace] = useState("");
   const [replacement, setReplacement] = useState("");
   const endpoint = `/api/projects/${projectId}/workbench`;
-  const projectReadOnly = state.role === "reader" || state.status !== "open";
+  const projectReadOnly = gitBusy || state.role === "reader" || state.status !== "open";
   const selectedInRepository =
     state.repositoryPaths.includes(selected) ||
     state.files.some((file) => file.path === selected && file.status !== "add");
@@ -248,8 +253,9 @@ export function Workbench({
     saveFailure === "permission" ||
     (collaborative && sharedReadyPath !== selected);
   const isArticle = !!active && /\.mdx?$/i.test(selected);
-  const readOnlyReason =
-    state.role === "reader"
+  const readOnlyReason = gitBusy
+    ? "Обновляем ветку из Git. Редактирование станет доступно после завершения операции."
+    : state.role === "reader"
       ? "У вас роль читателя. Для редактирования нужна роль редактора."
       : state.status !== "open"
         ? "Редактирование станет доступно после завершения отправки или разрешения конфликтов."
@@ -919,6 +925,7 @@ export function Workbench({
   }
 
   function fileActionReason(action: "replace" | "delete", path: string) {
+    if (gitBusy) return "Дождитесь завершения обновления ветки из Git";
     if (state.role === "reader") return "Нужна роль редактора";
     if (state.status !== "open") return "Дождитесь завершения отправки или разрешите конфликты";
     if (fileStatuses.get(path) === "delete") return "Файл уже отмечен для удаления";
@@ -953,6 +960,7 @@ export function Workbench({
   }
 
   async function mutate(payload: Record<string, unknown>, nextPath?: string) {
+    if (gitBusy) return;
     /* v8 ignore next -- callers already keep their operation dialog open after a tested save failure. */
     if (!(await save())) return;
     setBusy(true);
@@ -1182,6 +1190,36 @@ export function Workbench({
           <h1>Документы</h1>
         </div>
         <div className="wb-actions">
+          <BranchOperations
+            projectId={projectId}
+            branch={branch}
+            defaultBranch={defaultBranch}
+            canMerge={
+              !projectReadOnly &&
+              !state.branches.find((item) => item.full_ref === branch)?.is_protected
+            }
+            disabled={busy || mediaBusy || !!recovery || needsMerge}
+            beforeStart={save}
+            onBusyChange={setGitBusy}
+            onComplete={async () => {
+              const next = await load(true);
+              if (inFlight.current || latest.current !== saved.current)
+                throw new Error("Не удалось обновить редактор во время сохранения");
+              setRemoteFiles({});
+              const file = next.files.find((item) => item.path === selected);
+              if (
+                file &&
+                selectedRef.current === selected &&
+                !shared.current &&
+                !inFlight.current &&
+                latest.current === saved.current
+              ) {
+                saved.current = file.content;
+                latest.current = file.content;
+                setText(file.content);
+              }
+            }}
+          />
           {headerAction}
           <Link
             className="wb-primary"
@@ -1665,6 +1703,7 @@ export function Workbench({
                         Документ будет удалён при отправке.
                         <button
                           type="button"
+                          disabled={gitBusy}
                           onClick={() =>
                             void mutate(
                               { action: "files", files: [{ path: selected, revert: true }] },

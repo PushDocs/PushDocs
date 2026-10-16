@@ -409,13 +409,13 @@ it("keeps branch controls out of the document header", () => {
   expect(screen.queryByRole("combobox", { name: "Текущая ветка" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Новая ветка" })).toBeNull();
 });
-it("refreshes Git data in the background and keeps manual refresh out of the editor", async () => {
+it("refreshes Git data in the background and offers an explicit refresh in the editor", async () => {
   mocks.backgroundSync.mockResolvedValueOnce("background-job");
   mount();
   await act(async () => {});
   expect(mocks.backgroundSync).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
   expect(mocks.status).toHaveBeenCalledWith("project", "background-job");
-  expect(screen.queryByRole("button", { name: "Получить из Git" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Обновить из Git" })).toBeTruthy();
 });
 it("closes tabs after saving", async () => {
   mount();
@@ -1865,3 +1865,117 @@ it.each(["static/img/photo.jpg", "docs/new.md"])(
     expect(screen.queryByRole("tab", { name: path.split("/").at(-1) })).toBeNull();
   },
 );
+
+it("reloads the selected document after an explicit Git refresh", async () => {
+  mocks.start.mockResolvedValue("refresh-job");
+  mocks.status.mockResolvedValue({ status: "done" });
+  mount();
+  await act(async () => {});
+  const first = state.files[0];
+  if (!first) throw new Error("Missing test document");
+  first.content = "# Updated upstream";
+  first.baseContent = "# Updated upstream";
+  state.sha = "updated-head";
+  await click("Обновить из Git");
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
+  expect(
+    screen.getByRole("textbox", { name: "Исходник документа" }).getAttribute("readonly"),
+  ).toBeNull();
+  expect(
+    (screen.getByRole("textbox", { name: "Исходник документа" }) as HTMLTextAreaElement).value,
+  ).toBe("# Updated upstream");
+});
+
+it("invalidates read-only file contents after refreshing from Git", async () => {
+  state.repositoryPaths = ["raw.md"];
+  let contents = "# Before refresh";
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("path=raw.md")) return Response.json({ content: contents });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={structuredClone(state)}
+      initialPath="raw.md"
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Before refresh");
+  contents = "# Updated in Git";
+  await click("Обновить из Git");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Updated in Git");
+});
+
+it("saves pending text and pauses editing until Git refresh and document reload finish", async () => {
+  let finish: ((job: { status: string }) => void) | undefined;
+  mocks.status.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  mount();
+  await act(async () => {});
+  fireEvent.change(screen.getByLabelText("Исходник документа"), {
+    target: { value: "Saved before Git refresh" },
+  });
+  await click("Обновить из Git");
+  expect(requests[0]).toMatchObject({
+    action: "files",
+    files: [{ path: "docs/a.mdx", content: "Saved before Git refresh" }],
+  });
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
+  expect(screen.getByText(/Обновляем ветку из Git. Редактирование/)).toBeTruthy();
+  await act(async () => finish?.({ status: "done" }));
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", false);
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    "Saved before Git refresh",
+  );
+});
+
+it("does not replace the newly selected document with a late Git refresh response for another tab", async () => {
+  mount();
+  await act(async () => {});
+  const original = vi.mocked(fetch).getMockImplementation();
+  let finish: ((response: Response) => void) | undefined;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).includes("selected=docs%2Fa.mdx") && !options?.body)
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    if (!original) throw new Error("Missing fixture");
+    return original(url, options);
+  });
+  await click("Обновить из Git");
+  await click("b.md");
+  const response = structuredClone(state);
+  const first = response.files[0];
+  if (!first) throw new Error("Missing test document");
+  first.content = "# Late upstream version";
+  await act(async () => finish?.(Response.json(response)));
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Второй");
+});
+
+it("also blocks attachment changes and deletion reversal while the Git operation is running", async () => {
+  mocks.status.mockReturnValue(new Promise(() => {}));
+  const first = state.files[0];
+  if (!first) throw new Error("Missing test document");
+  first.status = "delete";
+  state.uploads = [{ path: "photo.jpg" }];
+  mount();
+  await act(async () => {});
+  await click("Обновить из Git");
+  expect(screen.getByRole("button", { name: "Отменить удаление" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  await click("photo.jpg");
+  expect(screen.getByRole("button", { name: "Заменить файл" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Удалить файл" })).toHaveProperty("disabled", true);
+  expect(requests).toEqual([]);
+});

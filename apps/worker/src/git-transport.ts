@@ -7,11 +7,26 @@ import {
   validateBranchName,
 } from "@pushdocs/providers";
 
+class GitCommandError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode: number | null,
+  ) {
+    super(message);
+  }
+}
+
+export class BranchMergeConflictError extends Error {}
+
 export interface PreparedCommit {
   branch: string;
   parentSha: string;
   sha: string;
 }
+export interface PreparedBranchMerge extends PreparedCommit {
+  sourceSha: string;
+}
+
 export interface GitTransportOptions {
   directory: string;
   remote: string;
@@ -120,7 +135,7 @@ export class GitTransport {
             this.options.proxyUrl,
           ].filter((value): value is string => Boolean(value));
           for (const secret of secrets) detail = detail.replaceAll(secret, "[redacted]");
-          reject(new Error(`Git ${args[0]} failed (${code}): ${detail}`));
+          reject(new GitCommandError(`Git ${args[0]} failed (${code}): ${detail}`, code));
         }
       });
       /* v8 ignore next -- broken-pipe notification is deliberately consumed by Node. */
@@ -244,6 +259,73 @@ export class GitTransport {
       .toString()
       .trim();
     return { branch: input.branch, parentSha: input.baseSha, sha };
+  }
+
+  /** Merge full Git trees without checking out files or executing repository configuration. */
+  async prepareMerge(input: {
+    branch: string;
+    sourceBranch: string;
+    createdAt: string;
+    prepared?: PreparedBranchMerge;
+  }): Promise<PreparedBranchMerge> {
+    validateBranchName(input.branch);
+    validateBranchName(input.sourceBranch);
+    if (input.branch === input.sourceBranch) throw new Error("Нельзя влить ветку в саму себя");
+    if (!Number.isFinite(Date.parse(input.createdAt))) throw new Error("Invalid commit identity");
+    const current = await this.head(input.branch);
+    const parentSha = input.prepared ? this.sha(input.prepared.parentSha) : current;
+    const sourceSha = input.prepared
+      ? this.sha(input.prepared.sourceSha)
+      : await this.head(input.sourceBranch);
+    if (input.prepared) {
+      if (input.prepared.branch !== input.branch) throw new Error("Prepared merge branch mismatch");
+      this.sha(input.prepared.sha);
+      // A cache can be lost between attempts. Fetch the original objects, never moving branch tips.
+      for (const sha of [parentSha, sourceSha]) {
+        try {
+          await this.run(["cat-file", "-e", `${sha}^{commit}`]);
+        } catch {
+          await this.run(["fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", sha]);
+        }
+      }
+    }
+    try {
+      await this.run(["merge-base", "--is-ancestor", sourceSha, parentSha]);
+      return { branch: input.branch, parentSha, sourceSha, sha: parentSha };
+    } catch (error) {
+      if (!(error instanceof GitCommandError) || error.exitCode !== 1) throw error;
+    }
+    try {
+      await this.run(["merge-base", "--is-ancestor", parentSha, sourceSha]);
+      return { branch: input.branch, parentSha, sourceSha, sha: sourceSha };
+    } catch (error) {
+      if (!(error instanceof GitCommandError) || error.exitCode !== 1) throw error;
+    }
+    let tree: string;
+    try {
+      tree =
+        (await this.run(["merge-tree", "--write-tree", parentSha, sourceSha]))
+          .toString()
+          .split("\n")[0]
+          ?.trim() ?? "";
+    } catch (error) {
+      if (error instanceof GitCommandError && error.exitCode === 1)
+        throw new BranchMergeConflictError(
+          "Ветки содержат конфликтующие изменения. Разрешите конфликт в Git и обновите ветку в PushDocs. Ветка в Git не изменена.",
+        );
+      throw error;
+    }
+    this.sha(tree);
+    const sha = (
+      await this.run(
+        ["commit-tree", tree, "-p", parentSha, "-p", sourceSha],
+        `Merge ${input.sourceBranch} into ${input.branch}\n`,
+        input.createdAt,
+      )
+    )
+      .toString()
+      .trim();
+    return { branch: input.branch, parentSha, sourceSha, sha };
   }
 
   async publish(prepared: PreparedCommit): Promise<{ sha: string; alreadyApplied: boolean }> {
