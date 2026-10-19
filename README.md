@@ -18,7 +18,7 @@ The repository contains a working MVP:
 - PushDocs does not send email. Administrators share invitation links through a messenger. Each link is bound to one email address, can be accepted once and expires within 24 hours.
 - A GitLab connection can store an encrypted inline OpenVPN profile when VPN support is enabled for the installation. Provider requests and Git HTTPS traffic then pass through an isolated VPN gateway. The installation supports four active VPN profiles.
 - One installation can import and manage several projects. Each project has its own members and roles.
-- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context.
+- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header offers **Обновить из Git** to refresh the selected branch, including the default branch. Editors can use **Влить <default branch>…** on an unprotected task branch before or after creating a PR or MR. This fetches both branches, merges and pushes with an exact branch lease, then reloads the imported documents. Drafts remain in PushDocs. Conflicting Git branches are left unchanged and must be resolved in Git before retrying.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
 - Editors can upload images, MP4, PDF, ZIP, CSV and TXT files. PushDocs includes documents and attachments in one commit.
 - Readers can comment on documents. Comment and status updates reach open pages through server-sent events.
@@ -44,7 +44,7 @@ The local preview executes repository JavaScript. Enable it only for repositorie
 - Comments are stored in PushDocs and are not copied to provider discussions.
 - Review state is refreshed every 30 seconds. Provider webhooks are not implemented yet.
 - The write path has real local Git and PostgreSQL integration tests. Live provider acceptance requires separately agreed test repositories. Tests never push to sendsay-docs.
-- The updated development plan is only partially implemented. Merge/rebase, provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
+- The updated development plan is only partially implemented. Rebase, provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
 - A CI preview link becomes available only after the `preview:deploy` check succeeds for the current PR or MR commit.
 
 ## Run with Docker Compose

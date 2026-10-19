@@ -382,3 +382,183 @@ it("terminates a Git command that exceeds its deadline", async () => {
     vi.useRealTimers();
   }
 });
+
+it("merges divergent branches, preserves both parents and retries without duplicate commits", async () => {
+  const data = await fixture();
+  await git(data.source, "checkout", "-b", "docs/task");
+  await writeFile(path.join(data.source, "task.md"), "Task\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Task");
+  const taskSha = await git(data.source, "rev-parse", "HEAD");
+  await git(data.source, "push", "origin", "docs/task");
+  await git(data.source, "checkout", "main");
+  await writeFile(path.join(data.source, "article.md"), "# Upstream\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Upstream");
+  await git(data.source, "push", "origin", "main");
+  const upstream = await git(data.source, "rev-parse", "HEAD");
+  const transport = new GitTransport({
+    directory: path.join(data.directory, "merge"),
+    remote: data.remote,
+    allowLocal: true,
+  });
+  const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-10-16T00:00:00Z" };
+  const prepared = await transport.prepareMerge(input);
+  await transport.publish(prepared);
+  expect(await git(data.remote, "show", "docs/task:task.md")).toBe("Task");
+  expect(await git(data.remote, "show", "docs/task:article.md")).toBe("# Upstream");
+  expect(await git(data.remote, "show", "-s", "--format=%P", "docs/task")).toBe(
+    `${taskSha} ${upstream}`,
+  );
+  expect(await git(data.remote, "rev-parse", "main")).toBe(upstream);
+  const retried = await transport.prepareMerge(input);
+  expect(retried.sha).toBe(prepared.sha);
+  expect(await transport.publish(retried)).toMatchObject({ alreadyApplied: true });
+});
+
+it("fast-forwards a task branch and rejects conflicts without changing remote refs", async () => {
+  const data = await fixture();
+  await git(data.source, "branch", "docs/task");
+  await git(data.source, "push", "origin", "docs/task");
+  await writeFile(path.join(data.source, "article.md"), "# Upstream\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Upstream");
+  await git(data.source, "push", "origin", "main");
+  const upstream = await git(data.source, "rev-parse", "HEAD");
+  const transport = new GitTransport({
+    directory: path.join(data.directory, "merge"),
+    remote: data.remote,
+    allowLocal: true,
+  });
+  const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-10-16T00:00:00Z" };
+  const ff = await transport.prepareMerge(input);
+  expect(ff.sha).toBe(upstream);
+  await transport.publish(ff);
+  // Create a fresh diverged task from the original base.
+  await git(data.source, "checkout", "-b", "docs/conflict", data.baseSha);
+  await writeFile(path.join(data.source, "article.md"), "# Task\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Conflict");
+  await git(data.source, "push", "origin", "docs/conflict");
+  const before = await git(data.remote, "rev-parse", "docs/conflict");
+  await expect(transport.prepareMerge({ ...input, branch: "docs/conflict" })).rejects.toThrow(
+    "конфликтующие",
+  );
+  expect(await git(data.remote, "rev-parse", "docs/conflict")).toBe(before);
+  expect(await git(data.remote, "rev-parse", "main")).toBe(upstream);
+});
+
+it("refuses to publish a merge over a concurrent task update", async () => {
+  const data = await fixture();
+  await git(data.source, "branch", "docs/task");
+  await git(data.source, "push", "origin", "docs/task");
+  await writeFile(path.join(data.source, "upstream.md"), "Upstream\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Upstream");
+  await git(data.source, "push", "origin", "main");
+  const transport = new GitTransport({
+    directory: path.join(data.directory, "merge"),
+    remote: data.remote,
+    allowLocal: true,
+  });
+  const prepared = await transport.prepareMerge({
+    branch: "docs/task",
+    sourceBranch: "main",
+    createdAt: "2026-10-16T00:00:00Z",
+  });
+  await git(data.source, "checkout", "docs/task");
+  await writeFile(path.join(data.source, "task.md"), "Concurrent\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Concurrent");
+  await git(data.source, "push", "origin", "docs/task");
+  await expect(transport.publish(prepared)).rejects.toMatchObject({ code: "PROVIDER_CONFLICT" });
+  expect(await git(data.remote, "show", "docs/task:task.md")).toBe("Concurrent");
+});
+
+it("restores the original merge after an accepted push even when new upstream commits would conflict", async () => {
+  const data = await fixture();
+  await git(data.source, "checkout", "-b", "docs/task");
+  await writeFile(path.join(data.source, "task.md"), "Task\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Task");
+  await git(data.source, "push", "origin", "docs/task");
+  await git(data.source, "checkout", "main");
+  await writeFile(path.join(data.source, "article.md"), "# Upstream\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Upstream");
+  await git(data.source, "push", "origin", "main");
+  const transport = new GitTransport({
+    directory: path.join(data.directory, "first"),
+    remote: data.remote,
+    allowLocal: true,
+  });
+  const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-10-16T00:00:00Z" };
+  const prepared = await transport.prepareMerge(input);
+  await transport.publish(prepared);
+  // Simulate a lost acknowledgement/import failure, then independent edits on both branches.
+  await writeFile(path.join(data.source, "article.md"), "# New upstream\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Later upstream");
+  await git(data.source, "push", "origin", "main");
+  await git(data.source, "fetch", "origin");
+  await git(data.source, "checkout", "docs/task");
+  await git(data.source, "reset", "--hard", "origin/docs/task");
+  await writeFile(path.join(data.source, "article.md"), "# New task edit\n");
+  await git(data.source, "add", ".");
+  await git(data.source, "commit", "-m", "Later task edit");
+  await git(data.source, "push", "origin", "docs/task");
+  const before = await git(data.remote, "rev-parse", "docs/task");
+  const restarted = new GitTransport({
+    directory: path.join(data.directory, "empty-cache"),
+    remote: data.remote,
+    allowLocal: true,
+  });
+  await expect(restarted.prepareMerge(input)).rejects.toThrow("конфликтующие");
+  const restored = await restarted.prepareMerge({ ...input, prepared });
+  expect(restored).toEqual(prepared);
+  expect(await restarted.publish(restored)).toMatchObject({ alreadyApplied: true });
+  expect(await git(data.remote, "rev-parse", "docs/task")).toBe(before);
+  expect(await git(data.remote, "show", "docs/task:article.md")).toBe("# New task edit");
+});
+
+it.each(["binary", "modify-delete", "file-directory"])(
+  "leaves the remote unchanged for a %s conflict",
+  async (kind) => {
+    const data = await fixture();
+    await git(data.source, "checkout", "-b", "docs/task");
+    if (kind === "binary")
+      await writeFile(path.join(data.source, "article.md"), Buffer.from([0, 1, 2]));
+    else await writeFile(path.join(data.source, "article.md"), "# Task change\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Task");
+    await git(data.source, "push", "origin", "docs/task");
+    await git(data.source, "checkout", "main");
+    if (kind === "binary")
+      await writeFile(path.join(data.source, "article.md"), Buffer.from([0, 3, 4]));
+    else {
+      await git(data.source, "rm", "article.md");
+      if (kind === "file-directory") {
+        const { mkdir } = await import("node:fs/promises");
+        await mkdir(path.join(data.source, "article.md"));
+        await writeFile(path.join(data.source, "article.md", "child.md"), "# Nested\n");
+      }
+    }
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Conflicting upstream");
+    await git(data.source, "push", "origin", "main");
+    const before = await git(data.remote, "rev-parse", "docs/task");
+    const transport = new GitTransport({
+      directory: path.join(data.directory, "merge"),
+      remote: data.remote,
+      allowLocal: true,
+    });
+    await expect(
+      transport.prepareMerge({
+        branch: "docs/task",
+        sourceBranch: "main",
+        createdAt: "2026-10-16T00:00:00Z",
+      }),
+    ).rejects.toThrow("конфликтующие");
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(before);
+  },
+);

@@ -2437,3 +2437,44 @@
 .wb-upload-conflict strong {
   overflow-wrap: anywhere;
 }
+
+.wb-branch-operations {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.wb-branch-operations > p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+}
+.wb-branch-operations > p[role="alert"] {
+  color: var(--danger);
+}
+.wb-merge-menu {
+  position: static;
+}
+.wb-merge-menu > summary {
+  min-height: 42px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wb-merge-menu .wb-popover {
+  right: 0;
+  left: auto;
+  width: min(320px, 100%);
+  padding: 12px;
+}
+.wb-merge-menu .wb-popover p {
+  overflow-wrap: anywhere;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.workbench .wb-branch-operations > button {
+  height: 42px;
+}

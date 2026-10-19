@@ -876,6 +876,72 @@ export class PushDocsRepository extends SecurityRepository {
     return job.id;
   }
 
+  async enqueueBranchMerge(input: {
+    projectId: string;
+    branch: string;
+    sourceBranch: string;
+    userId: string;
+  }): Promise<string> {
+    const job = await this.database
+      .insertInto("jobs")
+      .values({
+        kind: "branch.merge",
+        payload: {
+          ...input,
+          branch: normalizeBranchRef(input.branch),
+          sourceBranch: normalizeBranchRef(input.sourceBranch),
+        },
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    return job.id;
+  }
+
+  async savePreparedBranchMerge(
+    jobId: string,
+    attempt: number,
+    preparedMerge: {
+      branch: string;
+      parentSha: string;
+      sourceSha: string;
+      sha: string;
+      targetKey: string;
+    },
+  ): Promise<void> {
+    await this.transaction(async (transaction) => {
+      const job = await transaction
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("kind", "=", "branch.merge")
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!job)
+        throw new RevisionConflictError("Операция слияния уже передана другому обработчику");
+      const payload = job.payload as Record<string, unknown>;
+      const existing = payload.preparedMerge as typeof preparedMerge | undefined;
+      if (
+        existing &&
+        (existing.branch !== preparedMerge.branch ||
+          existing.parentSha !== preparedMerge.parentSha ||
+          existing.sourceSha !== preparedMerge.sourceSha ||
+          existing.sha !== preparedMerge.sha ||
+          existing.targetKey !== preparedMerge.targetKey)
+      )
+        throw new RevisionConflictError("Результат слияния уже сохранён");
+      await transaction
+        .updateTable("jobs")
+        .set({
+          payload: { ...payload, preparedMerge },
+          updated_at: new Date(),
+        })
+        .where("id", "=", jobId)
+        .execute();
+    });
+  }
+
   async enqueueBranchSyncIfStale(
     projectId: string,
     branch: string,

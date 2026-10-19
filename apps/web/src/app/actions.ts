@@ -631,6 +631,7 @@ export async function createDocumentAction(formData: FormData): Promise<void> {
 }
 
 export async function startGitOperationAction(input: {
+  mergeDefault?: boolean;
   reviewsOnly?: boolean;
   projectId: string;
   branch: string;
@@ -643,6 +644,19 @@ export async function startGitOperationAction(input: {
     input.projectId,
     input.title ? "change-request:create" : "project:read",
   );
+  if (input.mergeDefault) {
+    await store.requireProjectAccess(user.id, input.projectId, "branch:push");
+    const project = await store.getProjectSettings(input.projectId);
+    if (!project) throw new Error("Проект не найден");
+    if (input.branch === project.default_branch)
+      throw new Error("Выберите ветку задачи для слияния основной ветки");
+    return store.enqueueBranchMerge({
+      projectId: input.projectId,
+      branch: input.branch,
+      sourceBranch: project.default_branch,
+      userId: user.id,
+    });
+  }
   if (input.reviewsOnly) return store.enqueueReviewsSync(input.projectId);
   if (input.title)
     return store.enqueueReviewCreation(

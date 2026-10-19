@@ -1030,6 +1030,20 @@ describe("branches and imported documents", () => {
       .where("kind", "=", "branch.sync")
       .executeTakeFirstOrThrow();
     expect(queued.payload).toEqual({ branch: "release", projectId: fixture.projectId });
+    const mergeInput = {
+      projectId: fixture.projectId,
+      branch: "docs/update",
+      sourceBranch: "main",
+      userId: fixture.operatorId,
+    };
+    const mergeId = await repository.enqueueBranchMerge(mergeInput);
+    const mergePayload = await database
+      .selectFrom("jobs")
+      .select(["kind", "payload"])
+      .where("id", "=", mergeId)
+      .executeTakeFirstOrThrow();
+    expect(mergePayload.kind).toBe("branch.merge");
+    expect(mergePayload.payload).toEqual(mergeInput);
     await repository.enqueueBranchCreation({
       projectId: fixture.projectId,
       sourceBranch: "main",
@@ -1049,6 +1063,49 @@ describe("branches and imported documents", () => {
       branch: "docs/new",
       userId: fixture.operatorId,
     });
+  });
+
+  it("keeps the prepared branch merge immutable and rejects an expired worker lease", async () => {
+    const fixture = await synchronizedProject();
+    const id = await repository.enqueueBranchMerge({
+      projectId: fixture.projectId,
+      branch: "docs/task",
+      sourceBranch: "main",
+      userId: fixture.operatorId,
+    });
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 1 })
+      .where("id", "=", id)
+      .execute();
+    const prepared = {
+      branch: "docs/task",
+      parentSha: "a".repeat(40),
+      sourceSha: "b".repeat(40),
+      sha: "c".repeat(40),
+      targetKey: "fixture-target",
+    };
+    await repository.savePreparedBranchMerge(id, 1, prepared);
+    await repository.savePreparedBranchMerge(id, 1, {
+      targetKey: prepared.targetKey,
+      sha: prepared.sha,
+      sourceSha: prepared.sourceSha,
+      parentSha: prepared.parentSha,
+      branch: prepared.branch,
+    });
+    await expect(
+      repository.savePreparedBranchMerge(id, 1, { ...prepared, sha: "d".repeat(40) }),
+    ).rejects.toThrow("уже сохранён");
+    await database.updateTable("jobs").set({ attempts: 2 }).where("id", "=", id).execute();
+    await expect(repository.savePreparedBranchMerge(id, 1, prepared)).rejects.toThrow(
+      "другому обработчику",
+    );
+    const job = await database
+      .selectFrom("jobs")
+      .select("payload")
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(job.payload).toMatchObject({ preparedMerge: prepared });
   });
 
   it("reuses a fresh branch cache and deduplicates a stale background refresh", async () => {
