@@ -1,3 +1,4 @@
+import { parseProjectConfig } from "@pushdocs/content/config";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -44,7 +45,12 @@ beforeEach(() => {
   mocks.context.mockResolvedValue({
     state: { files: [], branch: { id: "branch", repository_paths: [], head_commit_sha: "sha" } },
     access: { role: "editor" },
-    config: {},
+    config: parseProjectConfig(
+      JSON.stringify({
+        version: 1,
+        media: { components: { DocMedia: { storage: "images", srcBase: "/img" } } },
+      }),
+    ),
   });
   mocks.workingFile.mockResolvedValue(undefined);
   mocks.attachments.mockResolvedValue([
@@ -139,7 +145,7 @@ it("loads the selected branch registry and offers DocMedia without an import", a
   expect(view.props.components).toEqual([
     expect.objectContaining({
       name: "DocMedia",
-      snippet: '<DocMedia src="folder/image.png" alt="Описание изображения" />',
+      snippet: '<DocMedia src="" alt="Описание изображения" />',
     }),
   ]);
   expect(mocks.workingFile).toHaveBeenCalledTimes(2);

@@ -108,14 +108,13 @@ it("refuses unsafe or oversized companion updates and preserves CRLF through suc
 it("uses conventional Docusaurus paths without configuration", () => {
   const config = parseProjectConfig();
   expect(attachmentUploadDirectory(config)).toBe("static/img");
-  expect(mediaComponentBaseUrl(config, "ru", "docmedia")).toBe("/img");
-  expect(mediaComponentBaseUrl(config, "en", "docmedia")).toBe("/en/img");
+  expect(config.media.components).toEqual({});
 });
 
 it("uses image and video storage directly for component uploads and public URLs", () => {
   const config = parseProjectConfig(JSON.stringify(sendsayExample));
   const document = "i18n/en/docs/en/forms/editor.mdx";
-  expect(attachmentUploadDirectory(config, "en", document, "docmedia")).toBe(
+  expect(attachmentUploadDirectory(config, "en", document, "images")).toBe(
     "staticLocalized/en/img/forms/editor",
   );
   expect(attachmentUploadDirectory(config, "en", document, "video")).toBe(
@@ -123,8 +122,8 @@ it("uses image and video storage directly for component uploads and public URLs"
   );
   expect(config.media.images?.publicUrl).toBe("/{locale}/img");
   expect(config.media.video?.publicUrl).toBe("/{locale}/video");
-  expect(mediaComponentBaseUrl(config, "ru", "video")).toBe("/video");
-  expect(mediaComponentBaseUrl(config, "en", "video")).toBe("/en/video");
+  expect(mediaComponentBaseUrl(config, "ru", { storage: "video" })).toBeUndefined();
+  expect(mediaComponentBaseUrl(config, "en", { storage: "video" })).toBeUndefined();
   expect(config.media).not.toHaveProperty("sources");
   expect(parseProjectConfig(JSON.stringify(config))).toEqual(config);
 });
@@ -163,7 +162,7 @@ it("defaults public URLs and uses the ordinary upload destination when video is 
   expect(attachmentUploadDirectory(config, "ru", "docs/a.mdx", "video")).toBe(
     "assets/ru/pictures/a",
   );
-  expect(mediaComponentBaseUrl(config, "en", "docmedia")).toBe("/en/img");
+  expect(config.media.components).toEqual({});
 });
 
 it.each([

@@ -2,14 +2,9 @@
 
 import { isEditableFile } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
-import {
-  docMediaSnippet,
-  isMediaFile,
-  markdownAttachmentSnippet,
-  videoSnippet,
-} from "@pushdocs/content/media";
+import { attachmentSnippet, isMediaFile } from "@pushdocs/content/media";
 import { mediaAssetLocation } from "@pushdocs/content/media-paths";
-import type { ProjectConfig } from "@pushdocs/contracts";
+import { MediaInsertionMode, type ProjectConfig } from "@pushdocs/contracts";
 import { Select } from "@pushdocs/ui";
 import {
   ArrowRight,
@@ -122,7 +117,7 @@ export function Workbench({
   initialPath?: string;
   initialPanel?: "media" | "branch";
   headerAction?: ReactNode;
-  components?: Array<{ name?: string; label: string; snippet: string }>;
+  components?: Array<{ name: string; label: string; snippet: string }>;
   metadataTabEnabled?: boolean;
 }) {
   const router = useRouter();
@@ -169,9 +164,29 @@ export function Workbench({
       : (initialPanel ?? null),
   );
   const [replaceAttachment, setReplaceAttachment] = useState<string>();
-  const [mediaMode, setMediaMode] = useState<"library" | "markdown" | "docmedia" | "video">(
-    "library",
-  );
+  const [mediaMode, setMediaMode] = useState(MediaInsertionMode.Library);
+  const [mediaComponentName, setMediaComponentName] = useState<string>();
+  const mediaComponent =
+    mediaMode === MediaInsertionMode.Images || mediaMode === MediaInsertionMode.Video
+      ? state.config.media.components[mediaComponentName ?? ""]
+      : undefined;
+  function insertAttachments(assets: Array<{ path: string; url: string }>) {
+    const locale =
+      active?.locale && active.locale !== "default" ? active.locale : state.config.defaultLocale;
+    const snippet = assets
+      .map((asset) =>
+        attachmentSnippet(
+          asset,
+          state.config,
+          locale,
+          mediaComponent ? mediaComponentName : undefined,
+        ),
+      )
+      .join("\n");
+    insert(`\n${snippet}\n`);
+    setMode("source");
+    setDialog(null);
+  }
   const uploadConflict = useUploadConflict();
   const [deleteUsages, setDeleteUsages] = useState<string[]>([]);
   const [deleteCheck, setDeleteCheck] = useState<"loading" | "ready" | "error">("ready");
@@ -1392,7 +1407,7 @@ export function Workbench({
                 if (action === "delete") await prepareDelete(path);
                 else if (action === "replace") {
                   setReplaceAttachment(path);
-                  setMediaMode("library");
+                  setMediaMode(MediaInsertionMode.Library);
                   setDialog("media");
                 } else setDialog(action);
               }
@@ -1448,7 +1463,7 @@ export function Workbench({
             onMedia={async () => {
               if (await save()) {
                 setReplaceAttachment(undefined);
-                setMediaMode("library");
+                setMediaMode(MediaInsertionMode.Library);
                 setDialog("media");
               }
             }}
@@ -1684,12 +1699,16 @@ export function Workbench({
                         components={components}
                         readOnly={readOnly || busy}
                         onInsert={async (snippet, name) => {
-                          const component =
-                            name ?? snippet.match(/^\s*<(DocMedia|Video)[\s/>]/)?.[1];
-                          if (component === "Video" || component === "DocMedia") {
+                          const component = state.config.media.components[name];
+                          if (component && !/^\s*import\s/m.test(snippet)) {
                             if (await save()) {
                               setReplaceAttachment(undefined);
-                              setMediaMode(component === "Video" ? "video" : "docmedia");
+                              setMediaComponentName(name);
+                              setMediaMode(
+                                component.storage === "video"
+                                  ? MediaInsertionMode.Video
+                                  : MediaInsertionMode.Images,
+                              );
                               setDialog("media");
                             }
                           } else insert(`\n${snippet}\n`);
@@ -1702,7 +1721,7 @@ export function Workbench({
                       onClick={async () => {
                         if (await save()) {
                           setReplaceAttachment(undefined);
-                          setMediaMode("markdown");
+                          setMediaMode(MediaInsertionMode.Markdown);
                           setDialog("media");
                         }
                       }}
@@ -1769,7 +1788,7 @@ export function Workbench({
                           title={fileActionReason("replace", selected) || undefined}
                           onClick={() => {
                             setReplaceAttachment(selected);
-                            setMediaMode("library");
+                            setMediaMode(MediaInsertionMode.Library);
                             setDialog("media");
                           }}
                         >
@@ -1975,14 +1994,11 @@ export function Workbench({
                     rename: "Переименовать файл",
                     delete: active ? "Удалить документ" : "Удалить файл",
                     deleteResult: "Файл отмечен для удаления",
-                    media:
-                      mediaMode === "docmedia"
-                        ? "Вставить DocMedia"
-                        : mediaMode === "video"
-                          ? "Вставить Video"
-                          : mediaMode === "markdown"
-                            ? "Вставить вложение"
-                            : "Вложения",
+                    media: mediaComponent
+                      ? `Вставить ${mediaComponentName}`
+                      : mediaMode === MediaInsertionMode.Markdown
+                        ? "Вставить вложение"
+                        : "Вложения",
                     template: "Создать по шаблону",
                   }[dialog]
                 }
@@ -2055,8 +2071,8 @@ export function Workbench({
                 onBusyChange={setMediaBusy}
                 replacePath={replaceAttachment}
                 initialQuery={replaceAttachment?.split("/").at(-1)}
-                key={mediaMode}
-                insertionMode={mediaMode === "library" || replaceAttachment ? undefined : mediaMode}
+                key={`${mediaMode}:${mediaComponentName ?? ""}`}
+                insertionMode={replaceAttachment ? MediaInsertionMode.Library : mediaMode}
                 onChanged={async (path) => {
                   const next = await load();
                   if (
@@ -2074,49 +2090,12 @@ export function Workbench({
                   !readOnly && /\.mdx?$/i.test(selected)
                     ? (url, path) => {
                         void load()
-                          .then(() => {
-                            insert(
-                              `\n${
-                                mediaMode === "docmedia"
-                                  ? docMediaSnippet(
-                                      { path, url },
-                                      state.config,
-                                      active?.locale && active.locale !== "default"
-                                        ? active.locale
-                                        : state.config.defaultLocale,
-                                    )
-                                  : mediaMode === "video"
-                                    ? videoSnippet({ url })
-                                    : markdownAttachmentSnippet({ path, url })
-                              }\n`,
-                            );
-                            setMode("source");
-                            setDialog(null);
-                          })
+                          .then(() => insertAttachments([{ path, url }]))
                           .catch((cause) => setError(String(cause)));
                       }
                     : undefined
                 }
-                onUploadComplete={(assets) => {
-                  const snippet = assets
-                    .map((asset) =>
-                      mediaMode === "docmedia"
-                        ? docMediaSnippet(
-                            asset,
-                            state.config,
-                            active?.locale && active.locale !== "default"
-                              ? active.locale
-                              : state.config.defaultLocale,
-                          )
-                        : mediaMode === "video"
-                          ? videoSnippet(asset)
-                          : markdownAttachmentSnippet(asset),
-                    )
-                    .join("\n");
-                  insert(`\n${snippet}\n`);
-                  setMode("source");
-                  setDialog(null);
-                }}
+                onUploadComplete={insertAttachments}
               />
             ) : (
               <form onSubmit={submitDialog}>

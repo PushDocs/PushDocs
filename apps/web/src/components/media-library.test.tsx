@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { parseProjectConfig } from "@pushdocs/content/config";
 import { mediaCatalog } from "@pushdocs/content/media";
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MediaLibrary } from "./media-library";
@@ -168,7 +169,7 @@ it("shows grouped media in insertion mode with filenames, subtle paths and expli
         projectId="p"
         branch="main"
         document="docs/forms/a.mdx"
-        insertionMode="docmedia"
+        insertionMode={MediaInsertionMode.Images}
         onInsert={insert}
       />,
     );
@@ -217,7 +218,7 @@ it("initializes generic insertion from the project directory and allows selectin
         projectId="p"
         branch="main"
         document="docs/a.md"
-        insertionMode="markdown"
+        insertionMode={MediaInsertionMode.Markdown}
         onInsert={insert}
       />,
     );
@@ -246,7 +247,7 @@ it("hides unsupported attachments in DocMedia and rejects them before uploading 
         projectId="p"
         branch="main"
         document="docs/a.mdx"
-        insertionMode="docmedia"
+        insertionMode={MediaInsertionMode.Images}
         onInsert={vi.fn()}
       />,
     );
@@ -260,7 +261,7 @@ it("hides unsupported attachments in DocMedia and rejects them before uploading 
       dataTransfer: { files: [new File(["pdf"], "guide.pdf")] },
     });
   });
-  expect(screen.getByRole("alert").textContent).toBe("DocMedia поддерживает изображения и MP4.");
+  expect(screen.getByRole("alert").textContent).toBe("Выберите изображение или MP4.");
   expect(vi.mocked(fetch).mock.calls).toHaveLength(calls);
 });
 
@@ -286,7 +287,7 @@ it("inserts only MP4 for Video and rejects images before starting an upload", as
         projectId="p"
         branch="main"
         document="docs/article.mdx"
-        insertionMode="video"
+        insertionMode={MediaInsertionMode.Video}
         onInsert={insert}
       />,
     );
@@ -305,7 +306,7 @@ it("inserts only MP4 for Video and rejects images before starting an upload", as
       dataTransfer: { files: [new File(["image"], "a.png")] },
     });
   });
-  expect(screen.getByRole("alert").textContent).toBe("Video поддерживает MP4.");
+  expect(screen.getByRole("alert").textContent).toBe("Выберите MP4.");
   expect(vi.mocked(fetch).mock.calls).toHaveLength(calls);
 });
 it("replaces the selected asset at its exact path regardless of the uploaded filename", async () => {
@@ -643,7 +644,7 @@ it("can recover from an initial network failure into an empty media library", as
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it.each(["markdown", "docmedia", "video"] as const)(
+it.each([MediaInsertionMode.Markdown, MediaInsertionMode.Images, MediaInsertionMode.Video])(
   "prefills and follows the article directory search in %s",
   async (insertionMode) => {
     const extension = insertionMode === "video" ? "mp4" : "png";

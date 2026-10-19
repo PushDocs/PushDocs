@@ -1,5 +1,6 @@
 import {
   defaultMediaLocations,
+  type MediaComponentConfig,
   type ProjectConfig,
   projectConfigSchema,
 } from "@pushdocs/contracts";
@@ -31,6 +32,8 @@ export function parseProjectConfig(source?: string | null): ProjectConfig {
   }
   for (const prefix of Object.values(config.media.documentPathPrefixes ?? {}))
     safePath(prefix.replace(/\/+$/, ""));
+  for (const component of Object.values(config.media.components))
+    if (component.srcBase) mediaPublicUrl(config, config.defaultLocale, component.srcBase);
   return config;
 }
 
@@ -149,26 +152,21 @@ export function mediaPublicUrl(config: ProjectConfig, locale: string, template: 
 export function mediaComponentBaseUrl(
   config: ProjectConfig,
   locale: string,
-  component: "docmedia" | "video",
+  component: MediaComponentConfig,
 ) {
-  return mediaPublicUrl(
-    config,
-    locale,
-    component === "video"
-      ? (config.media.video?.publicUrl ?? defaultMediaLocations.video.publicUrl)
-      : (config.media.images?.publicUrl ?? defaultMediaLocations.images.publicUrl),
-  );
+  return component.srcBase === undefined
+    ? undefined
+    : mediaPublicUrl(config, locale, component.srcBase);
 }
 
 export function attachmentUploadDirectory(
   config: ProjectConfig,
   locale = config.defaultLocale,
   documentPath?: string,
-  component?: "docmedia" | "video",
+  storage: MediaComponentConfig["storage"] = "images",
 ) {
   const values = mediaTemplateValues(config, locale, documentPath);
-  const componentDirectory =
-    component === "video" ? config.media.video?.directory : config.media.images?.directory;
+  const componentDirectory = config.media[storage]?.directory;
   const template =
     componentDirectory ?? config.media.images?.directory ?? defaultMediaLocations.images.directory;
   const base = safePath(expand(template, values).trim().replace(/\/+$/, ""));

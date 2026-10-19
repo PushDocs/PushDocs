@@ -1,4 +1,8 @@
-import { defaultMediaLocations, type ProjectConfig } from "@pushdocs/contracts";
+import {
+  defaultMediaLocations,
+  type MediaComponentConfig,
+  type ProjectConfig,
+} from "@pushdocs/contracts";
 import { expand, mediaComponentBaseUrl, mediaPublicUrl, safePath } from "./config";
 
 export interface MediaRoot {
@@ -68,7 +72,6 @@ export function mediaRoots(
   const targets = [...new Set([config.defaultLocale, locale, ...knownLocales])];
   const roots: MediaRoot[] = [];
   for (const kind of ["images", "video"] as const) {
-    const fallback = defaultMediaLocations[kind].directory;
     const configured = config.media[kind];
     const location = configured ?? defaultMediaLocations[kind];
     for (const target of targets) {
@@ -87,15 +90,6 @@ export function mediaRoots(
         shared: !location.directory.includes("{locale}"),
         kind,
       });
-      if (directory !== fallback)
-        roots.push({
-          directory: fallback,
-          publicUrl,
-          locale: target,
-          group: false,
-          shared: true,
-          kind,
-        });
     }
   }
   for (const target of targets)
@@ -133,8 +127,14 @@ export function repositoryMediaUrl(
     : undefined;
 }
 
-export function docMediaUrl(config: ProjectConfig, locale: string, src: string) {
-  const base = mediaComponentBaseUrl(config, locale, "docmedia");
+export function mediaComponentUrl(
+  config: ProjectConfig,
+  locale: string,
+  src: string,
+  component: MediaComponentConfig,
+) {
+  const base = mediaComponentBaseUrl(config, locale, component);
+  if (base === undefined || /^(?:[a-z][\w+.-]*:|\/|@site\/|#)/i.test(src)) return src;
   const path = normalizeMediaPath(`${base}/${src}`);
   return path === undefined ? undefined : `/${path}`;
 }
@@ -149,7 +149,7 @@ export function mediaAssetLocation(
 ) {
   const url = repositoryMediaUrl(config, locale, filePath, roots);
   const resolved = url
-    ? mediaReferenceCandidates(config, locale, "", url, false, roots).find((path) =>
+    ? mediaReferenceCandidates(config, locale, "", url, undefined, roots).find((path) =>
         available.has(path),
       )
     : undefined;
@@ -162,12 +162,13 @@ export function mediaReferenceCandidates(
   locale: string,
   document: string,
   reference: string,
-  docMedia = false,
+  component?: MediaComponentConfig,
   roots?: MediaRoot[],
 ) {
   let value = reference.replace(/^pathname:\/\//, "");
-  if ((!value && !docMedia) || /^(?:[a-z][\w+.-]*:|\/\/|#)/i.test(value)) return [];
-  if (docMedia) value = docMediaUrl(config, locale, value) ?? "";
+  if ((!value && component?.srcBase === undefined) || /^(?:[a-z][\w+.-]*:|\/\/|#)/i.test(value))
+    return [];
+  if (component) value = mediaComponentUrl(config, locale, value, component) ?? "";
   try {
     value = decodeURIComponent(value.split(/[?#]/)[0] ?? "");
   } catch {

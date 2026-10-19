@@ -16,7 +16,7 @@ export {
 } from "./config";
 
 export {
-  docMediaUrl,
+  mediaComponentUrl,
   mediaLocales,
   mediaReferenceCandidates,
   mediaRoots,
@@ -146,7 +146,6 @@ export {
   topicWords,
 } from "./intelligence";
 export {
-  globalMdxSnippet,
   isMdxComponentsPath,
   mdxComponentPaths,
   registeredMdxComponents,

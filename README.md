@@ -27,7 +27,7 @@ The repository contains a working MVP:
 - The review screen displays open pull requests or merge requests and their current checks.
 - A project can register custom MDX components. The editor inserts their configured source snippets and shows safe placeholders in preview.
 - The document workbench has a file tree, persisted and closeable tabs, content search, language/version/status filters, highlighted MDX source with line numbers, scalar metadata forms, quick Markdown preview, and side-by-side comparison. It preserves untouched MDX bytes and line endings when editing.
-- Administrators can create and edit `.pushdocs/config.json` in the workbench. It defines document roots, editable technical files, document templates and media paths. DocMedia uses the image storage settings and the component registered in the repository. Every field is described in the [configuration reference](docs/configuration.md).
+- Administrators can create and edit `.pushdocs/config.json` in the workbench. It defines document roots, editable technical files, document templates and media paths. Media components are enabled explicitly in `media.components`, with their JSX names, storage and optional `srcBase`. The configuration reference includes a DocMedia/Video example. Every field is described in the [configuration reference](docs/configuration.md).
 - The media library lists existing Git files and uploads, supports drag and drop, progress, cancellation, retry, deletion and link insertion. Uploads require explicit replacement of existing files. Limits are 64 MiB per file, 256 MiB per submission and four active uploads per project.
 - After changes are sent, the review screen links to the documentation preview built by the repository's existing CI pipeline.
 
@@ -102,9 +102,7 @@ For a standard Docusaurus start command, the runner generates a separate preview
 
 ## Attachments
 
-Attachment folders and public URLs are configured in the branch's `.pushdocs/config.json`. Without media configuration, uploads use `static/img`. Missing folders are created automatically, and uploads remain drafts until changes are sent to Git.
-
-See the [configuration reference](docs/configuration.md#вложения) and [sendsay-docs example](docs/examples/sendsay-docs.pushdocs.json) for image and video storage, localized paths and public URL mappings.
+Uploads use `static/img` by default and remain drafts until sent to Git. See the [attachment configuration](docs/configuration.md#вложения) for storage paths, localized URLs and a sendsay-docs example.
 
 ## CI preview
 

@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+export enum MediaInsertionMode {
+  Library = "library",
+  Markdown = "markdown",
+  Images = "images",
+  Video = "video",
+}
+
 export const defaultMediaLocations = {
   images: { directory: "static/img", publicUrl: "/{locale}/img" },
   video: { directory: "static/video", publicUrl: "/{locale}/video" },
@@ -12,12 +19,18 @@ const prefixes = z.record(locale, directory);
 const location = (url: string) =>
   z.object({ directory, publicUrl: publicUrl.default(url) }).strict();
 
+const mediaComponentSchema = z
+  .object({ storage: z.enum(["images", "video"]), srcBase: publicUrl.optional() })
+  .strict();
+export type MediaComponentConfig = z.infer<typeof mediaComponentSchema>;
+
 /** Repository configuration describes storage; gallery groups and fallbacks are automatic. */
 export const mediaConfigSchema = z
   .object({
     images: location(defaultMediaLocations.images.publicUrl).optional(),
     video: location(defaultMediaLocations.video.publicUrl).optional(),
     documentPathPrefixes: prefixes.optional(),
+    components: z.record(z.string().regex(/^[A-Z]\w*$/), mediaComponentSchema).default({}),
   })
   .strict()
-  .default({});
+  .default({ components: {} });

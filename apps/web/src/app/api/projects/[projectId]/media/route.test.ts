@@ -18,6 +18,7 @@ import { GET, POST } from "./route";
 
 const context = { params: Promise.resolve({ projectId: "project" }) };
 beforeEach(() => {
+  vi.stubEnv("PUSHDOCS_PUBLIC_ORIGIN", "https://cms.test");
   mocks.access.mockResolvedValue({ role: "editor" });
   mocks.attachments.mockResolvedValue([]);
   mocks.context.mockResolvedValue({
@@ -131,7 +132,7 @@ it("reports an empty branch without an active change set", async () => {
   });
 });
 
-it.each([undefined, "docmedia", "article"])(
+it.each([undefined, "images", "markdown"])(
   "uses the project upload directory for modal mode %s",
   async (mode) => {
     const current = await mocks.context();
@@ -190,7 +191,7 @@ it("uses ordinary gallery groups and upload defaults when Video has no dedicated
   });
 });
 
-it.each(["docmedia", "article", "video"])(
+it.each(["images", "markdown", "video"])(
   "uses the English attachment root and omits the extra locale directory in %s mode",
   async (mode) => {
     const current = await mocks.context();
@@ -215,7 +216,7 @@ it.each(["docmedia", "article", "video"])(
       directories:
         mode === "video"
           ? ["staticLocalized/ru/video", "staticLocalized/en/video"]
-          : mode === "docmedia"
+          : mode === "images"
             ? ["staticLocalized/ru/img", "staticLocalized/en/img"]
             : [
                 "staticLocalized/ru/img",
@@ -250,7 +251,7 @@ it.each([
     ];
     const response = await GET(
       new Request(
-        `https://cms.test/api?${new URLSearchParams({ branch: "main", document, mode: "docmedia" })}`,
+        `https://cms.test/api?${new URLSearchParams({ branch: "main", document, mode: "images" })}`,
       ),
       context,
     );

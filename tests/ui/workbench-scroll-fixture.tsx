@@ -64,6 +64,7 @@ export function WorkbenchScrollFixture() {
                 <div className="wb-format">
                   <ComponentInsertMenu
                     components={Array.from({ length: 30 }, (_, index) => ({
+                      name: `Component${index}`,
                       label: `Component ${String(index).padStart(2, "0")}`,
                       snippet: `<Component${index} />`,
                     }))}

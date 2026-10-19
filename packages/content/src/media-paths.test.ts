@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import sendsayExample from "../../../docs/examples/sendsay-docs.pushdocs.json";
 import { attachmentUploadDirectory, parseProjectConfig } from "./config";
-import { docMediaSnippet, groupMediaAssets, mediaCatalog } from "./media";
+import { attachmentSnippet, groupMediaAssets, mediaCatalog } from "./media";
 import {
   mediaLocales,
   mediaReferenceCandidates,
@@ -148,6 +148,7 @@ it("resolves arbitrary directories, locales and component bases consistently wit
           publicUrl: "/manual/{locale}/pictures",
         },
         documentPathPrefixes: { de: "translated/" },
+        components: { DocMedia: { storage: "images", srcBase: "/manual/{locale}/pictures" } },
       },
     }),
   );
@@ -163,11 +164,11 @@ it("resolves arbitrary directories, locales and component bases consistently wit
   for (const path of paths) {
     const url = repositoryMediaUrl(config, "de", path);
     expect(url).toBeDefined();
-    const snippet = docMediaSnippet({ path, url: url ?? "" }, config, "de");
+    const snippet = attachmentSnippet({ path, url: url ?? "" }, config, "de", "DocMedia");
     const src = snippet.match(/src="([^"]+)"/)?.[1] ?? "";
     expect(
-      mediaReferenceCandidates(config, "de", document, src, true).find((candidate) =>
-        paths.includes(candidate),
+      mediaReferenceCandidates(config, "de", document, src, config.media.components.DocMedia).find(
+        (candidate) => paths.includes(candidate),
       ),
     ).toBe(path);
   }
@@ -185,17 +186,24 @@ it("resolves arbitrary directories, locales and component bases consistently wit
     paths[1],
   ]);
   expect(
-    mediaReferenceCandidates(config, "de", document, "shared.png", true).find((candidate) =>
-      paths.includes(candidate),
-    ),
-  ).toBe(paths[2]);
+    mediaReferenceCandidates(
+      config,
+      "de",
+      document,
+      "shared.png",
+      config.media.components.DocMedia,
+    ).find((candidate) => paths.includes(candidate)),
+  ).toBeUndefined();
 });
 
 it("uses standard DocMedia paths without inferring unconfigured localized directories", () => {
   const config = parseProjectConfig();
-  expect(mediaReferenceCandidates(config, "en", "i18n/en/docs/a.mdx", "a.png", true)).toContain(
-    "static/img/a.png",
-  );
+  expect(
+    mediaReferenceCandidates(config, "en", "i18n/en/docs/a.mdx", "a.png", {
+      storage: "images",
+      srcBase: "/{locale}/img",
+    }),
+  ).toContain("static/img/a.png");
   expect(repositoryMediaUrl(config, "en", "arbitrary/ru/img/a.png")).toBeUndefined();
 });
 
@@ -232,14 +240,18 @@ it("round-trips encoded public roots and filenames with literal percent signs", 
       version: 1,
       media: {
         images: { directory: "assets", publicUrl: "/my%20manual/pictures" },
+        components: { DocMedia: { storage: "images", srcBase: "/my%20manual/pictures" } },
       },
     }),
   );
   const path = "assets/a%20 снимок.png";
   const url = repositoryMediaUrl(config, "ru", path) ?? "";
-  const src = docMediaSnippet({ path, url }, config, "ru").match(/src="([^"]+)"/)?.[1] ?? "";
+  const src =
+    attachmentSnippet({ path, url }, config, "ru", "DocMedia").match(/src="([^"]+)"/)?.[1] ?? "";
   expect(src).toBe("a%2520%20%D1%81%D0%BD%D0%B8%D0%BC%D0%BE%D0%BA.png");
-  expect(mediaReferenceCandidates(config, "ru", "docs/a.md", src, true)).toContain(path);
+  expect(
+    mediaReferenceCandidates(config, "ru", "docs/a.md", src, config.media.components.DocMedia),
+  ).toContain(path);
   expect(mediaReferenceCandidates(config, "ru", "docs/a.md", url)).toContain(path);
 });
 
@@ -258,3 +270,42 @@ it.each(["/my%20manual/{locale}/pictures", "pathname:///my%20manual/{locale}/pic
     expect(mediaReferenceCandidates(config, "ru", "docs/a.mdx", url)).toContain(path);
   },
 );
+
+it("keeps standard static URLs independent of a custom storage mapping and component base", () => {
+  const config = parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      media: {
+        images: { directory: "static/pictures", publicUrl: "/pictures" },
+        components: { Illustration: { storage: "images", srcBase: "/img" } },
+      },
+    }),
+  );
+  const paths = ["static/img/logo.png", "static/pictures/logo.png"];
+  const catalog = mediaCatalog({
+    config,
+    locale: "ru",
+    document: "docs/a.mdx",
+    paths,
+    uploads: [],
+    files: [
+      {
+        path: "docs/a.mdx",
+        content: '<Illustration src="../pictures/logo.png" />',
+        status: "clean",
+      },
+    ],
+  });
+  expect(catalog.map((asset) => [asset.path, asset.url, asset.shadowedBy, asset.usages])).toEqual([
+    [paths[0], "/img/logo.png", undefined, []],
+    [paths[1], "/pictures/logo.png", undefined, ["docs/a.mdx"]],
+  ]);
+  expect(
+    attachmentSnippet(
+      { path: paths[1] ?? "", url: "/pictures/logo.png" },
+      config,
+      "ru",
+      "Illustration",
+    ),
+  ).toBe('<Illustration src="../pictures/logo.png" alt="logo.png" />');
+});

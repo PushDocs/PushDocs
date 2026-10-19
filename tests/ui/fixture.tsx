@@ -1,3 +1,4 @@
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -311,7 +312,9 @@ function App() {
             replacePath={new URLSearchParams(window.location.search).get("replace") ?? undefined}
             onInsert={() => {}}
             insertionMode={
-              new URLSearchParams(window.location.search).has("docmedia") ? "docmedia" : undefined
+              new URLSearchParams(window.location.search).has("images")
+                ? MediaInsertionMode.Images
+                : undefined
             }
           />
         </section>

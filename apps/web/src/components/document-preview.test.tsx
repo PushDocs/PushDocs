@@ -205,6 +205,7 @@ it("resolves newly uploaded assets from the configured media mapping", () => {
       locale: "ru",
       repositoryPaths: [],
       media: {
+        components: {},
         images: { directory: "staticLocalized/{locale}/img", publicUrl: "/{locale}/img" },
       },
     }),
@@ -271,4 +272,39 @@ it("also provides preview navigation for an unsupported inline component", () =>
   render(preview("Text with <Custom>inline content</Custom>."));
   expect(screen.getByRole("link", { name: "Открыть MR / PR для предпросмотра" })).toBeTruthy();
   expect(screen.getByText(/inline content/)).toBeTruthy();
+});
+
+it("uses an explicitly configured component base independently of its storage URL", () => {
+  const media = parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      media: {
+        images: { directory: "static/pictures", publicUrl: "/pictures" },
+        components: { Illustration: { storage: "images", srcBase: "/img" } },
+      },
+    }),
+  ).media;
+  render(
+    <DocumentPreview
+      {...context}
+      media={media}
+      repositoryPaths={["static/pictures/logo.png"]}
+      source='<Illustration src="../pictures/logo.png" alt="Logo" />'
+    />,
+  );
+  expect(screen.getByRole("img", { name: "Logo" }).getAttribute("src")).toContain(
+    "path=static%2Fpictures%2Flogo.png",
+  );
+});
+
+it("does not infer media semantics from a component name without integration", () => {
+  const { container } = render(
+    <DocumentPreview
+      {...context}
+      media={parseProjectConfig().media}
+      source='<DocMedia src="archive.png" />\n\n<Video src="/video/clip.mp4" />'
+    />,
+  );
+  expect(container.querySelector("img, video")).toBeNull();
+  expect(container.textContent).toContain("DocMedia");
 });

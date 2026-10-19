@@ -18,16 +18,15 @@
   },
   "dependencies": {
     "@pushdocs/contracts": "workspace:*",
-    "acorn": "8.15.0",
     "fast-glob": "3.3.3",
     "gray-matter": "4.0.3",
     "remark-mdx": "3.1.1",
     "remark-parse": "11.0.0",
+    "typescript": "5.9.3",
     "unified": "11.0.5",
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
     "vitest": "4.1.10"
   }
 }

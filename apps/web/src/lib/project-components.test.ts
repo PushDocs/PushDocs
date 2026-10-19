@@ -3,7 +3,8 @@ import { projectComponentCatalog } from "./project-components";
 
 const registry = {
   path: "src/theme/MDXComponents/index.tsx",
-  content: "export default { DocMedia, SupportLink, Tabs, TabItem };",
+  content:
+    "import type {MDXComponents} from 'mdx/types'; export default { DocMedia, SupportLink, Tabs, TabItem } satisfies MDXComponents;",
 };
 const component = (name: string, snippet = `<${name} />`) => ({
   id: name,
@@ -14,8 +15,10 @@ const component = (name: string, snippet = `<${name} />`) => ({
   source: "detected",
 });
 
-it("adds unused globals to settings and to the insert menu with usable import-free snippets", () => {
-  const catalog = projectComponentCatalog([], [registry]);
+it("discovers globals in TSX registries and uses media templates only with explicit integration", () => {
+  const catalog = projectComponentCatalog([], [registry], {
+    DocMedia: { storage: "images", srcBase: "/img" },
+  });
   expect(catalog.components.map((item) => item.name)).toEqual([
     "DocMedia",
     "SupportLink",
@@ -24,49 +27,36 @@ it("adds unused globals to settings and to the insert menu with usable import-fr
   ]);
   expect(catalog.insertableComponents).toHaveLength(4);
   expect(catalog.insertableComponents.find((item) => item.name === "DocMedia")?.snippet).toBe(
-    '<DocMedia src="folder/image.png" alt="Описание изображения" />',
+    '<DocMedia src="" alt="Описание изображения" />',
   );
-  expect(catalog.insertableComponents.find((item) => item.name === "TabItem")?.snippet).toContain(
-    "<Tabs>",
-  );
-  for (const item of catalog.insertableComponents) expect(item.snippet).not.toMatch(/\bimport\b/);
+  expect(
+    projectComponentCatalog([], [registry]).components.find((item) => item.name === "DocMedia")
+      ?.snippet,
+  ).toBe("<DocMedia />");
+  expect(catalog.components.find((item) => item.name === "TabItem")?.snippet).toContain("<Tabs>");
 });
 
-it("strips legacy imports from real examples and excludes components absent in this branch", () => {
+it("preserves manual import-based templates even when a registry is absent, deleted or dynamic", () => {
+  const snippet = 'import Local from "@site/src/components/Local";\n\n<Local title="Keep" />';
+  const stored = [{ ...component("Local", snippet), source: "manual" }];
+  for (const files of [
+    [],
+    [{ ...registry, status: "delete" }],
+    [{ ...registry, content: "export default load();" }],
+  ]) {
+    expect(projectComponentCatalog(stored, files).insertableComponents).toEqual([
+      expect.objectContaining({ snippet, unavailableReason: undefined }),
+    ]);
+  }
+});
+
+it("keeps local imports in examples and requires a template for unregistered detected tags", () => {
+  const snippet = 'import Local from "@site/src/components/Local";\n\n<Local title="Keep" />';
   const catalog = projectComponentCatalog(
-    [component("DocMedia"), component("Local")],
-    [
-      registry,
-      {
-        path: "docs/a.mdx",
-        content:
-          'import DocMedia from "@site/src/components/DocMedia";\n\n<DocMedia src="real.png" alt="Real" />',
-      },
-    ],
+    [component("Local"), component("Unknown")],
+    [registry, { path: "docs/a.mdx", content: snippet }],
   );
-  expect(catalog.examples.DocMedia).toEqual({
-    path: "docs/a.mdx",
-    snippet: '<DocMedia src="real.png" alt="Real" />',
-  });
-  expect(catalog.components.find((item) => item.name === "Local")?.unavailableReason).toContain(
-    "не зарегистрирован",
-  );
-  expect(catalog.insertableComponents.some((item) => item.name === "Local")).toBe(false);
-});
-
-it("does not allow unverified registries or manual templates with local dependencies", () => {
-  const stored = [{ ...component("DocMedia", "<DocMedia><Local /></DocMedia>"), source: "manual" }];
-  expect(projectComponentCatalog(stored, []).insertableComponents).toEqual([]);
-  expect(
-    projectComponentCatalog(stored, [{ ...registry, status: "delete" }]).insertableComponents,
-  ).toEqual([]);
-  expect(
-    projectComponentCatalog(stored, [{ ...registry, content: "export default load();" }])
-      .insertableComponents,
-  ).toEqual([]);
-  expect(
-    projectComponentCatalog(stored, [registry]).insertableComponents.some(
-      (item) => item.name === "DocMedia",
-    ),
-  ).toBe(false);
+  expect(catalog.examples.Local?.snippet).toBe(snippet);
+  expect(catalog.insertableComponents.find((item) => item.name === "Local")?.snippet).toBe(snippet);
+  expect(catalog.insertableComponents.some((item) => item.name === "Unknown")).toBe(false);
 });

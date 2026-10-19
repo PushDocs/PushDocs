@@ -3,10 +3,11 @@
 import { safePath } from "@pushdocs/content/config";
 import {
   groupMediaAssets,
-  isDocMediaFile,
   isVideoFile,
+  isVisualMediaFile,
   mediaDisplayPath,
 } from "@pushdocs/content/media";
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { Button } from "@pushdocs/ui";
 import { Download, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
 import Link from "next/link";
@@ -48,7 +49,7 @@ export function MediaLibrary({
   onBusyChange,
   initialQuery = "",
   replacePath,
-  insertionMode,
+  insertionMode = MediaInsertionMode.Library,
   onUploadComplete,
 }: {
   projectId: string;
@@ -59,7 +60,7 @@ export function MediaLibrary({
   onBusyChange?: (busy: boolean) => void;
   initialQuery?: string;
   replacePath?: string;
-  insertionMode?: "markdown" | "docmedia" | "video";
+  insertionMode?: MediaInsertionMode;
   onUploadComplete?: (assets: Array<{ path: string; url: string }>) => void;
 }) {
   const conflict = useUploadConflict();
@@ -67,11 +68,11 @@ export function MediaLibrary({
   const replacementPath = replacePath ?? localReplacePath;
   const [state, setState] = useState<MediaState>();
   const [localUploadDirectory, setLocalUploadDirectory] = useState<string>();
-  const docMedia = insertionMode === "docmedia";
-  const video = insertionMode === "video";
-  const componentMedia = docMedia || video;
-  const supportsFile = video ? isVideoFile : docMedia ? isDocMediaFile : () => true;
-  const insertMode = insertionMode !== undefined;
+  const imageMedia = insertionMode === MediaInsertionMode.Images;
+  const video = insertionMode === MediaInsertionMode.Video;
+  const componentMedia = imageMedia || video;
+  const supportsFile = video ? isVideoFile : imageMedia ? isVisualMediaFile : () => true;
+  const insertMode = insertionMode !== MediaInsertionMode.Library;
   const directory = localUploadDirectory ?? state?.uploadDirectory ?? "";
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -88,9 +89,7 @@ export function MediaLibrary({
   const endpoint = `/api/projects/${projectId}/media`;
   const reload = useCallback(async () => {
     const params = new URLSearchParams({ branch, document });
-    if (insertionMode === "docmedia" || insertionMode === "video")
-      params.set("mode", insertionMode);
-    else if (insertMode) params.set("mode", "article");
+    if (insertMode) params.set("mode", insertionMode);
     const response = await fetch(`${endpoint}?${params}`, { cache: "no-store" });
     const next = await response.json();
     if (!response.ok) throw new Error(next.error);
@@ -126,7 +125,7 @@ export function MediaLibrary({
       return;
     }
     if (files.some((file) => !supportsFile(file.name))) {
-      setError(video ? "Video поддерживает MP4." : "DocMedia поддерживает изображения и MP4.");
+      setError(video ? "Выберите MP4." : "Выберите изображение или MP4.");
       return;
     }
     const targetDirectory = directory.trim().replace(/\/+$/, "");
@@ -180,7 +179,6 @@ export function MediaLibrary({
           revision: String(current.revision),
           replace: String(replace),
           ...(targetPath ? { path: targetPath } : {}),
-          destination: "repository",
         });
         setProgress({ name: file.name, percent: 0 });
         const uploadedPath = await new Promise<string | undefined>((resolve, reject) => {
@@ -360,7 +358,7 @@ export function MediaLibrary({
           <input
             type="file"
             accept={
-              video ? ".mp4" : docMedia ? ".png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.mp4" : undefined
+              video ? ".mp4" : imageMedia ? ".png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.mp4" : undefined
             }
             aria-label="Загрузить файлы"
             multiple={!replacementPath && !insertMode}

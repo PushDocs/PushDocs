@@ -62,7 +62,11 @@ export default async function DocumentsPage({
       ? selectedFile
       : await store.getWorkingFile(projectId, branch, registryPath)
     : undefined;
-  const catalog = projectComponentCatalog(components, registry ? [registry] : []);
+  const catalog = projectComponentCatalog(
+    components,
+    registry ? [registry] : [],
+    config.media.components,
+  );
   return (
     <Workbench
       key={`${projectId}:${branch}`}

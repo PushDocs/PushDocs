@@ -1,5 +1,10 @@
-import { mediaComponentBaseUrl, parseProjectConfig } from "@pushdocs/content/config";
-import { mediaLocales, mediaReferenceCandidates, mediaRoots } from "@pushdocs/content/media-paths";
+import { mediaPublicUrl, parseProjectConfig } from "@pushdocs/content/config";
+import {
+  mediaLocales,
+  mediaReferenceCandidates,
+  mediaRoots,
+  normalizeMediaPath,
+} from "@pushdocs/content/media-paths";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import type { languages } from "monaco-editor";
 import type { MonacoApi } from "./monaco-runtime";
@@ -35,15 +40,8 @@ export function createPathIndex(paths: readonly string[]) {
 }
 
 function normalizeDirectory(path: string) {
-  const parts: string[] = [];
-  for (const part of path.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (!parts.length) return undefined;
-      parts.pop();
-    } else parts.push(part);
-  }
-  return parts.length ? `${parts.join("/")}/` : "";
+  const normalized = normalizeMediaPath(path);
+  return normalized ? `${normalized}/` : normalized;
 }
 
 function mediaSourceComponent(
@@ -63,7 +61,7 @@ function mediaSourceComponent(
   return lines
     .reverse()
     .join("\n")
-    .match(/<(DocMedia|Video)\b[^<>]*\bsrc\s*=\s*\{?\s*$/)?.[1];
+    .match(/<([A-Z]\w*)\b[^<>]*\bsrc\s*=\s*\{?\s*$/)?.[1];
 }
 
 function pathAtCursor(
@@ -85,9 +83,10 @@ function pathAtCursor(
   }
   if (!match) return undefined;
   const value = match[2] ?? "";
-  const component = quotedPath
+  const componentName = quotedPath
     ? mediaSourceComponent(before.slice(0, match.index), lineNumber, options.getLineContent)
     : undefined;
+  const component = options.media?.components[componentName ?? ""];
   const pathname = value.startsWith("pathname:///");
   // In ordinary strings, only explicit local paths are relevant.
   if (quotedPath && !component && !pathname && !/^(?:\.{1,2}\/|\/(?!\/)|@site\/)/.test(value))
@@ -103,14 +102,9 @@ function pathAtCursor(
     directory: value.slice(0, segmentStart),
     prefix: value.slice(segmentStart),
     quoted: quotedPath,
-    publicPath: pathname
-      ? "pathname"
-      : component === "DocMedia"
-        ? "docMedia"
-        : component === "Video"
-          ? "video"
-          : undefined,
-    video: component === "Video",
+    publicPath: pathname ? "pathname" : component ? "component" : undefined,
+    component,
+    video: component?.storage === "video",
     start: start + segmentStart,
     end: end < 0 ? line.length : offset + end,
   };
@@ -150,9 +144,10 @@ export function pathCompletionItems(
         }),
       );
       let referenceDirectory = context.directory;
-      if (context.publicPath === "video" && !referenceDirectory) {
-        referenceDirectory = config.media.video
-          ? `${mediaComponentBaseUrl(config, locale, "video")}/`
+      if (context.component && context.component.srcBase === undefined && !referenceDirectory) {
+        const location = config.media[context.component.storage];
+        referenceDirectory = location
+          ? `${mediaPublicUrl(config, locale, location.publicUrl)}/`
           : "/";
         insertionPrefix = referenceDirectory;
       }
@@ -161,9 +156,13 @@ export function pathCompletionItems(
         locale,
         documentPath,
         referenceDirectory,
-        context.publicPath === "docMedia",
+        context.component,
       ).map((directory) => (directory ? `${directory}/` : ""));
-      if (context.publicPath === "video" && referenceDirectory.startsWith("/")) {
+      if (
+        context.component &&
+        context.component.srcBase === undefined &&
+        referenceDirectory.startsWith("/")
+      ) {
         const directory = normalizeDirectory(decodeURIComponent(referenceDirectory));
         for (const root of mediaRoots(config, locale, mediaLocales(config, index.keys()))) {
           const publicPath = normalizeDirectory(decodeURIComponent(root.publicUrl));

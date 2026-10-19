@@ -293,7 +293,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     );
     const registered = [...contents].flatMap(([filePath, content]) =>
       isMdxComponentsPath(filePath.slice(prefix.length))
-        ? (registeredMdxComponents(content) ?? [])
+        ? (registeredMdxComponents(content, filePath) ?? [])
         : [],
     );
     await repository.ensureProjectComponents(projectId, [

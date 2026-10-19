@@ -81,7 +81,7 @@ test("shows a video frame in the library and defers offscreen thumbnails", async
       },
     }),
   );
-  await page.goto(`${fixture.url}/?media&docmedia`);
+  await page.goto(`${fixture.url}/?media&images`);
   const first = page.getByRole("figure", { name: "Превью видео demo-0.mp4", exact: true });
   await first.scrollIntoViewIfNeeded();
   await expect(first).toHaveAttribute("data-ready", "true");

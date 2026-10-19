@@ -18,7 +18,7 @@ function relativeLink(document: string, filePath: string) {
 export const isMediaFile = (filePath: string) =>
   /\.(png|jpe?g|gif|webp|avif|svg|pdf|zip|csv|txt|mp4)$/i.test(filePath);
 
-export const isDocMediaFile = (filePath: string) =>
+export const isVisualMediaFile = (filePath: string) =>
   /\.(png|jpe?g|gif|webp|avif|svg|mp4)$/i.test(filePath);
 
 export const isVideoFile = (filePath: string) => /\.mp4$/i.test(filePath);
@@ -57,17 +57,6 @@ export function markdownAttachmentSnippet(asset: { path: string; url: string }) 
   return `${image}[${name}](${url})`;
 }
 
-export function videoSnippet(asset: { url: string }) {
-  const src = asset.url
-    .replace(/^pathname:\/\//, "")
-    .replace(
-      /[&"<>]/g,
-      (character) =>
-        ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[character] ?? character,
-    );
-  return `<Video src="${src}" />`;
-}
-
 export function mediaDisplayPath(filePath: string, directory?: string) {
   return directory && filePath.startsWith(`${directory}/`)
     ? filePath.slice(directory.length + 1)
@@ -75,33 +64,43 @@ export function mediaDisplayPath(filePath: string, directory?: string) {
 }
 
 /** Resolve the configured component source without assuming its repository layout. */
-export function docMediaSnippet(
+export function attachmentSnippet(
   asset: { path: string; url: string },
   config: ProjectConfig,
   locale: string,
+  componentName?: string,
 ) {
+  if (!componentName) return markdownAttachmentSnippet(asset);
+  const component = config.media.components[componentName];
+  if (!component) throw new Error("Интеграция медиа-компонента не настроена");
   const url = (repositoryMediaUrl(config, locale, asset.path) ?? asset.url).replace(
     /^pathname:\/\//,
     "",
   );
-  if (!url.startsWith("/") || url.startsWith("//"))
-    throw new Error("Для вставки DocMedia настройте публичный путь в media.images");
-  const publicPath = decodeURIComponent(url).replace(/^\//, "");
-  const base = mediaComponentBaseUrl(config, locale, "docmedia");
-  const from = decodeURIComponent(base).replace(/^\//, "").split("/").filter(Boolean);
-  const to = publicPath.split("/");
-  while (from.length && to.length && from[0] === to[0]) {
-    from.shift();
-    to.shift();
+  const base = mediaComponentBaseUrl(config, locale, component);
+  let src = url;
+  if (base !== undefined) {
+    if (!url.startsWith("/") || url.startsWith("//"))
+      throw new Error("Для относительного src настройте публичный путь вложения");
+    const from = decodeURIComponent(base).replace(/^\//, "").split("/").filter(Boolean);
+    const to = decodeURIComponent(url).replace(/^\//, "").split("/");
+    while (from.length && to.length && from[0] === to[0]) {
+      from.shift();
+      to.shift();
+    }
+    src = "../".repeat(from.length) + encodePath(to.join("/"));
   }
-  const src = "../".repeat(from.length) + encodePath(to.join("/"));
-  const name = asset.path.split("/").at(-1) ?? "";
-  const alt = name.replace(
-    /[&"<>]/g,
-    (character) =>
-      ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[character] ?? character,
-  );
-  return `<DocMedia src="${src}" alt="${alt}" />`;
+  const escapeAttribute = (value: string) =>
+    value.replace(
+      /[&"<>]/g,
+      (character) =>
+        ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[character] ?? character,
+    );
+  const alt =
+    component.storage === "images"
+      ? ` alt="${escapeAttribute(asset.path.split("/").at(-1) ?? "")}"`
+      : "";
+  return `<${componentName} src="${escapeAttribute(src)}"${alt} />`;
 }
 
 export function mediaCatalog(input: {

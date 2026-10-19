@@ -5,12 +5,11 @@ import { parseProjectConfig } from "./config";
 const exampleConfig = () => parseProjectConfig(JSON.stringify(sendsayExample));
 
 import {
-  docMediaSnippet,
+  attachmentSnippet,
   groupMediaAssets,
   markdownAttachmentSnippet,
   mediaCatalog,
   mediaDisplayPath,
-  videoSnippet,
 } from "./media";
 
 it("provides insertable links beyond the upload directory, including localized media", () => {
@@ -129,24 +128,30 @@ it.each([
   ["staticLocalized/en/img/forms/a.png", "ru", "../en/img/forms/a.png"],
   ["staticLocalized/ru/img/forms/a.png", "en", "../../img/forms/a.png"],
 ])("inserts a DocMedia source for %s in %s", (path, locale, src) => {
-  expect(docMediaSnippet({ path, url: "/unused" }, exampleConfig(), locale)).toBe(
+  expect(attachmentSnippet({ path, url: "/unused" }, exampleConfig(), locale, "DocMedia")).toBe(
     `<DocMedia src="${src}" alt="${path.split("/").at(-1)}" />`,
   );
 });
 
 it("escapes filenames in DocMedia attributes", () => {
   expect(
-    docMediaSnippet({ path: 'static/img/a"&<>.png', url: "/unused" }, exampleConfig(), "ru"),
+    attachmentSnippet(
+      { path: 'static/img/a"&<>.png', url: "/unused" },
+      exampleConfig(),
+      "ru",
+      "DocMedia",
+    ),
   ).toBe('<DocMedia src="a%22%26%3C%3E.png" alt="a&quot;&amp;&lt;&gt;.png" />');
 });
 
 it("preserves encoded filenames from a custom public media mapping", () => {
   const name = "снимок экрана.png";
   expect(
-    docMediaSnippet(
+    attachmentSnippet(
       { path: `assets/forms/${name}`, url: `/img/forms/${encodeURIComponent(name)}` },
       exampleConfig(),
       "ru",
+      "DocMedia",
     ),
   ).toBe(`<DocMedia src="forms/${encodeURIComponent(name)}" alt="${name}" />`);
 });
@@ -161,12 +166,22 @@ it("inserts generic attachments as Markdown images or links without DocMedia", (
 });
 
 it("inserts Video with a public URL and escapes JSX attributes", () => {
-  expect(videoSnippet({ url: "pathname:///en/video/forms/a%20file.mp4" })).toBe(
-    '<Video src="/en/video/forms/a%20file.mp4" />',
-  );
-  expect(videoSnippet({ url: '/video/a.mp4?title="A"&size=<1>' })).toBe(
-    '<Video src="/video/a.mp4?title=&quot;A&quot;&amp;size=&lt;1&gt;" />',
-  );
+  expect(
+    attachmentSnippet(
+      { path: "unmapped/a.mp4", url: "pathname:///en/video/forms/a%20file.mp4" },
+      exampleConfig(),
+      "en",
+      "Video",
+    ),
+  ).toBe('<Video src="/en/video/forms/a%20file.mp4" />');
+  expect(
+    attachmentSnippet(
+      { path: "unmapped/a.mp4", url: '/video/a.mp4?title="A"&size=<1>' },
+      exampleConfig(),
+      "ru",
+      "Video",
+    ),
+  ).toBe('<Video src="/video/a.mp4?title=&quot;A&quot;&amp;size=&lt;1&gt;" />');
 });
 
 it("combines repository media and uploads with branch-local deletions and possible usages", () => {

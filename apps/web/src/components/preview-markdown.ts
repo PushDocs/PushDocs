@@ -1,5 +1,5 @@
 import { parseProjectConfig } from "@pushdocs/content/config";
-import { docMediaUrl, mediaReferenceCandidates } from "@pushdocs/content/media-paths";
+import { mediaComponentUrl, mediaReferenceCandidates } from "@pushdocs/content/media-paths";
 import type { ProjectConfig } from "@pushdocs/contracts";
 export interface PreviewContext {
   projectId: string;
@@ -189,10 +189,17 @@ export function previewPlugin(context: PreviewContext) {
               data: { hName: "summary" },
             });
             element(node, "details");
-          } else if (name === "DocMedia") {
+          } else if (context.media?.components[name ?? ""]) {
             const config = previewConfig(context);
+            const component = config.media.components[name ?? ""];
+            if (!component) return [];
             const src = attributes.src
-              ? (docMediaUrl(config, previewLocale(context, config), attributes.src) ?? "")
+              ? (mediaComponentUrl(
+                  config,
+                  previewLocale(context, config),
+                  attributes.src,
+                  component,
+                ) ?? "")
               : "";
             const video = /\.mp4(?:[?#]|$)/i.test(src);
             element(node, video ? "video" : "img", {
@@ -204,12 +211,6 @@ export function previewPlugin(context: PreviewContext) {
                   .filter((key) => attributes[key])
                   .map((key) => [key, attributes[key]]),
               ),
-            });
-          } else if (name === "Video") {
-            element(node, "video", {
-              controls: true,
-              preload: "none",
-              src: previewAssetUrl(attributes.src ?? "", context),
             });
           } else if (name === "Redirect") {
             node.children = [{ type: "text", value: `Перенаправление на ${attributes.to ?? "/"}` }];

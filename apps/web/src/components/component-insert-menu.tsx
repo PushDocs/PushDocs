@@ -8,9 +8,9 @@ export function ComponentInsertMenu({
   readOnly,
   onInsert,
 }: {
-  components: Array<{ name?: string; label: string; snippet: string }>;
+  components: Array<{ name: string; label: string; snippet: string }>;
   readOnly: boolean;
-  onInsert: (snippet: string, name?: string) => void;
+  onInsert: (snippet: string, name: string) => void;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);

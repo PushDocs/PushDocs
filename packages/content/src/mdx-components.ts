@@ -1,9 +1,4 @@
-import { type Node, parse } from "acorn";
-import remarkMdx from "remark-mdx";
-import remarkParse from "remark-parse";
-import { unified } from "unified";
-
-type Ast = Node & { [key: string]: unknown };
+import ts from "typescript";
 
 export const mdxComponentPaths = ["tsx", "ts", "jsx", "js"].flatMap((extension) => [
   `src/theme/MDXComponents/index.${extension}`,
@@ -14,92 +9,79 @@ export function isMdxComponentsPath(path: string) {
   return mdxComponentPaths.includes(path);
 }
 
-/** Read the static registry without importing or executing repository code. */
-export function registeredMdxComponents(source: string): string[] | undefined {
-  try {
-    const program = parse(source, { ecmaVersion: "latest", sourceType: "module" });
-    const variables = new Map<string, Ast>();
-    const inherited = new Set<string>();
-    let exported: Ast | undefined;
-    for (const statement of program.body as Ast[]) {
-      if (statement.type === "ImportDeclaration") {
-        if ((statement.source as Ast).value === "@theme-original/MDXComponents")
-          for (const specifier of statement.specifiers as Ast[])
-            inherited.add(String((specifier.local as Ast).name));
-      }
-      if (statement.type === "VariableDeclaration")
-        for (const declaration of statement.declarations as Ast[])
-          if ((declaration.id as Ast).type === "Identifier" && declaration.init)
-            variables.set(String((declaration.id as Ast).name), declaration.init as Ast);
-      if (statement.type === "ExportDefaultDeclaration") exported = statement.declaration as Ast;
+/** Inspect TS/TSX/JSX syntax without importing or executing repository code. */
+export function registeredMdxComponents(
+  source: string,
+  fileName = "registry.tsx",
+): string[] | undefined {
+  const parsed = ts.transpileModule(source, {
+    fileName,
+    compilerOptions: {
+      target: ts.ScriptTarget.Latest,
+      module: ts.ModuleKind.ESNext,
+      jsx: ts.JsxEmit.Preserve,
+    },
+    reportDiagnostics: true,
+  });
+  if (parsed.diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error))
+    return undefined;
+  const program = ts.createSourceFile(
+    "registry.jsx",
+    parsed.outputText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JSX,
+  );
+  const variables = new Map<string, ts.Expression>();
+  const inherited = new Set<string>();
+  let exported: ts.Expression | undefined;
+  for (const statement of program.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === "@theme-original/MDXComponents"
+    ) {
+      const name = statement.importClause?.name;
+      if (name) inherited.add(name.text);
     }
-    const seen = new Set<Ast>();
-    function names(node: Ast): string[] {
-      if (seen.has(node)) throw new Error("Cyclic registry");
-      seen.add(node);
-      if (node.type === "Identifier") {
-        if (inherited.has(String(node.name))) return [];
-        const value = variables.get(String(node.name));
+    if (ts.isVariableStatement(statement))
+      for (const declaration of statement.declarationList.declarations)
+        if (ts.isIdentifier(declaration.name) && declaration.initializer)
+          variables.set(declaration.name.text, declaration.initializer);
+    if (ts.isExportAssignment(statement) && !statement.isExportEquals)
+      exported = statement.expression;
+  }
+  const visiting = new Set<ts.Node>();
+  function names(node: ts.Expression): string[] {
+    if (visiting.has(node)) throw new Error("Cyclic registry");
+    visiting.add(node);
+    try {
+      if (ts.isParenthesizedExpression(node)) return names(node.expression);
+      if (ts.isIdentifier(node)) {
+        if (inherited.has(node.text)) return [];
+        const value = variables.get(node.text);
         if (!value) throw new Error("Dynamic registry");
         return names(value);
       }
-      if (node.type !== "ObjectExpression") throw new Error("Dynamic registry");
-      return (node.properties as Ast[]).flatMap((property) => {
-        if (property.type === "SpreadElement") return names(property.argument as Ast);
-        if (property.type !== "Property" || property.computed || property.kind !== "init")
+      if (!ts.isObjectLiteralExpression(node)) throw new Error("Dynamic registry");
+      return node.properties.flatMap((property) => {
+        if (ts.isSpreadAssignment(property)) return names(property.expression);
+        if (
+          (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
+          !property.name ||
+          ts.isComputedPropertyName(property.name)
+        )
           throw new Error("Dynamic registry key");
-        const key = property.key as Ast;
-        const name = String(key.type === "Identifier" ? key.name : key.value);
+        const key = property.name;
+        const name = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : "";
         return /^[A-Z]\w*$/.test(name) ? [name] : [];
       });
+    } finally {
+      visiting.delete(node);
     }
-    return exported ? [...new Set(names(exported))].sort() : undefined;
-  } catch {
-    return undefined;
   }
-}
-
-/** Strip redundant global imports and reject snippets needing local component bindings. */
-export function globalMdxSnippet(
-  source: string,
-  registered: readonly string[],
-): string | undefined {
-  const globals = new Set(registered);
   try {
-    const tree = unified().use(remarkParse).use(remarkMdx).parse(source);
-    const removals: Array<{ start: number; end: number }> = [];
-    let valid = true;
-    function visit(node: {
-      type: string;
-      name?: string | null;
-      value?: string;
-      position?: { start: { offset?: number }; end: { offset?: number } };
-      children?: unknown[];
-    }) {
-      if (node.type === "mdxjsEsm") {
-        const esm = parse(node.value ?? "", { ecmaVersion: "latest", sourceType: "module" });
-        for (const statement of esm.body as Ast[]) {
-          if (
-            statement.type !== "ImportDeclaration" ||
-            !(statement.specifiers as Ast[]).length ||
-            !(statement.specifiers as Ast[]).every((item) =>
-              globals.has(String((item.local as Ast).name)),
-            )
-          )
-            valid = false;
-        }
-        const start = node.position?.start.offset;
-        const end = node.position?.end.offset;
-        if (start !== undefined && end !== undefined) removals.push({ start, end });
-      }
-      if (node.name && /^[A-Z]/.test(node.name) && !globals.has(node.name)) valid = false;
-      for (const child of node.children ?? []) visit(child as Parameters<typeof visit>[0]);
-    }
-    visit(tree);
-    if (!valid) return undefined;
-    for (const { start, end } of removals.reverse())
-      source = source.slice(0, start) + source.slice(end);
-    return source.trim();
+    return exported ? [...new Set(names(exported))].sort() : undefined;
   } catch {
     return undefined;
   }

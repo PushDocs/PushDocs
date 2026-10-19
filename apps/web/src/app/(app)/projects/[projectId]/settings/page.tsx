@@ -1,3 +1,4 @@
+import { parseProjectConfig } from "@pushdocs/content/config";
 import { GitBranch, LockKeyhole, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import { ComponentCatalog } from "@/components/component-catalog";
@@ -27,9 +28,14 @@ export default async function ProjectSettingsPage({
   const state = branches.some((item) => item.full_ref === project.defaultBranch)
     ? await store.listWorkingFiles(projectId, project.defaultBranch)
     : undefined;
+  const config = parseProjectConfig(
+    state?.files.find((file) => file.path === ".pushdocs/config.json" && file.status !== "delete")
+      ?.content,
+  );
   const catalog = projectComponentCatalog(
     components,
     state?.files.filter((file) => file.status !== "delete") ?? [],
+    config.media.components,
   );
   return (
     <div className="page narrow-page">

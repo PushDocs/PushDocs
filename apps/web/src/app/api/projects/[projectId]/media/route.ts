@@ -6,6 +6,7 @@ import {
   mediaRoots,
   safePath,
 } from "@pushdocs/content";
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { apiError, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
@@ -27,6 +28,10 @@ export async function GET(request: Request, context: Context) {
     const branch = query.get("branch") ?? "";
     const { config, state, store, access } = await localWorkbenchContext(projectId, branch);
     const document = query.get("document") ?? "";
+    const mode = z
+      .enum(MediaInsertionMode)
+      .default(MediaInsertionMode.Library)
+      .parse(query.get("mode") ?? undefined);
     const articleLocale =
       query.get("locale") ??
       state.files.find((file) => file.path === document)?.locale ??
@@ -45,9 +50,9 @@ export async function GET(request: Request, context: Context) {
       ]),
     );
     const kind =
-      query.get("mode") === "video" && config.media.video
+      mode === MediaInsertionMode.Video && config.media.video
         ? "video"
-        : query.get("mode") === "docmedia" && config.media.images
+        : mode === MediaInsertionMode.Images && config.media.images
           ? "images"
           : undefined;
     return Response.json(
@@ -76,12 +81,8 @@ export async function GET(request: Request, context: Context) {
         uploadDirectory: attachmentUploadDirectory(
           config,
           locale,
-          ["docmedia", "article", "video"].includes(query.get("mode") ?? "") ? document : undefined,
-          query.get("mode") === "video"
-            ? "video"
-            : query.get("mode") === "docmedia"
-              ? "docmedia"
-              : undefined,
+          mode === MediaInsertionMode.Library ? undefined : document,
+          mode === MediaInsertionMode.Video ? "video" : "images",
         ),
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",

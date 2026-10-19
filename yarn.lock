@@ -1100,7 +1100,6 @@ __metadata:
   resolution: "@pushdocs/content@workspace:packages/content"
   dependencies:
     "@pushdocs/contracts": "workspace:*"
-    acorn: "npm:8.15.0"
     fast-glob: "npm:3.3.3"
     gray-matter: "npm:4.0.3"
     remark-mdx: "npm:3.1.1"
@@ -1812,15 +1811,6 @@ __metadata:
   peerDependencies:
     acorn: ^6.0.0 || ^7.0.0 || ^8.0.0
   checksum: 10c0/4c54868fbef3b8d58927d5e33f0a4de35f59012fe7b12cf9dfbb345fb8f46607709e1c4431be869a23fb63c151033d84c4198fa9f79385cec34fcb1dd53974c1
-  languageName: node
-  linkType: hard
-
-"acorn@npm:8.15.0":
-  version: 8.15.0
-  resolution: "acorn@npm:8.15.0"
-  bin:
-    acorn: bin/acorn
-  checksum: 10c0/dec73ff59b7d6628a01eebaece7f2bdb8bb62b9b5926dcad0f8931f2b8b79c2be21f6c68ac095592adb5adb15831a3635d9343e6a91d028bbe85d564875ec3ec
   languageName: node
   linkType: hard
 

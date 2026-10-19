@@ -302,6 +302,7 @@ it("uses localized and custom Video directories rather than assuming a video fol
       version: 1,
       media: {
         video: { directory: "assets/{locale}/movies", publicUrl: "/manual/{locale}/clips" },
+        components: { Video: { storage: "video" } },
       },
     }),
   ).media;
@@ -319,4 +320,33 @@ it("uses localized and custom Video directories rather than assuming a video fol
     label: "demo.mp4",
     insertText: "/manual/en/clips/demo.mp4",
   });
+});
+
+it("resolves configured component names against a source base separate from storage", () => {
+  const media = parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      media: {
+        images: { directory: "static/pictures", publicUrl: "/pictures" },
+        components: { Illustration: { storage: "images", srcBase: "/img" } },
+      },
+    }),
+  ).media;
+  const line = '<Illustration src="../pictures/" />';
+  expect(
+    pathCompletionItems(
+      monaco,
+      createPathIndex(["static/pictures/logo.png"]),
+      "docs/a.mdx",
+      line,
+      1,
+      line.indexOf('/"') + 2,
+      { media },
+    )[0],
+  ).toMatchObject({ label: "logo.png", documentation: "static/pictures/logo.png" });
+  expect(
+    pathCompletionItems(monaco, index, "docs/a.mdx", '<DocMedia src="" />', 1, 16, {
+      media: parseProjectConfig().media,
+    }),
+  ).toEqual([]);
 });

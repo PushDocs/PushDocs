@@ -23,7 +23,7 @@ interface ReferenceNode {
   }>;
 }
 
-type Reference = { url: string; docMedia: boolean };
+type Reference = { url: string; component?: string };
 const referenceCache = new Map<string, { references: Reference[]; bytes: number }>();
 let cacheBytes = 0;
 
@@ -51,7 +51,7 @@ function references(source: string): Reference[] {
   walk(tree, (node) => {
     if (["image", "link", "imageReference", "linkReference"].includes(node.type)) {
       const url = node.url ?? definitions.get(node.identifier?.toLowerCase() ?? "");
-      if (url) result.push({ url, docMedia: false });
+      if (url) result.push({ url });
     }
     for (const attribute of node.attributes ?? []) {
       if (attribute.type !== "mdxJsxAttribute" || !["src", "href"].includes(attribute.name ?? ""))
@@ -66,7 +66,11 @@ function references(source: string): Reference[] {
           : expression?.type === "Literal" && typeof expression.value === "string"
             ? expression.value
             : undefined;
-      if (url) result.push({ url, docMedia: node.name === "DocMedia" && attribute.name === "src" });
+      if (url)
+        result.push({
+          url,
+          component: attribute.name === "src" ? (node.name ?? undefined) : undefined,
+        });
     }
     if (node.type === "html") {
       const html = (node.value ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -76,7 +80,7 @@ function references(source: string): Reference[] {
         ))
           result.push({
             url: attribute[2] ?? attribute[3] ?? "",
-            docMedia: tag[1] === "DocMedia" && attribute[1] === "src",
+            component: attribute[1] === "src" ? tag[1] : undefined,
           });
     }
   });
@@ -119,7 +123,7 @@ export function mediaUsages(
         locale,
         file.path,
         reference.url,
-        reference.docMedia,
+        config.media.components[reference.component ?? ""],
         roots,
       ).find((path) => available.has(path));
       if (resolved) used.add(resolved);

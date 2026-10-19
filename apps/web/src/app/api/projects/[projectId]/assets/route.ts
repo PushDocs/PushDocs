@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import { attachmentUploadDirectory, mediaCatalog, safePath } from "@pushdocs/content";
+import { safePath } from "@pushdocs/content";
 import { getDatabase } from "@pushdocs/db";
 import { storeUpload } from "@/lib/upload-stream";
 import {
@@ -43,33 +43,11 @@ export async function POST(request: Request, context: Context) {
     const query = new URL(request.url).searchParams;
     const branch = query.get("branch") ?? "";
     const name = query.get("name") ?? "";
-    const { config, user, store, state } = await localWorkbenchContext(projectId, branch);
+    const { user, store, state } = await localWorkbenchContext(projectId, branch);
     await store.requireProjectAccess(user.id, projectId, "document:write");
     if (state.changeSet && state.changeSet.status !== "open")
       throw new Error("Загрузка недоступна во время отправки или конфликта");
-    const repositoryUpload = query.get("destination") === "repository";
-    const document = query.get("document") ?? "docs/intro.md";
-    const articleLocale =
-      query.get("locale") ??
-      state.files?.find((file) => file.path === document)?.locale ??
-      document.match(/^i18n\/([^/]+)\//)?.[1] ??
-      config.defaultLocale;
-    const locale = articleLocale === "default" ? config.defaultLocale : articleLocale;
-    const root = repositoryUpload
-      ? ""
-      : attachmentUploadDirectory(
-          config,
-          locale,
-          ["docmedia", "article", "video"].includes(query.get("mode") ?? "") ? document : undefined,
-          query.get("mode") === "video"
-            ? "video"
-            : query.get("mode") === "docmedia"
-              ? "docmedia"
-              : undefined,
-        );
-    const repositoryPath = safePath(query.get("path") || `${root}/${name}`);
-    if (!repositoryUpload && !repositoryPath.startsWith(`${root}/`))
-      throw new Error("Каталог не разрешён для вложений");
+    const repositoryPath = safePath(query.get("path") ?? "");
     if (state.branch.repository_paths.includes(repositoryPath) && query.get("replace") !== "true")
       throw new Error("Файл уже существует. Выберите замену явно.");
     const mediaType = mediaTypes[path.extname(repositoryPath).toLowerCase()];
@@ -78,16 +56,6 @@ export async function POST(request: Request, context: Context) {
       Math.min(64, Math.max(1, Number(process.env.PUSHDOCS_UPLOAD_LIMIT_MIB) || 64)) * 1024 * 1024;
     if (Number(request.headers.get("content-length")) > maxBytes)
       throw new Error("Файл превышает лимит загрузки");
-    const url = repositoryUpload
-      ? null
-      : (mediaCatalog({
-          config,
-          locale,
-          document,
-          paths: [...state.branch.repository_paths, repositoryPath],
-          files: [],
-          uploads: [],
-        }).find((asset) => asset.path === repositoryPath)?.url ?? null);
     const lease = await store.beginUpload({
       projectId,
       branch,
@@ -112,7 +80,6 @@ export async function POST(request: Request, context: Context) {
       expectedRevision: Number(query.get("revision")),
     });
     return Response.json({
-      url,
       path: repositoryPath,
       size: stored.size,
     });

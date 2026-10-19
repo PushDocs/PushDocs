@@ -166,7 +166,7 @@ test("media library groups files by the project directory with compact action la
           size: null,
           usages: [],
         })),
-        directories: ["assets/ru/pictures", "assets/en/pictures", "static/img"],
+        directories: ["assets/ru/pictures", "assets/en/pictures"],
         uploadDirectory: "assets/ru/pictures/ecom/article",
         revision: 1,
         status: "open",
@@ -181,7 +181,7 @@ test("media library groups files by the project directory with compact action la
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#ebe3ff"/></svg>',
     }),
   );
-  await page.goto(`${baseURL}/?media&docmedia`);
+  await page.goto(`${baseURL}/?media&images`);
   await expect(page.getByRole("searchbox", { name: "Найти файл" })).toHaveValue(
     "assets/ru/pictures/ecom/article",
   );
@@ -191,9 +191,9 @@ test("media library groups files by the project directory with compact action la
   await expect(page.locator(".media-group h3")).toHaveText([
     "Файлы · assets/ru/pictures",
     "Файлы · assets/en/pictures",
-    "Файлы · static/img",
+    "Другие файлы проекта",
   ]);
-  await expect(page.locator(".media-card")).toHaveCount(paths.length);
+  await expect(page.locator(".media-card")).toHaveCount(paths.length - 1);
   const article = page.getByRole("region", { name: "Файлы · assets/ru/pictures" });
   await expect(page.getByRole("heading", { name: "Файлы из папки статьи" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Заменить / })).toHaveCount(0);
@@ -215,8 +215,8 @@ test("media library groups files by the project directory with compact action la
       .evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("media-grouped-library.png") });
-  await page.getByRole("link", { name: "Скачать static/img/guide.pdf" }).scrollIntoViewIfNeeded();
-  await expect(page.getByRole("link", { name: "Скачать static/img/guide.pdf" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Скачать static/img/guide.pdf" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Скачать static/img/logo.svg" })).toBeVisible();
 });
 
 test("close icon aligns with the first title line, including wrapped titles", async ({

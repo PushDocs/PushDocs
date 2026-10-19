@@ -168,7 +168,17 @@ beforeEach(() => {
     branches: [{ full_ref: "main" }, { full_ref: "docs/new" }],
     role: "editor",
     repositoryPaths: [],
-    config: parseProjectConfig(),
+    config: parseProjectConfig(
+      JSON.stringify({
+        version: 1,
+        media: {
+          components: {
+            DocMedia: { storage: "images", srcBase: "/{locale}/img" },
+            Video: { storage: "video" },
+          },
+        },
+      }),
+    ),
   };
   vi.stubGlobal(
     "fetch",
@@ -233,7 +243,7 @@ function mount(options: { metadataTabEnabled?: boolean } = {}) {
       branch="main"
       initial={structuredClone(state)}
       components={[
-        { label: "Widget", snippet: '<Widget title="Hi" />' },
+        { name: "Widget", label: "Widget", snippet: '<Widget title="Hi" />' },
         { name: "DocMedia", label: "DocMedia", snippet: '<DocMedia src="example.png" alt="" />' },
         { name: "Video", label: "Video", snippet: '<Video src="" />' },
       ]}
@@ -901,7 +911,6 @@ it.each([
 ])(
   "opens the full media library from %s and inserts the selected component",
   async (component, path, assetUrl, snippet) => {
-    if (component === "Video") state.config = parseProjectConfig();
     const original = vi.mocked(fetch).getMockImplementation();
     vi.mocked(fetch).mockImplementation(async (url, options) => {
       if (String(url).includes("/media?"))
@@ -1263,7 +1272,7 @@ it.each([
         expect(query.get("document")).toBe("docs/a.mdx");
         expect(query.get("revision")).toBe("1");
         expect(query.get("path")).toBe(assetPath);
-        expect(query.get("destination")).toBe("repository");
+        expect(query.has("destination")).toBe(false);
       }
       send() {
         state.uploads = [{ path: assetPath }];
@@ -1628,7 +1637,7 @@ it("groups binary file actions and confirms deletion with a result dialog", asyn
 });
 
 it("reports invalid media configuration and an unsuccessful Git status response", async () => {
-  state.config.media = { images: { directory: "../{name}", publicUrl: "/img" } };
+  state.config.media = { components: {}, images: { directory: "../{name}", publicUrl: "/img" } };
   const original = vi.mocked(fetch).getMockImplementation();
   vi.mocked(fetch).mockImplementation(async (url, options) => {
     if (String(url).includes("file-statuses"))

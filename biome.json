@@ -16,6 +16,7 @@
       "!**/dist",
       "!**/node_modules",
       "!output",
+      "!data",
       "!**/yarn.lock",
       "!docs/design/prompts.json",
       "!apps/web/public/monaco"

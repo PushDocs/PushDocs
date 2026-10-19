@@ -80,7 +80,7 @@ afterEach(async () => {
 function upload(extra: Record<string, string> = {}, body: BodyInit = "image") {
   return POST(
     new Request(
-      `https://cms.test/api?${new URLSearchParams({ branch: "main", name: "a.png", locale: "ru", document: "docs/a.md", revision: "0", ...extra })}`,
+      `https://cms.test/api?${new URLSearchParams({ branch: "main", name: "a.png", path: "static/img/a.png", revision: "0", ...extra })}`,
       { method: "POST", headers: { Origin: "https://cms.test" }, body },
     ),
     context,
@@ -91,7 +91,6 @@ it("streams a file and returns the URL for a nested custom directory", async () 
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     path: "static/img/guides/a.png",
-    url: "/img/guides/a.png",
     size: 5,
   });
   const record = mocks.record.mock.calls[0]?.[0];
@@ -111,53 +110,6 @@ it("streams a file and returns the URL for a nested custom directory", async () 
   expect(mocks.finish).toHaveBeenCalledWith("upload", "project");
 });
 
-it.each([
-  ["docs/forms/survey.mdx", "ru", "static/img/forms/survey/a.png"],
-  [
-    "i18n/en/docusaurus-plugin-content-docs/current/forms/survey.mdx",
-    "en",
-    "static/img/forms/survey/a.png",
-  ],
-])("uploads to the project article folder for %s", async (document, locale, expectedPath) => {
-  state.branch.repository_paths = ["staticLocalized/ru/img/shared.png"];
-  const response = await upload({ document, locale, mode: "docmedia" });
-  expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({
-    path: expectedPath,
-    url: `${locale === "ru" ? "" : `/${locale}`}/img/forms/survey/a.png`,
-  });
-  expect(mocks.record).toHaveBeenCalledWith(
-    expect.objectContaining({ repositoryPath: expectedPath }),
-  );
-  expect(
-    (await upload({ document, locale, mode: "docmedia", path: "static/img/a.png" })).status,
-  ).toBe(400);
-});
-
-it.each(["docmedia", "article", "video"])(
-  "uploads English article attachments to the localized root in %s mode",
-  async (mode) => {
-    const current = await mocks.context();
-    mocks.context.mockResolvedValue({
-      ...current,
-      config: parseProjectConfig(JSON.stringify(sendsayExample)),
-    });
-    const response = await upload({
-      mode,
-      name: mode === "video" ? "a.mp4" : "a.png",
-      locale: "en",
-      document:
-        "i18n/en/docusaurus-plugin-content-docs/current/en/email-campaigns/drag-and-drop-editor.mdx",
-    });
-    expect(response.status).toBe(200);
-    const expectedPath = `staticLocalized/en/${mode === "video" ? "video" : "img"}/email-campaigns/drag-and-drop-editor/a.${mode === "video" ? "mp4" : "png"}`;
-    expect(await response.json()).toMatchObject({ path: expectedPath });
-    expect(mocks.record).toHaveBeenCalledWith(
-      expect.objectContaining({ repositoryPath: expectedPath }),
-    );
-  },
-);
-
 it("preserves the explicitly selected repository folder for an English article", async () => {
   const current = await mocks.context();
   mocks.context.mockResolvedValue({
@@ -165,11 +117,9 @@ it("preserves the explicitly selected repository folder for an English article",
     config: parseProjectConfig(JSON.stringify(sendsayExample)),
   });
   const response = await upload({
-    destination: "repository",
     path: "manual/en/editor/a.png",
     locale: "en",
     document: "i18n/en/docs/en/forms/editor.mdx",
-    mode: "article",
   });
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ path: "manual/en/editor/a.png" });
@@ -188,29 +138,6 @@ it("downloads media with its filename without changing the preview response", as
   expect(response.headers.get("Content-Disposition")).toBe("attachment; filename*=UTF-8''a.png");
 });
 
-it("uploads into a previously missing configured media directory", async () => {
-  const current = await mocks.context();
-  mocks.context.mockResolvedValue({
-    ...current,
-    config: parseProjectConfig(
-      JSON.stringify({
-        version: 1,
-        media: {
-          images: { directory: "static/new/nested/media", publicUrl: "/new/nested/media" },
-        },
-      }),
-    ),
-  });
-  const response = await upload();
-  expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({
-    path: "static/new/nested/media/a.png",
-    url: "/new/nested/media/a.png",
-  });
-  const record = mocks.record.mock.calls[0]?.[0];
-  expect(record.repositoryPath).toBe("static/new/nested/media/a.png");
-  expect(await readFile(path.join(directory, record.storageKey), "utf8")).toBe("image");
-});
 it("can read the Git version independently of an uploaded replacement", async () => {
   state.branch.repository_paths = ["static/img/a.png"];
   mocks.asset.mockResolvedValue({ storage_key: "must-not-read" });
@@ -239,10 +166,10 @@ it("requires explicit replacement and respects sending state", async () => {
   expect((await upload({ replace: "true" })).status).toBe(400);
 });
 it("rejects invalid targets, unsupported files, missing bodies and oversized files", async () => {
-  expect((await upload({ path: "docs/a.png" })).status).toBe(400);
+  expect((await upload({ path: "" })).status).toBe(400);
   expect((await upload({ path: "../a.png" })).status).toBe(400);
-  expect((await upload({ name: "a.exe" })).status).toBe(400);
-  const empty = new Request("https://cms.test/api?branch=main&name=a.png", {
+  expect((await upload({ path: "static/img/a.exe" })).status).toBe(400);
+  const empty = new Request("https://cms.test/api?branch=main&name=a.png&path=static/img/a.png", {
     method: "POST",
     headers: { Origin: "https://cms.test" },
   });
@@ -338,7 +265,7 @@ it("serves uploaded SVG as a download and rejects missing files", async () => {
 
 it("rejects oversized declared lengths before writing bytes", async () => {
   const response = await POST(
-    new Request("https://cms.test/api?branch=main&name=a.png", {
+    new Request("https://cms.test/api?branch=main&name=a.png&path=static/img/a.png", {
       method: "POST",
       body: "image",
       headers: { Origin: "https://cms.test", "Content-Length": "999999999" },
@@ -385,9 +312,9 @@ it("uses the scoped local data directory when no storage override is configured"
 
 it("uploads explorer assets at the requested repository location without media-root redirection", async () => {
   for (const filePath of ["logo.png", "docs/guide/logo.png"]) {
-    const response = await upload({ destination: "repository", path: filePath });
+    const response = await upload({ path: filePath });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ path: filePath, url: null });
+    expect(await response.json()).toMatchObject({ path: filePath });
     expect(mocks.record).toHaveBeenLastCalledWith(
       expect.objectContaining({ repositoryPath: filePath, createOnly: true }),
     );

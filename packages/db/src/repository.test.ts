@@ -252,7 +252,6 @@ describe("project and connection administration", () => {
       root_path: "website",
       slug: "renamed-docs",
     });
-
   });
 
   it("requires projects to be deleted before their connection", async () => {
