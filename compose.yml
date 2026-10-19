@@ -44,7 +44,7 @@ services:
 
   migrate:
     <<: *app
-    command: ["yarn", "db:migrate"]
+    command: ["yarn", "workspace", "@pushdocs/db", "migrate:run"]
     restart: "no"
     depends_on:
       postgres:

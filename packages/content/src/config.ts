@@ -1,4 +1,8 @@
-import { type ProjectConfig, projectConfigSchema } from "@pushdocs/contracts";
+import {
+  defaultMediaLocations,
+  type ProjectConfig,
+  projectConfigSchema,
+} from "@pushdocs/contracts";
 import { applyEditorInput } from "./editing";
 
 export function safePath(value: string): string {
@@ -151,8 +155,8 @@ export function mediaComponentBaseUrl(
     config,
     locale,
     component === "video"
-      ? (config.media.video?.publicUrl ?? "/{locale}/video")
-      : (config.media.images?.publicUrl ?? "/{locale}/img"),
+      ? (config.media.video?.publicUrl ?? defaultMediaLocations.video.publicUrl)
+      : (config.media.images?.publicUrl ?? defaultMediaLocations.images.publicUrl),
   );
 }
 
@@ -165,7 +169,8 @@ export function attachmentUploadDirectory(
   const values = mediaTemplateValues(config, locale, documentPath);
   const componentDirectory =
     component === "video" ? config.media.video?.directory : config.media.images?.directory;
-  const template = componentDirectory ?? config.media.images?.directory ?? "static/img";
+  const template =
+    componentDirectory ?? config.media.images?.directory ?? defaultMediaLocations.images.directory;
   const base = safePath(expand(template, values).trim().replace(/\/+$/, ""));
   if (!documentPath) return base;
   return safePath(`${base}/${values.document}`);

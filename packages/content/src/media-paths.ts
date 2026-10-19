@@ -1,4 +1,4 @@
-import type { ProjectConfig } from "@pushdocs/contracts";
+import { defaultMediaLocations, type ProjectConfig } from "@pushdocs/contracts";
 import { expand, mediaComponentBaseUrl, mediaPublicUrl, safePath } from "./config";
 
 export interface MediaRoot {
@@ -53,7 +53,7 @@ function matchingLocales(templates: string[], paths: Iterable<string>) {
 export function mediaLocales(config: ProjectConfig, paths: Iterable<string>) {
   return matchingLocales(
     [
-      config.media.images?.directory ?? "static/img",
+      config.media.images?.directory ?? defaultMediaLocations.images.directory,
       ...(config.media.video ? [config.media.video.directory] : []),
     ],
     paths,
@@ -68,12 +68,9 @@ export function mediaRoots(
   const targets = [...new Set([config.defaultLocale, locale, ...knownLocales])];
   const roots: MediaRoot[] = [];
   for (const kind of ["images", "video"] as const) {
-    const fallback = kind === "images" ? "static/img" : "static/video";
+    const fallback = defaultMediaLocations[kind].directory;
     const configured = config.media[kind];
-    const location = configured ?? {
-      directory: fallback,
-      publicUrl: `/{locale}/${kind === "images" ? "img" : "video"}`,
-    };
+    const location = configured ?? defaultMediaLocations[kind];
     for (const target of targets) {
       const publicUrl = mediaPublicUrl(config, target, location.publicUrl);
       const directory = safePath(
@@ -186,8 +183,8 @@ export function mediaReferenceCandidates(
     if (path === undefined) return [];
     const referenceLocales = matchingLocales(
       [
-        config.media.images?.publicUrl ?? "/{locale}/img",
-        config.media.video?.publicUrl ?? "/{locale}/video",
+        config.media.images?.publicUrl ?? defaultMediaLocations.images.publicUrl,
+        config.media.video?.publicUrl ?? defaultMediaLocations.video.publicUrl,
       ].map((template) => decodeURIComponent(template.replace(/^pathname:\/\//, ""))),
       [`/${path}`],
     );

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { mediaConfigSchema } from "./media-config";
 
+export { defaultMediaLocations } from "./media-config";
+
 export const metadataFieldSchema = z.object({
   name: z
     .string()

@@ -1,6 +1,6 @@
 # CI and container delivery
 
-The [GitHub Actions workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to `stable`, version tags beginning with `v`, merge queues and manual dispatch. It implements the automated checks listed in [ADR-0001](adr/0001-pushdocs-architecture.md). Actions are pinned to commit SHAs, and Dependabot proposes weekly updates.
+The [GitHub Actions workflow](../.github/workflows/ci.yml) runs on pull requests, pushes to `stable`, version tags beginning with `v`, merge queues and manual dispatch. It implements the automated checks listed in the [initial implementation and acceptance plan](initial-implementation-plan.md#порядок-разработки-и-критерии-готовности). Actions are pinned to commit SHAs, and Dependabot proposes weekly updates.
 
 ## Required checks
 
@@ -18,7 +18,7 @@ The restore check stops application writers and creates a synthetic uncommitted 
 
 Logs, screenshots and Playwright traces are retained for seven days. Database dumps and encryption keys are deleted locally and are not uploaded as artifacts.
 
-`yarn test:coverage` retains the existing thresholds. On 10 September 2026, all 613 unit tests passed, but coverage was below those thresholds: lines 94.98%, statements 93.39%, functions 92.75% and branches 88.28%. Coverage enforcement is available through the `coverage` option on a manual workflow run. The default CI uses `yarn test`, as required by the ADR.
+`yarn test:coverage` retains the existing thresholds. On 10 September 2026, all 613 unit tests passed, but coverage was below those thresholds: lines 94.98%, statements 93.39%, functions 92.75% and branches 88.28%. Coverage enforcement is available through the `coverage` option on a manual workflow run. The default CI uses `yarn test`, as listed in the initial implementation plan.
 
 The browser suite currently covers installation and sessions. Live GitHub/GitLab acceptance, complete document editing scenarios and load tests remain outside this workflow. CI does not claim to validate an external documentation preview deployment.
 

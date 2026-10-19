@@ -85,10 +85,11 @@ Start Docker and copy `.env.example` to `.env` if the file does not exist. Repla
 
 ~~~sh
 yarn install
-docker compose up -d --wait postgres
 yarn db:migrate
 yarn dev:all
 ~~~
+
+`yarn db:migrate` starts PostgreSQL through Docker Compose, waits for it to become healthy, and then applies migrations.
 
 The web application listens on port 3000, and the realtime process listens on port 4100.
 Set `PUSHDOCS_REALTIME_ORIGIN=http://127.0.0.1:4100` for direct local development. Compose routes `/events` through Caddy. Set `PUSHDOCS_PUBLIC_ORIGIN` to the exact public CMS origin when using a reverse proxy.
@@ -101,18 +102,9 @@ For a standard Docusaurus start command, the runner generates a separate preview
 
 ## Attachments
 
-Attachment folders and public URLs are defined in the branch's `.pushdocs/config.json`, including saved draft changes to that file. There is no upload-folder field in project settings. Without media configuration, uploads use `static/img`; inserting into an article adds its relative path and filename without `.md` or `.mdx`. Missing directories, including nested ones, are created automatically with the file; they do not need to exist in Git before uploading. The file remains a draft until changes are sent to Git.
+Attachment folders and public URLs are configured in the branch's `.pushdocs/config.json`. Without media configuration, uploads use `static/img`. Missing folders are created automatically, and uploads remain drafts until changes are sent to Git.
 
-The maximum is 64 MiB per file, including images. `PUSHDOCS_UPLOAD_LIMIT_MIB` can lower the server's upload limit to between 1 and 64 MiB. A submission can contain up to 256 MiB in total, including text files, and a project can have four active uploads.
-
-- `media.images.directory` defines image storage, including DocMedia. Its optional `publicUrl` defaults to `/{locale}/img`. `media.video.directory` defines separate Video storage; its optional `publicUrl` defaults to `/{locale}/video`.
-- `{locale}` expands to the language code in repository paths. In public URLs, the `/{locale}` segment is omitted for the default language: `/video` for Russian and `/en/video` for English when `defaultLocale` is `ru`. Languages are discovered from paths matching the configured directory templates.
-- Gallery groups are automatic: localized folders get separate blocks; shared files and the built-in `static/img` and `static/video` fallbacks appear under **Другие файлы проекта**. DocMedia shows images and MP4; Video shows only MP4. Without dedicated Video storage, the ordinary gallery and upload destination are used with the MP4 filter. No component bindings, fallback lists or grouping settings are needed.
-- `media.documentPathPrefixes` removes one explicitly configured prefix from an article path for the named locale, after the standard Docusaurus root is removed. This rule applies to image and video uploads.
-
-See the [sendsay-docs configuration example](docs/examples/sendsay-docs.pushdocs.json), checked against stable commit `7928b895`. It binds DocMedia to `staticLocalized/{locale}/img` and Video to `staticLocalized/{locale}/video`, with shared fallbacks in `static/img` and `static/video`. Its extra English article prefix is an explicit rule in the example. Directory patterns come from the repository configuration; languages are discovered by matching those patterns. Keep the actual Docusaurus `staticDirectories` and these URL mappings consistent; a mapping does not publish a folder by itself.
-
-The upload dialog starts with the configured folder. When inserting from a document, gallery search starts with the article upload folder and follows folder changes. Clear the search to show all files. Actions are **Вставить**, **Заменить**, download and delete; DocMedia and Video omit replacement. A conflicting upload requires an explicit decision. Shared roots show a duplication notice. If a localized asset shadows a shared file at the same public URL, insertion of the shared file is unavailable; download and file management remain available.
+See the [configuration reference](docs/configuration.md#вложения) and [sendsay-docs example](docs/examples/sendsay-docs.pushdocs.json) for image and video storage, localized paths and public URL mappings.
 
 ## CI preview
 
@@ -140,7 +132,7 @@ yarn check
 
 The coverage check includes domain rules, content import, provider adapters, database repositories, server actions, background services, and shared interface components. It requires 100 percent line coverage, 99 percent statement and function coverage, and 95 percent branch coverage. Current coverage is below those thresholds; the measurements and manual CI option are documented in [CI and container delivery](docs/ci-cd.md).
 
-Architecture decisions are in [the ADR](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
+Architecture decisions are listed in [the ADR index](docs/adr/index.md), starting with [the application architecture](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
 
 The [development plan](docs/development-plan.md) separates delivered capabilities from remaining work. The [verification report](docs/verification-2026-09-08.md) records automated checks, browser scenarios and limits of the compatibility claims.
 

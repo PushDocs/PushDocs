@@ -1,5 +1,6 @@
 "use client";
 
+import { defaultMediaLocations } from "@pushdocs/contracts";
 import { useId } from "react";
 
 export function AttachmentDirectory({
@@ -25,7 +26,7 @@ export function AttachmentDirectory({
         <input
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Например, static/img"
+          placeholder={`Например, ${defaultMediaLocations.images.directory}`}
           disabled={disabled}
           aria-describedby={shared || !directory ? noteId : undefined}
         />
