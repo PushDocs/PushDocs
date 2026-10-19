@@ -19,6 +19,7 @@
     "@pushdocs/providers": "workspace:*",
     "@pushdocs/ui": "workspace:*",
     "@pushdocs/vpn": "workspace:*",
+    "@tanstack/react-virtual": "3.14.21",
     "argon2": "0.44.0",
     "dictionary-en": "4.0.0",
     "dictionary-ru": "3.0.0",

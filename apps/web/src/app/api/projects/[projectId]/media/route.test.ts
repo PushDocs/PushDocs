@@ -1,5 +1,6 @@
 import { parseProjectConfig } from "@pushdocs/content";
 import { beforeEach, expect, it, vi } from "vitest";
+import sendsayExample from "../../../../../../../../docs/examples/sendsay-docs.pushdocs.json";
 
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
@@ -39,6 +40,7 @@ it("lists Git files and stages an authorized deletion with revision protection",
   const response = await GET(new Request("https://cms.test/api?branch=main"), context);
   expect(await response.json()).toMatchObject({
     revision: 2,
+    directories: [],
     assets: [{ path: "static/img/a.png", status: "clean" }],
   });
   const deleted = await POST(
@@ -129,6 +131,25 @@ it("reports an empty branch without an active change set", async () => {
   });
 });
 
+it.each([undefined, "docmedia", "article"])(
+  "uses the project upload directory for modal mode %s",
+  async (mode) => {
+    const current = await mocks.context();
+    mocks.context.mockResolvedValue({
+      ...current,
+      config: parseProjectConfig(
+        JSON.stringify({ version: 1, media: { images: { directory: "static/media" } } }),
+      ),
+    });
+    const query = new URLSearchParams({ branch: "main", document: "docs/forms/survey.mdx" });
+    if (mode) query.set("mode", mode);
+    const response = await GET(new Request(`https://cms.test/api?${query}`), context);
+    expect(await response.json()).toMatchObject({
+      uploadDirectory: mode ? "static/media/forms/survey" : "static/media",
+    });
+  },
+);
+
 it("uses the open article locale when no locale is explicitly chosen", async () => {
   const current = await mocks.context();
   current.state.files = [
@@ -140,6 +161,103 @@ it("uses the open article locale when no locale is explicitly chosen", async () 
   );
   expect((await response.json()).locale).toBe("en");
 });
+
+it("uses ordinary gallery groups and upload defaults when Video has no dedicated storage", async () => {
+  const current = await mocks.context();
+  mocks.context.mockResolvedValue({
+    ...current,
+    config: parseProjectConfig(
+      JSON.stringify({ version: 1, media: { images: { directory: "assets/{locale}/pictures" } } }),
+    ),
+    state: {
+      ...current.state,
+      branch: {
+        repository_paths: [
+          "assets/ru/pictures/demo.mp4",
+          "assets/de/pictures/demo.mp4",
+          "static/video/shared.mp4",
+        ],
+      },
+    },
+  });
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&document=docs/a.mdx&mode=video"),
+    context,
+  );
+  expect(await response.json()).toMatchObject({
+    directories: ["assets/ru/pictures", "assets/de/pictures"],
+    uploadDirectory: "assets/ru/pictures/a",
+  });
+});
+
+it.each(["docmedia", "article", "video"])(
+  "uses the English attachment root and omits the extra locale directory in %s mode",
+  async (mode) => {
+    const current = await mocks.context();
+    const document =
+      "i18n/en/docusaurus-plugin-content-docs/current/en/email-campaigns/drag-and-drop-editor.mdx";
+    mocks.context.mockResolvedValue({
+      ...current,
+      config: parseProjectConfig(JSON.stringify(sendsayExample)),
+      state: {
+        ...current.state,
+        files: [{ path: document, locale: "en", content: "# English", status: "clean" }],
+      },
+    });
+    const response = await GET(
+      new Request(
+        `https://cms.test/api?${new URLSearchParams({ branch: "main", document, mode })}`,
+      ),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      directories:
+        mode === "video"
+          ? ["staticLocalized/ru/video", "staticLocalized/en/video"]
+          : mode === "docmedia"
+            ? ["staticLocalized/ru/img", "staticLocalized/en/img"]
+            : [
+                "staticLocalized/ru/img",
+                "staticLocalized/en/img",
+                "staticLocalized/ru/video",
+                "staticLocalized/en/video",
+              ],
+      uploadDirectory: `staticLocalized/en/${mode === "video" ? "video" : "img"}/email-campaigns/drag-and-drop-editor`,
+      locale: "en",
+    });
+  },
+);
+
+it.each([
+  ["docs/forms/survey.mdx", "default", "ru", "static/img/forms/survey"],
+  [
+    "i18n/en/docusaurus-plugin-content-docs/current/forms/survey.mdx",
+    "en",
+    "en",
+    "static/img/forms/survey",
+  ],
+])(
+  "returns the article upload directory for %s",
+  async (document, storedLocale, locale, uploadDirectory) => {
+    const current = await mocks.context();
+    current.state.branch.repository_paths = [
+      "staticLocalized/ru/img/shared.png",
+      "staticLocalized/en/img/shared.png",
+    ];
+    current.state.files = [
+      { path: document, locale: storedLocale, content: "# Article", status: "clean" },
+    ];
+    const response = await GET(
+      new Request(
+        `https://cms.test/api?${new URLSearchParams({ branch: "main", document, mode: "docmedia" })}`,
+      ),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ locale, uploadDirectory });
+  },
+);
 
 it.each(["static/favicon.svg", "staticLocalized/ru/img/forms/filter.gif", "other/image.png"])(
   "deletes and restores existing media outside the upload directory: %s",

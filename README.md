@@ -20,14 +20,14 @@ The repository contains a working MVP:
 - One installation can import and manage several projects. Each project has its own members and roles.
 - The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
-- Editors can upload images and PDF files. PushDocs includes documents and attachments in one commit.
+- Editors can upload images, MP4, PDF, ZIP, CSV and TXT files. PushDocs includes documents and attachments in one commit.
 - Readers can comment on documents. Comment and status updates reach open pages through server-sent events.
 - Editors can send a change set to GitHub or GitLab and create a pull request or merge request. Native Git uses an exact branch lease during the push, and a persistent prepared-commit journal makes interrupted submissions retryable without duplicate commits.
 - If the remote branch changes in the same files, PushDocs records a three-way conflict and provides a text conflict editor.
 - The review screen displays open pull requests or merge requests and their current checks.
 - A project can register custom MDX components. The editor inserts their configured source snippets and shows safe placeholders in preview.
 - The document workbench has a file tree, persisted and closeable tabs, content search, language/version/status filters, highlighted MDX source with line numbers, scalar metadata forms, quick Markdown preview, and side-by-side comparison. It preserves untouched MDX bytes and line endings when editing.
-- Administrators can create and edit `.pushdocs/config.json` in the workbench. The configuration defines document roots, editable technical files, document templates with companion files and media paths. It contains no repository-specific rules in application code.
+- Administrators can create and edit `.pushdocs/config.json` in the workbench. It defines document roots, editable technical files, document templates and media paths. DocMedia uses the image storage settings and the component registered in the repository. Every field is described in the [configuration reference](docs/configuration.md).
 - The media library lists existing Git files and uploads, supports drag and drop, progress, cancellation, retry, deletion and link insertion. Uploads require explicit replacement of existing files. Limits are 64 MiB per file, 256 MiB per submission and four active uploads per project.
 - After changes are sent, the review screen links to the documentation preview built by the repository's existing CI pipeline.
 
@@ -81,10 +81,11 @@ Every successful production deployment updates the environment file when a relea
 
 ## Local development
 
-Start PostgreSQL, copy `.env.example` to `.env`, and replace the secrets. Then run:
+Start Docker and copy `.env.example` to `.env` if the file does not exist. Replace the secrets and use the same password in `DATABASE_URL` and `POSTGRES_PASSWORD`. Then run:
 
 ~~~sh
 yarn install
+docker compose up -d --wait postgres
 yarn db:migrate
 yarn dev:all
 ~~~
@@ -97,6 +98,21 @@ Caddy publishes ports `43000` to `43019` and proxies each port to the preview ru
 By default, one site can run at a time (`PUSHDOCS_PREVIEW_MAX_ACTIVE=1`). Additional sites wait in a visible queue. The preview container has a hard limit of 5 GiB of memory, no additional swap, 2 CPU cores and 512 processes. Set `PUSHDOCS_PREVIEW_CONTAINER_MEMORY` and `PUSHDOCS_PREVIEW_CPUS` to adjust the container limits. Each runtime user is monitored against `PUSHDOCS_PREVIEW_MEMORY_MB=4096` MiB, including installation processes and descendants. Node's heap defaults to 1536 MiB (`PUSHDOCS_PREVIEW_NODE_HEAP_MB`) and is capped to leave at least 1024 MiB for other allocations. Increasing the site RSS budget does not automatically increase V8's heap budget. Exceeding the runtime budget stops all processes of that site's isolated user, including detached descendants, and produces a notification. The runner also clears orphaned processes before restarting that runtime user. Keep the combined runtime budgets below the container limit with room for the controller and Git preparation; increasing concurrency requires adjusting the container budget as well. PostgreSQL remains the durable source of drafts, and the workspace can be reconstructed from it and Git. Users start previews explicitly from Documents or open them from the Preview section. Visiting a branch does not start its site. The default branch workspace stays deployed and is protected from deletion and cache eviction. Stopping a site keeps its workspace. Other inactive preview workspaces are retained for one day. Every five minutes, the runner also checks the entire preview directory against `PUSHDOCS_PREVIEW_CACHE_MAX_MB=8192` MiB and removes the least recently used inactive workspaces when it exceeds that budget. Shared Git objects and legacy or interrupted checkouts count towards the budget. Active sites and workspaces being prepared are protected; if they alone exceed the budget, the runner reports it in its logs. Evicted branches are prepared again on demand rather than immediately rebuilt in the background.
 
 For a standard Docusaurus start command, the runner generates a separate preview configuration beside the source configuration. Docusaurus resolves relative plugin paths from that directory. The generated file keeps the original site configuration and plugins, but uses a memory cache with one generation and disables source maps. Large imported GIFs otherwise produce large filesystem cache packs and additional buffers on recompilation. The source configuration and installed dependencies are not modified, and the generated file is removed on shutdown. Commands with an explicit `--config` or `-c` keep their own settings. Other frameworks are unchanged. Media buffers still count toward the site's RSS budget, so sites with large imported assets may need a higher RSS budget even when their JavaScript heap is small.
+
+## Attachments
+
+Attachment folders and public URLs are defined in the branch's `.pushdocs/config.json`, including saved draft changes to that file. There is no upload-folder field in project settings. Without media configuration, uploads use `static/img`; inserting into an article adds its relative path and filename without `.md` or `.mdx`. Missing directories, including nested ones, are created automatically with the file; they do not need to exist in Git before uploading. The file remains a draft until changes are sent to Git.
+
+The maximum is 64 MiB per file, including images. `PUSHDOCS_UPLOAD_LIMIT_MIB` can lower the server's upload limit to between 1 and 64 MiB. A submission can contain up to 256 MiB in total, including text files, and a project can have four active uploads.
+
+- `media.images.directory` defines image storage, including DocMedia. Its optional `publicUrl` defaults to `/{locale}/img`. `media.video.directory` defines separate Video storage; its optional `publicUrl` defaults to `/{locale}/video`.
+- `{locale}` expands to the language code in repository paths. In public URLs, the `/{locale}` segment is omitted for the default language: `/video` for Russian and `/en/video` for English when `defaultLocale` is `ru`. Languages are discovered from paths matching the configured directory templates.
+- Gallery groups are automatic: localized folders get separate blocks; shared files and the built-in `static/img` and `static/video` fallbacks appear under **Другие файлы проекта**. DocMedia shows images and MP4; Video shows only MP4. Without dedicated Video storage, the ordinary gallery and upload destination are used with the MP4 filter. No component bindings, fallback lists or grouping settings are needed.
+- `media.documentPathPrefixes` removes one explicitly configured prefix from an article path for the named locale, after the standard Docusaurus root is removed. This rule applies to image and video uploads.
+
+See the [sendsay-docs configuration example](docs/examples/sendsay-docs.pushdocs.json), checked against stable commit `7928b895`. It binds DocMedia to `staticLocalized/{locale}/img` and Video to `staticLocalized/{locale}/video`, with shared fallbacks in `static/img` and `static/video`. Its extra English article prefix is an explicit rule in the example. Directory patterns come from the repository configuration; languages are discovered by matching those patterns. Keep the actual Docusaurus `staticDirectories` and these URL mappings consistent; a mapping does not publish a folder by itself.
+
+The upload dialog starts with the configured folder. When inserting from a document, gallery search starts with the article upload folder and follows folder changes. Clear the search to show all files. Actions are **Вставить**, **Заменить**, download and delete; DocMedia and Video omit replacement. A conflicting upload requires an explicit decision. Shared roots show a duplication notice. If a localized asset shadows a shared file at the same public URL, insertion of the shared file is unavailable; download and file management remain available.
 
 ## CI preview
 

@@ -138,6 +138,8 @@ Front matter включает `recent_article` в 184 файлах, `sidebar_cus
 | Английские изображения | `staticLocalized/en/img` | `/en/img/...` согласно соглашению проекта |
 | Общие ресурсы | `static` | Путь зависит от ресурса и правил base URL |
 
+Текущий декларативный пример правил вложений PushDocs приведён в [sendsay-docs.pushdocs.json](../examples/sendsay-docs.pushdocs.json). Он задаёт папки, локали, публичные URL и базу DocMedia через `.pushdocs/config.json`, без угадывания этих соглашений в коде CMS.
+
 Импортер сохраняет буквальную форму существующей ссылки. `pathname://` означает особое поведение Docusaurus и не является HTTP-протоколом скачивания. Лимиты новой загрузки в CMS не должны блокировать импорт уже существующих больших GIF или видео. Файлы не перекодируются и не перемещаются массово.
 
 Проект уже собирает точный preview через CI. [.gitlab/preview-sites.json](https://gitlab.sndsy.ru/sendsay-ru/frontend/sendsay-docs/-/blob/9a8fc074742f14befadb5ebf940ec4948d72f9d4/.gitlab/preview-sites.json) задаёт сайт `docs`, Node 20.19.6, установку Yarn 1 и `yarn build`. Код [.gitlab/scripts/preview-utils.mjs](https://gitlab.sndsy.ru/sendsay-ru/frontend/sendsay-docs/-/blob/9a8fc074742f14befadb5ebf940ec4948d72f9d4/.gitlab/scripts/preview-utils.mjs) формирует URL вида `https://pr-<iid>.docs.sendsay.dev`, с возможностью переопределения через окружение.

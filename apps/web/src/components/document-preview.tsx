@@ -22,6 +22,7 @@ export function DocumentPreview({
   path,
   repositoryPaths,
   locale,
+  defaultLocale,
   media,
   onErrorLine,
   sitePreviewUrl,
@@ -31,8 +32,8 @@ export function DocumentPreview({
   sitePreviewUrl?: string;
 }) {
   const plugin = useMemo(
-    () => previewPlugin({ projectId, branch, path, repositoryPaths, locale, media }),
-    [projectId, branch, path, repositoryPaths, locale, media],
+    () => previewPlugin({ projectId, branch, path, repositoryPaths, locale, defaultLocale, media }),
+    [projectId, branch, path, repositoryPaths, locale, defaultLocale, media],
   );
   const prepared = useMemo(() => {
     const lines: number[] = [];

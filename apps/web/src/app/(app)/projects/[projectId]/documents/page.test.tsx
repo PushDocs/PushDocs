@@ -120,6 +120,31 @@ it("renders the file tree from metadata and loads only the initially selected bo
   ]);
 });
 
+it("loads the selected branch registry and offers DocMedia without an import", async () => {
+  const context = await mocks.context();
+  context.state.files = [
+    { path: "docs/a.md", content: "", loaded: false, status: "clean" },
+    { path: "src/theme/MDXComponents/index.tsx", content: "", loaded: false, status: "clean" },
+  ];
+  mocks.workingFile.mockImplementation(async (_project, branch, path) => {
+    expect(branch).toBe("docs/fix");
+    return {
+      path,
+      content: path.endsWith(".tsx") ? "export default { DocMedia };" : "# A",
+      status: "clean",
+      loaded: true,
+    };
+  });
+  const view = await page();
+  expect(view.props.components).toEqual([
+    expect.objectContaining({
+      name: "DocMedia",
+      snippet: '<DocMedia src="folder/image.png" alt="Описание изображения" />',
+    }),
+  ]);
+  expect(mocks.workingFile).toHaveBeenCalledTimes(2);
+});
+
 it("opens the attachment panel with only uploads belonging to this draft", async () => {
   const current = await mocks.context();
   current.state.branch.repository_paths = ["docs/a.md"];

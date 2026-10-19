@@ -97,25 +97,30 @@ describe("DocumentEditor modes and formatting", () => {
     expect(screen.getByText(/Компонент/).textContent).toContain("Docs.Warning");
   });
 
-  it("appends formatting snippets and selected components", () => {
-    render(<DocumentEditor {...defaultProps} initialContent="Text" />);
-    const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
-    fireEvent.click(screen.getByRole("button", { name: "Заголовок" }));
-    expect(editor.value).toContain("## Новый раздел");
-    fireEvent.click(screen.getByRole("button", { name: "Жирный" }));
-    expect(editor.value).toContain("**важный текст**");
-    fireEvent.click(screen.getByRole("button", { name: "Курсив" }));
-    fireEvent.click(screen.getByRole("button", { name: "Ссылка" }));
-    fireEvent.click(screen.getByRole("button", { name: "Список" }));
-    expect(editor.value).toContain("_текст_");
-    expect(editor.value).toContain("[ссылка](https://example.test)");
-    expect(editor.value).toContain("- пункт");
-    fireEvent.change(screen.getByRole("combobox", { name: "Компонент MDX" }), {
-      target: { value: "<Docs.Hint />" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Вставить" }));
-    expect(editor.value).toContain("<Docs.Hint />");
-  });
+  it.each(["md", "mdx"])(
+    "appends formatting snippets and selected components to .%s",
+    (extension) => {
+      render(
+        <DocumentEditor {...defaultProps} path={`docs/a.${extension}`} initialContent="Text" />,
+      );
+      const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+      fireEvent.click(screen.getByRole("button", { name: "Заголовок" }));
+      expect(editor.value).toContain("## Новый раздел");
+      fireEvent.click(screen.getByRole("button", { name: "Жирный" }));
+      expect(editor.value).toContain("**важный текст**");
+      fireEvent.click(screen.getByRole("button", { name: "Курсив" }));
+      fireEvent.click(screen.getByRole("button", { name: "Ссылка" }));
+      fireEvent.click(screen.getByRole("button", { name: "Список" }));
+      expect(editor.value).toContain("_текст_");
+      expect(editor.value).toContain("[ссылка](https://example.test)");
+      expect(editor.value).toContain("- пункт");
+      fireEvent.change(screen.getByRole("combobox", { name: "Компонент MDX" }), {
+        target: { value: "<Docs.Hint />" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Вставить" }));
+      expect(editor.value).toContain("<Docs.Hint />");
+    },
+  );
 
   it("shows the empty component state", () => {
     render(<DocumentEditor {...defaultProps} components={[]} />);

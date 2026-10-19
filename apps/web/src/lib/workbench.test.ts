@@ -88,6 +88,29 @@ it("opens local documents without waiting for a Git or VPN connection", async ()
   expect(mocks.providerForConnection).not.toHaveBeenCalled();
 });
 
+it("reads upload policy from the branch draft config", async () => {
+  const content = JSON.stringify({
+    version: 1,
+    media: {
+      images: {
+        directory: "assets/{locale}/attachments",
+        publicUrl: "/{locale}/attachments",
+      },
+    },
+  });
+  mocks.listWorkingFiles.mockResolvedValue({
+    files: [{ path: ".pushdocs/config.json", content, status: "modify" }],
+  });
+  mocks.listWorkingFileIndex.mockResolvedValue({ files: [], configContent: content });
+  for (const context of [
+    await localWorkbenchContext("project", "main"),
+    await localWorkbenchIndexContext("project", "main"),
+  ]) {
+    expect(context).not.toHaveProperty("attachmentDirectory");
+    expect(context.config.media.images?.directory).toBe("assets/{locale}/attachments");
+  }
+});
+
 it("loads the lightweight file index with either an explicit or required user", async () => {
   mocks.listWorkingFileIndex.mockResolvedValue({
     files: [{ path: "docs/a.md" }],

@@ -1,8 +1,14 @@
 "use client";
 
-import { assetLocation, isEditableFile } from "@pushdocs/content/config";
+import { isEditableFile } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
-import { isMediaFile } from "@pushdocs/content/media";
+import {
+  docMediaSnippet,
+  isMediaFile,
+  markdownAttachmentSnippet,
+  videoSnippet,
+} from "@pushdocs/content/media";
+import { mediaAssetLocation } from "@pushdocs/content/media-paths";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import { Select } from "@pushdocs/ui";
 import {
@@ -12,10 +18,10 @@ import {
   Columns2,
   Heading2,
   MoreHorizontal,
+  Paperclip,
   Search,
   Table2,
   Trash2,
-  Upload,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -26,6 +32,7 @@ import {
   startBackgroundBranchSyncAction,
   startGitOperationAction,
 } from "@/app/actions";
+import { AssetVideo } from "./asset-video";
 import {
   CollaborationError,
   CollaborativeDocument,
@@ -113,7 +120,7 @@ export function Workbench({
   initialPath?: string;
   initialPanel?: "media" | "branch";
   headerAction?: ReactNode;
-  components?: Array<{ label: string; snippet: string }>;
+  components?: Array<{ name?: string; label: string; snippet: string }>;
   metadataTabEnabled?: boolean;
 }) {
   const router = useRouter();
@@ -157,7 +164,9 @@ export function Workbench({
       : (initialPanel ?? null),
   );
   const [replaceAttachment, setReplaceAttachment] = useState<string>();
-  const [mediaMode, setMediaMode] = useState<"library" | "insert">("library");
+  const [mediaMode, setMediaMode] = useState<"library" | "markdown" | "docmedia" | "video">(
+    "library",
+  );
   const uploadConflict = useUploadConflict();
   const [deleteUsages, setDeleteUsages] = useState<string[]>([]);
   const [deleteCheck, setDeleteCheck] = useState<"loading" | "ready" | "error">("ready");
@@ -244,6 +253,7 @@ export function Workbench({
   const readOnly =
     projectReadOnly ||
     !active ||
+    !isEditableFile(state.config, selected) ||
     !!recovery ||
     saveFailure === "permission" ||
     (collaborative && sharedReadyPath !== selected);
@@ -255,7 +265,8 @@ export function Workbench({
         ? "Редактирование станет доступно после завершения отправки или разрешения конфликтов."
         : saveFailure === "permission"
           ? "Нет прав на сохранение. Обратитесь к администратору проекта."
-          : !active && !uploaded && remoteFiles[selected] !== null
+          : (active && !isEditableFile(state.config, selected)) ||
+              (!active && !uploaded && remoteFiles[selected] !== null)
             ? "Этот файл доступен только для чтения по настройкам проекта."
             : "";
   const explorerPaths = useMemo(
@@ -269,25 +280,23 @@ export function Workbench({
     ],
     [state.repositoryPaths, state.files, state.uploads, branchStatuses],
   );
-  const mediaLocation = useMemo(() => {
+  const completionPaths = useMemo(() => {
+    const statuses = mergeFileStatuses(branchStatuses, state.files);
+    return explorerPaths.filter((path) => statuses.get(path) !== "delete");
+  }, [explorerPaths, state.files, branchStatuses]);
+  const attachmentUrl = useMemo(() => {
+    const locale = state.files.find((file) => file.path === article)?.locale;
     try {
-      const locale = state.files.find((file) => file.path === article)?.locale;
-      return assetLocation(
+      return mediaAssetLocation(
         state.config,
         !locale || locale === "default" ? state.config.defaultLocale : locale,
-        article,
-        "placeholder",
-      );
+        selected,
+        new Set(completionPaths),
+      ).url;
     } catch {
       return undefined;
     }
-  }, [state.config, state.files, article]);
-  const mediaDirectory = mediaLocation?.path.slice(0, mediaLocation.path.lastIndexOf("/") + 1);
-  const attachmentUrl =
-    mediaLocation && mediaDirectory && selected.startsWith(mediaDirectory)
-      ? mediaLocation.url.slice(0, mediaLocation.url.lastIndexOf("/") + 1) +
-        selected.slice(mediaDirectory.length).split("/").map(encodeURIComponent).join("/")
-      : undefined;
+  }, [state.config, state.files, article, selected, completionPaths]);
   const replacementPlan = useMemo(
     () => planReplacement(text, replace, replacement),
     [text, replace, replacement],
@@ -305,6 +314,7 @@ export function Workbench({
     if (dirty && selected && statuses.get(selected) !== "add") statuses.set(selected, "modify");
     return statuses;
   }, [state.files, state.uploads, state.repositoryPaths, branchStatuses, dirty, selected]);
+
   useEffect(() => {
     const controller = new AbortController();
     const update = async () => {
@@ -1634,8 +1644,18 @@ export function Workbench({
                     {components.length ? (
                       <ComponentInsertMenu
                         components={components}
-                        readOnly={readOnly}
-                        onInsert={(snippet) => insert(`\n${snippet}\n`)}
+                        readOnly={readOnly || busy}
+                        onInsert={async (snippet, name) => {
+                          const component =
+                            name ?? snippet.match(/^\s*<(DocMedia|Video)[\s/>]/)?.[1];
+                          if (component === "Video" || component === "DocMedia") {
+                            if (await save()) {
+                              setReplaceAttachment(undefined);
+                              setMediaMode(component === "Video" ? "video" : "docmedia");
+                              setDialog("media");
+                            }
+                          } else insert(`\n${snippet}\n`);
+                        }}
                       />
                     ) : null}
                     <button
@@ -1644,12 +1664,12 @@ export function Workbench({
                       onClick={async () => {
                         if (await save()) {
                           setReplaceAttachment(undefined);
-                          setMediaMode("insert");
+                          setMediaMode("markdown");
                           setDialog("media");
                         }
                       }}
                     >
-                      <Upload size={15} /> Вставить файл
+                      <Paperclip size={15} /> Вставить вложение
                     </button>
                   </div>
                 ) : null}
@@ -1692,6 +1712,12 @@ export function Workbench({
                         // biome-ignore lint/performance/noImgElement: Authenticated repository images must use the user's session directly.
                         <img
                           alt={selected.split("/").at(-1)}
+                          src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: selected, revision: String(state.revision) })}`}
+                        />
+                      ) : /\.mp4$/i.test(selected) ? (
+                        <AssetVideo
+                          key={`${projectId}:${branch}:${selected}:${state.revision}`}
+                          name={selected.split("/").at(-1) ?? selected}
                           src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: selected, revision: String(state.revision) })}`}
                         />
                       ) : (
@@ -1750,6 +1776,10 @@ export function Workbench({
                     <>
                       <SourceEditor
                         path={selected}
+                        repositoryPaths={completionPaths}
+                        locale={active?.locale}
+                        defaultLocale={state.config.defaultLocale}
+                        media={state.config.media}
                         key={selected}
                         storageKey={`pushdocs:position:${projectId}:${branch}:${selected}`}
                         jump={jump}
@@ -1770,8 +1800,9 @@ export function Workbench({
                           projectId={projectId}
                           branch={branch}
                           path={selected}
-                          repositoryPaths={explorerPaths}
+                          repositoryPaths={completionPaths}
                           locale={active?.locale ?? state.config.defaultLocale}
+                          defaultLocale={state.config.defaultLocale}
                           media={state.config.media}
                           onErrorLine={(line) => {
                             setMode("source");
@@ -1798,8 +1829,9 @@ export function Workbench({
                       projectId={projectId}
                       branch={branch}
                       path={selected}
-                      repositoryPaths={state.repositoryPaths}
+                      repositoryPaths={completionPaths}
                       locale={active?.locale ?? state.config.defaultLocale}
+                      defaultLocale={state.config.defaultLocale}
                       media={state.config.media}
                     />
                   ) : (
@@ -1904,7 +1936,14 @@ export function Workbench({
                     rename: "Переименовать файл",
                     delete: active ? "Удалить документ" : "Удалить файл",
                     deleteResult: "Файл отмечен для удаления",
-                    media: mediaMode === "insert" ? "Вставить файл" : "Вложения",
+                    media:
+                      mediaMode === "docmedia"
+                        ? "Вставить DocMedia"
+                        : mediaMode === "video"
+                          ? "Вставить Video"
+                          : mediaMode === "markdown"
+                            ? "Вставить вложение"
+                            : "Вложения",
                     template: "Создать по шаблону",
                   }[dialog]
                 }
@@ -1977,7 +2016,8 @@ export function Workbench({
                 onBusyChange={setMediaBusy}
                 replacePath={replaceAttachment}
                 initialQuery={replaceAttachment?.split("/").at(-1)}
-                uploadOnly={mediaMode === "insert" && !replaceAttachment}
+                key={mediaMode}
+                insertionMode={mediaMode === "library" || replaceAttachment ? undefined : mediaMode}
                 onChanged={async (path) => {
                   const next = await load();
                   if (
@@ -1993,14 +2033,23 @@ export function Workbench({
                 }}
                 onInsert={
                   !readOnly && /\.mdx?$/i.test(selected)
-                    ? (url) => {
+                    ? (url, path) => {
                         void load()
                           .then(() => {
-                            const name = decodeURIComponent(
-                              url.split("/").at(-1) ?? "Файл",
-                            ).replace(/[[\]]/g, "");
                             insert(
-                              `\n${/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(url) ? "!" : ""}[${name}](${url.startsWith("/") ? "pathname://" : ""}${url})\n`,
+                              `\n${
+                                mediaMode === "docmedia"
+                                  ? docMediaSnippet(
+                                      { path, url },
+                                      state.config,
+                                      active?.locale && active.locale !== "default"
+                                        ? active.locale
+                                        : state.config.defaultLocale,
+                                    )
+                                  : mediaMode === "video"
+                                    ? videoSnippet({ url })
+                                    : markdownAttachmentSnippet({ path, url })
+                              }\n`,
                             );
                             setMode("source");
                             setDialog(null);
@@ -2010,14 +2059,22 @@ export function Workbench({
                     : undefined
                 }
                 onUploadComplete={(assets) => {
-                  const markdown = assets
-                    .map(({ path, url }) => {
-                      const name = path.split("/").at(-1)?.replace(/[[\]]/g, "") ?? "Файл";
-                      const image = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(path) ? "!" : "";
-                      return `${image}[${name}](${url.startsWith("/") ? "pathname://" : ""}${url})`;
-                    })
+                  const snippet = assets
+                    .map((asset) =>
+                      mediaMode === "docmedia"
+                        ? docMediaSnippet(
+                            asset,
+                            state.config,
+                            active?.locale && active.locale !== "default"
+                              ? active.locale
+                              : state.config.defaultLocale,
+                          )
+                        : mediaMode === "video"
+                          ? videoSnippet(asset)
+                          : markdownAttachmentSnippet(asset),
+                    )
                     .join("\n");
-                  insert(`\n${markdown}\n`);
+                  insert(`\n${snippet}\n`);
                   setMode("source");
                   setDialog(null);
                 }}

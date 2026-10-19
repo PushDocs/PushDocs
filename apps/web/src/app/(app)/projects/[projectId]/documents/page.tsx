@@ -1,7 +1,9 @@
+import { isMdxComponentsPath } from "@pushdocs/content";
 import type { Metadata } from "next";
 import { BranchImport } from "@/components/branch-import";
 import { LivePreviewButton } from "@/components/live-preview-button";
 import { Workbench } from "@/components/workbench";
+import { projectComponentCatalog } from "@/lib/project-components";
 import { repository, requireUser } from "@/lib/server";
 import { localWorkbenchIndexContext } from "@/lib/workbench";
 
@@ -52,6 +54,15 @@ export default async function DocumentsPage({
   const selectedFile = initialFilePath
     ? await store.getWorkingFile(projectId, branch, initialFilePath)
     : undefined;
+  const registryPath = state.files.find(
+    (file) => file.status !== "delete" && isMdxComponentsPath(file.path),
+  )?.path;
+  const registry = registryPath
+    ? registryPath === selectedFile?.path
+      ? selectedFile
+      : await store.getWorkingFile(projectId, branch, registryPath)
+    : undefined;
+  const catalog = projectComponentCatalog(components, registry ? [registry] : []);
   return (
     <Workbench
       key={`${projectId}:${branch}`}
@@ -59,7 +70,7 @@ export default async function DocumentsPage({
       projectName={project.name}
       headerAction={<LivePreviewButton projectId={projectId} branch={branch} />}
       defaultBranch={project.defaultBranch}
-      components={components}
+      components={catalog.insertableComponents}
       branch={branch}
       initialPath={query.path ?? initialFilePath}
       initialPanel={

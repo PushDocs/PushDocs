@@ -116,7 +116,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
           ],
         }),
         listPreviewAttachments: async () => [
-          { repository_path: "static/image.png", storage_key: "attachment" },
+          { repository_path: "static/new/folder/image.png", storage_key: "attachment" },
         ],
         updatePreviewSession: async (id: string, values: object) =>
           Object.assign(sessions.find((item) => item.id === id) ?? {}, values),
@@ -142,7 +142,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     const article = entries.find((entry) => entry.endsWith("docs/unchanged.md"));
     if (!article) throw new Error("Preview article is missing");
     const currentWorkspace = path.dirname(path.dirname(path.join(root, article)));
-    const paths = ["docs/unchanged.md", "static/image.png"].map((file) =>
+    const paths = ["docs/unchanged.md", "static/new/folder/image.png"].map((file) =>
       path.join(currentWorkspace, file),
     );
     const oldTime = new Date("2020-01-01T00:00:00Z");

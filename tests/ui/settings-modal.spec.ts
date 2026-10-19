@@ -103,6 +103,7 @@ test("media search focus fits its scroll container and upload row opens file sel
             usages: [],
           },
         ],
+        uploadDirectory: "static/img",
         revision: 1,
         status: "open",
         role: "editor",
@@ -111,7 +112,12 @@ test("media search focus fits its scroll container and upload row opens file sel
     }),
   );
   await page.goto(`${baseURL}/?media`);
-  await expect(page.getByRole("button", { name: "Вставить ссылку" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Вставить other/guide.pdf" })).toBeEnabled();
+  await expect(page.getByLabel("Папка загрузки", { exact: true })).toHaveValue("static/img");
+  await expect(page.getByLabel("Загрузить файлы", { exact: true })).toBeEnabled();
+  await page.getByLabel("Папка загрузки", { exact: true }).fill("static/files");
+  await expect(page.getByRole("note")).toContainText("для каждой локали");
+  await expect(page.getByRole("link", { name: "Скачать other/guide.pdf" })).toBeVisible();
   await expect(page.getByText("Вне каталога вложений")).toHaveCount(0);
   await expect(page.getByText("Выбрать файлы")).toHaveCount(0);
   await expect(page.getByText("docs/test-pushdocs", { exact: true })).toHaveCount(0);
@@ -135,6 +141,82 @@ test("media search focus fits its scroll container and upload row opens file sel
   const chooser = page.waitForEvent("filechooser");
   await page.locator("label.media-upload-picker").click();
   expect((await chooser).isMultiple()).toBe(true);
+});
+
+test("media library groups files by the project directory with compact action labels", async ({
+  page,
+}, testInfo) => {
+  const paths = [
+    "static/img/logo.svg",
+    "assets/en/pictures/forms/english.png",
+    "assets/ru/pictures/shared/shared.png",
+    "assets/ru/pictures/ecom/article/article.png",
+    "assets/ru/pictures/ecom/article/demo.mp4",
+    "static/img/guide.pdf",
+  ];
+  await page.route("**/api/projects/p/media?*", (route) =>
+    route.fulfill({
+      json: {
+        assets: paths.map((path) => ({
+          path,
+          url: "/img/file.png",
+          canDelete: true,
+          inRepository: true,
+          status: "clean",
+          size: null,
+          usages: [],
+        })),
+        directories: ["assets/ru/pictures", "assets/en/pictures", "static/img"],
+        uploadDirectory: "assets/ru/pictures/ecom/article",
+        revision: 1,
+        status: "open",
+        role: "editor",
+        locale: "ru",
+      },
+    }),
+  );
+  await page.route("**/api/projects/p/assets?*", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#ebe3ff"/></svg>',
+    }),
+  );
+  await page.goto(`${baseURL}/?media&docmedia`);
+  await expect(page.getByRole("searchbox", { name: "Найти файл" })).toHaveValue(
+    "assets/ru/pictures/ecom/article",
+  );
+  await expect(page.locator(".media-card")).toHaveCount(2);
+  await expect(page.getByLabel("Только в этой статье")).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Найти файл" }).fill("");
+  await expect(page.locator(".media-group h3")).toHaveText([
+    "Файлы · assets/ru/pictures",
+    "Файлы · assets/en/pictures",
+    "Файлы · static/img",
+  ]);
+  await expect(page.locator(".media-card")).toHaveCount(paths.length);
+  const article = page.getByRole("region", { name: "Файлы · assets/ru/pictures" });
+  await expect(page.getByRole("heading", { name: "Файлы из папки статьи" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Заменить / })).toHaveCount(0);
+  await expect(page.getByLabel("Папка загрузки", { exact: true })).toHaveValue(
+    "assets/ru/pictures/ecom/article",
+  );
+  await expect(article.locator("strong")).toHaveText(["shared.png", "article.png", "demo.mp4"]);
+  await expect(article.locator(".media-card-path")).toHaveText([
+    "shared/shared.png",
+    "ecom/article/article.png",
+    "ecom/article/demo.mp4",
+  ]);
+  await expect(article.getByRole("button", { name: /^Вставить / })).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Вставить static/img/guide.pdf" })).toHaveCount(0);
+  await expect(article.getByRole("button", { name: /^Удалить / }).first()).toHaveText("");
+  expect(
+    await page
+      .getByRole("dialog")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("media-grouped-library.png") });
+  await page.getByRole("link", { name: "Скачать static/img/guide.pdf" }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole("link", { name: "Скачать static/img/guide.pdf" })).toBeVisible();
 });
 
 test("close icon aligns with the first title line, including wrapped titles", async ({
@@ -489,20 +571,18 @@ test("failed submission can be retried from the modal without entering another c
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
-test("media modal keeps maximum height and shows labelled replacement and deletion actions", async ({
-  page,
-}, testInfo) => {
+test("media gallery groups new files and shrinks for replacement", async ({ page }, testInfo) => {
   const paths = [
     "static/favicon.svg",
     "staticLocalized/ru/img/forms/a-long-image-name-that-wraps-over-several-lines.png",
     "other/image.png",
   ];
-  const assets = paths.map((path) => ({
+  const assets = paths.map((path, index) => ({
     path,
     url: `/${path}`,
     canDelete: true,
-    inRepository: true,
-    status: "clean",
+    inRepository: index !== 2,
+    status: index === 2 ? "upload" : "clean",
     size: null,
     usages: [],
   }));
@@ -535,6 +615,10 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
   await page.goto(`${baseURL}/?media`);
   const dialog = page.getByRole("dialog", { name: "Вложения" });
   await expect(page.locator(".media-card")).toHaveCount(3);
+  await expect(page.locator(".media-group h3").first()).toHaveText("Новые файлы");
+  await expect(page.getByRole("region", { name: "Новые файлы" }).locator("strong")).toHaveText(
+    "image.png",
+  );
   const bounds = await dialog.boundingBox();
   expect(bounds?.height).toBe((page.viewportSize()?.height ?? 0) - 40);
   const search = page.getByRole("searchbox", { name: "Найти файл" });
@@ -549,13 +633,21 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
     const actions = card.locator(".media-actions");
     const icons = await actions.locator(":scope > *").all();
     expect(icons).toHaveLength(4);
+    const assetPath = await card.locator("strong").getAttribute("title");
+    expect(await Promise.all(icons.map((icon) => icon.getAttribute("aria-label")))).toEqual([
+      `Вставить ${assetPath}`,
+      `Заменить ${assetPath}`,
+      `Скачать ${assetPath}`,
+      `Удалить ${assetPath}`,
+    ]);
     const boxes = await Promise.all(icons.map((icon) => icon.boundingBox()));
     expect(new Set(boxes.map((box) => box?.y)).size).toBe(1);
     for (const icon of icons) {
       await expect(icon.locator("svg")).toHaveCount(1);
     }
     await expect(actions.getByRole("button", { name: /^Заменить / })).toHaveText("Заменить");
-    await expect(actions.getByRole("button", { name: /^Удалить / })).toHaveText("Удалить");
+    await expect(actions.getByRole("button", { name: /^Удалить / })).toHaveText("");
+    await expect(actions.getByRole("button", { name: /^Вставить / })).toHaveText("Вставить");
     const cardBox = await card.boundingBox();
     const actionBox = await actions.boundingBox();
     expect(
@@ -588,8 +680,13 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
   await page.getByRole("button", { name: "Заменить static/favicon.svg", exact: true }).click();
   await expect(page.getByText("Имя и путь сохранятся.", { exact: false })).toBeVisible();
   await expect(page.locator(".media-card")).toHaveCount(0);
+  const replacementBounds = await dialog.boundingBox();
+  expect(replacementBounds?.height).toBeLessThan((bounds?.height ?? 0) * 0.75);
+  expect(replacementBounds?.width).toBe(Math.min(720, (page.viewportSize()?.width ?? 0) - 40));
   await page.screenshot({ path: testInfo.outputPath("media-replacement.png") });
   await page.getByRole("button", { name: "Отменить замену", exact: true }).click();
+  expect(await dialog.boundingBox()).toEqual(bounds);
+  await page.getByLabel("Папка загрузки", { exact: true }).fill("static");
   await page.getByLabel("Загрузить файлы", { exact: true }).setInputFiles({
     name: "favicon.svg",
     mimeType: "image/svg+xml",
@@ -603,6 +700,16 @@ test("media modal keeps maximum height and shows labelled replacement and deleti
   await expect(collision).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await expect(page.getByLabel("Загрузить файлы", { exact: true })).toBeEnabled();
+  await page.goto(`${baseURL}/?media&replace=${encodeURIComponent(paths[1] ?? "")}`);
+  await expect(page.getByText(paths[1] ?? "", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Отменить замену", exact: true })).toHaveCount(0);
+  const directReplacementBounds = await dialog.boundingBox();
+  expect(directReplacementBounds?.height).toBeLessThan((bounds?.height ?? 0) * 0.75);
+  expect(directReplacementBounds?.width).toBe(
+    Math.min(720, (page.viewportSize()?.width ?? 0) - 40),
+  );
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("media-direct-replacement.png") });
 });
 test("danger buttons keep white text and readable contrast on hover", async ({ page }) => {
   await page.goto(`${baseURL}/?danger-buttons`);

@@ -18,7 +18,14 @@ export async function localWorkbenchContext(
     (file) => file.path === ".pushdocs/config.json" && file.status !== "delete",
   );
   const config = parseProjectConfig(configFile?.content);
-  return { user, store, access, target, state, config };
+  return {
+    user,
+    store,
+    access,
+    target,
+    state,
+    config,
+  };
 }
 
 export async function localWorkbenchIndexContext(
@@ -34,7 +41,14 @@ export async function localWorkbenchIndexContext(
     store.listWorkingFileIndex(projectId, branch),
   ]);
   if (!target) throw new Error("Подключение проекта недоступно");
-  return { user, store, access, target, state, config: parseProjectConfig(state.configContent) };
+  return {
+    user,
+    store,
+    access,
+    target,
+    state,
+    config: parseProjectConfig(state.configContent),
+  };
 }
 
 export async function workbenchContext(projectId: string, branch: string) {

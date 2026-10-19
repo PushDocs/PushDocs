@@ -213,7 +213,9 @@ export function PreviewList({ projectId, canDelete }: { projectId: string; canDe
                       <dd>
                         {item.startupMs === null
                           ? "—"
-                          : `${(item.startupMs / 60_000).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} мин`}
+                          : item.startupMs < 1_000
+                            ? "< 1 с"
+                            : `${(item.startupMs / 1_000).toLocaleString("ru-RU", { maximumFractionDigits: 0 })} с`}
                       </dd>
                     </div>
                     <div>

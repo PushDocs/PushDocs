@@ -20,10 +20,17 @@ export function parseProjectConfig(source?: string | null): ProjectConfig {
   const config = projectConfigSchema.parse(source ? JSON.parse(source) : { version: 1 });
   for (const root of [...config.documentRoots, ...config.editableFiles]) safePath(root);
   if (config.preview) safePath(config.preview.output);
+  for (const location of [config.media.images, config.media.video]) {
+    if (!location) continue;
+    safePath(expand(location.directory, { locale: config.defaultLocale }).replace(/\/+$/, ""));
+    mediaPublicUrl(config, config.defaultLocale, location.publicUrl);
+  }
+  for (const prefix of Object.values(config.media.documentPathPrefixes ?? {}))
+    safePath(prefix.replace(/\/+$/, ""));
   return config;
 }
 
-function expand(source: string, values: Record<string, string>): string {
+export function expand(source: string, values: Record<string, string>): string {
   return source.replace(/\{([a-zA-Z]+)\}/g, (_match, key: string) => {
     if (!(key in values)) throw new Error(`Не задано поле шаблона: ${key}`);
     return values[key] ?? "";
@@ -83,28 +90,85 @@ export function planTemplate(
   return [...files.values()];
 }
 
-export function assetLocation(
-  config: ProjectConfig,
-  locale: string,
-  documentPath: string,
-  name: string,
-) {
-  if (!/^[a-zA-Z0-9_-]+$/.test(locale) || !name || name.includes("/") || name.includes("\\"))
-    throw new Error("Недопустимый путь вложения");
-  const relative = documentPath.replace(/^[^/]+\//, "");
-  const documentDir = relative.includes("/") ? relative.slice(0, relative.lastIndexOf("/")) : "";
-  const values = { locale, documentDir, document: relative.replace(/\.[^.]+$/, "") };
-  const directory = expand(config.media.directory, values).replace(/\/+$/, "");
-  const publicUrl = expand(config.media.publicUrl, values).replace(/\/+$/, "");
+export function relativeDocumentPath(config: ProjectConfig, documentPath: string) {
+  return documentPath.startsWith("i18n/")
+    ? documentPath.replace(
+        /^i18n\/[^/]+\/(?:docusaurus-plugin-content-docs[^/]*\/)?(?:current\/|version-[^/]+\/|docs\/)?/,
+        "",
+      )
+    : documentPath.startsWith("versioned_docs/")
+      ? documentPath.replace(/^versioned_docs\/version-[^/]+\//, "")
+      : documentPath.slice(
+          (config.documentRoots
+            .filter((root) => documentPath.startsWith(`${root}/`))
+            .sort((left, right) => right.length - left.length)[0]?.length ??
+            Math.max(-1, documentPath.indexOf("/"))) + 1,
+        );
+}
+
+export function localMediaUrl(value: string) {
+  const url = value.replace(/^pathname:\/\//, "");
+  const decoded = decodeURIComponent(url);
   if (
-    publicUrl.startsWith("//") ||
-    (!publicUrl.startsWith("/") && !publicUrl.startsWith("pathname:///"))
+    !url.startsWith("/") ||
+    decoded.startsWith("//") ||
+    decoded.split("/").some((part) => part === "." || part === "..") ||
+    /[\\?#\s]/.test(url) ||
+    [...decoded].some(
+      (character) =>
+        character === "\\" || character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+    )
   )
     throw new Error("URL вложения должен быть локальным");
+  return url.replace(/\/+$/, "");
+}
+
+export function mediaTemplateValues(config: ProjectConfig, locale: string, documentPath = "") {
+  if (!/^[a-zA-Z0-9_-]+$/.test(locale)) throw new Error("Недопустимая локаль вложения");
+  let relative = documentPath ? relativeDocumentPath(config, documentPath) : "";
+  const prefix = config.media.documentPathPrefixes?.[locale]?.replace(/\/+$/, "");
+  if (prefix && relative.startsWith(`${prefix}/`)) relative = relative.slice(prefix.length + 1);
   return {
-    path: safePath(`${directory}/${name}`),
-    url: `${publicUrl}/${encodeURIComponent(name)}`,
+    locale,
+    document: relative.replace(/\.mdx?$/i, ""),
   };
+}
+
+/** URL locale segments omit the default locale; repository directory templates retain it. */
+export function mediaPublicUrl(config: ProjectConfig, locale: string, template: string) {
+  const localized =
+    locale === config.defaultLocale ? template.replace(/\/\{locale\}(?=\/|$)/g, "") : template;
+  const values = mediaTemplateValues(config, locale);
+  return localMediaUrl(expand(localized, { locale: values.locale }) || "/");
+}
+
+export function mediaComponentBaseUrl(
+  config: ProjectConfig,
+  locale: string,
+  component: "docmedia" | "video",
+) {
+  return mediaPublicUrl(
+    config,
+    locale,
+    component === "video"
+      ? (config.media.video?.publicUrl ?? "/{locale}/video")
+      : (config.media.images?.publicUrl ?? "/{locale}/img"),
+  );
+}
+
+export function attachmentUploadDirectory(
+  config: ProjectConfig,
+  locale = config.defaultLocale,
+  documentPath?: string,
+  component?: "docmedia" | "video",
+) {
+  const values = mediaTemplateValues(config, locale, documentPath);
+  const componentDirectory =
+    component === "video" ? config.media.video?.directory : config.media.images?.directory;
+  const template = componentDirectory ?? config.media.images?.directory ?? "static/img";
+  const base = safePath(expand(template, values).trim().replace(/\/+$/, ""));
+  if (!documentPath) return base;
+  return safePath(`${base}/${values.document}`);
 }
 
 export function isEditableFile(config: ProjectConfig, filePath: string): boolean {

@@ -59,6 +59,7 @@ it("allows project administrators to edit and delete a project", async () => {
   expect(html).toContain("Параметры проекта");
   expect(html).toContain('name="defaultBranch" value="stable"');
   expect(html).toContain('name="rootPath" value="."');
+  expect(html).not.toContain('name="attachmentDirectory"');
   expect(html).toContain("Удалить проект");
   expect(html).toContain('name="confirmation"');
   expect(html).toContain("GitLab · https://gitlab.example.test/");

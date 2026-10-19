@@ -1,7 +1,9 @@
 import { expect, it } from "vitest";
+import sendsayExample from "../../../docs/examples/sendsay-docs.pushdocs.json";
 import {
-  assetLocation,
+  attachmentUploadDirectory,
   isEditableFile,
+  mediaComponentBaseUrl,
   parseProjectConfig,
   planDocument,
   planTemplate,
@@ -104,10 +106,121 @@ it("refuses unsafe or oversized companion updates and preserves CRLF through suc
 });
 
 it("uses conventional Docusaurus paths without configuration", () => {
-  expect(assetLocation(parseProjectConfig(), "ru", "docs/intro.md", "hello.png")).toEqual({
-    path: "static/img/hello.png",
-    url: "/img/hello.png",
-  });
+  const config = parseProjectConfig();
+  expect(attachmentUploadDirectory(config)).toBe("static/img");
+  expect(mediaComponentBaseUrl(config, "ru", "docmedia")).toBe("/img");
+  expect(mediaComponentBaseUrl(config, "en", "docmedia")).toBe("/en/img");
+});
+
+it("uses image and video storage directly for component uploads and public URLs", () => {
+  const config = parseProjectConfig(JSON.stringify(sendsayExample));
+  const document = "i18n/en/docs/en/forms/editor.mdx";
+  expect(attachmentUploadDirectory(config, "en", document, "docmedia")).toBe(
+    "staticLocalized/en/img/forms/editor",
+  );
+  expect(attachmentUploadDirectory(config, "en", document, "video")).toBe(
+    "staticLocalized/en/video/forms/editor",
+  );
+  expect(config.media.images?.publicUrl).toBe("/{locale}/img");
+  expect(config.media.video?.publicUrl).toBe("/{locale}/video");
+  expect(mediaComponentBaseUrl(config, "ru", "video")).toBe("/video");
+  expect(mediaComponentBaseUrl(config, "en", "video")).toBe("/en/video");
+  expect(config.media).not.toHaveProperty("sources");
+  expect(parseProjectConfig(JSON.stringify(config))).toEqual(config);
+});
+
+it.each([
+  { images: { directory: "../outside" } },
+  { video: { directory: ".git/videos" } },
+  { images: { directory: "assets/{unknown}" } },
+  { images: { directory: "assets/{localePrefix}/img" } },
+  { images: { directory: "assets/{documentDir}" } },
+  { images: { directory: "assets", publicUrl: "/{localePrefix}img" } },
+  { documentPathPrefixes: { en: "../en" } },
+  { video: { directory: "assets/{locale}", publicUrl: "//outside.test" } },
+  { video: { directory: "assets", publicUrl: "/{locale}/%2e%2e/video" } },
+  { images: { directory: "assets", group: false } },
+  { images: { directory: "assets", fallbackDirectories: ["static/img"] } },
+  { images: { directory: "assets" }, directory: "legacy" },
+  { sources: { images: { directory: "assets", publicUrl: "/img" } } },
+  { components: { Video: "videos" } },
+])("rejects unsafe media paths, manual groups and mixed formats: %j", (media) => {
+  expect(() =>
+    parseProjectConfig(
+      JSON.stringify({
+        version: 1,
+        media,
+      }),
+    ),
+  ).toThrow();
+});
+
+it("defaults public URLs and uses the ordinary upload destination when video is not configured", () => {
+  const config = parseProjectConfig(
+    JSON.stringify({ version: 1, media: { images: { directory: "assets/{locale}/pictures" } } }),
+  );
+  expect(config.media.images?.publicUrl).toBe("/{locale}/img");
+  expect(attachmentUploadDirectory(config, "ru", "docs/a.mdx", "video")).toBe(
+    "assets/ru/pictures/a",
+  );
+  expect(mediaComponentBaseUrl(config, "en", "docmedia")).toBe("/en/img");
+});
+
+it.each([
+  { directory: "static/img" },
+  { publicUrl: "/img" },
+  { upload: { directory: "static/img" } },
+  { roots: [{ directory: "static", publicUrl: "/", locales: ["ru", "en"], group: false }] },
+  { docMedia: { baseUrl: "/img" } },
+])("rejects removed media fields: %j", (media) => {
+  expect(() => parseProjectConfig(JSON.stringify({ version: 1, media }))).toThrow(
+    /Unrecognized key/,
+  );
+});
+
+it.each([
+  "docs/forms/survey.mdx",
+  "i18n/en/docusaurus-plugin-content-docs/current/forms/survey.mdx",
+  "i18n/en/docusaurus-plugin-content-docs/version-2.0/forms/survey.mdx",
+  "versioned_docs/version-2.0/forms/survey.mdx",
+])("appends the article path to the configured upload root for %s", (document) => {
+  const config = parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      media: {
+        images: { directory: "assets/{locale}/pictures" },
+        documentPathPrefixes: { de: "translated/" },
+      },
+    }),
+  );
+  expect(attachmentUploadDirectory(config, "de", document)).toBe("assets/de/pictures/forms/survey");
+  expect(attachmentUploadDirectory(config, "de", "i18n/de/docs/translated/forms/survey.mdx")).toBe(
+    "assets/de/pictures/forms/survey",
+  );
+});
+
+it("uses only explicitly configured document prefixes and preserves shared paths", () => {
+  expect(attachmentUploadDirectory(parseProjectConfig())).toBe("static/img");
+  expect(
+    attachmentUploadDirectory(parseProjectConfig(), "en", "i18n/en/docs/en/forms/editor.mdx"),
+  ).toBe("static/img/en/forms/editor");
+  const config = parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      media: {
+        images: { directory: "assets/{locale}/pictures" },
+        documentPathPrefixes: { en: "en/" },
+      },
+    }),
+  );
+  expect(attachmentUploadDirectory(config, "en", "i18n/en/docs/en/forms/editor.mdx")).toBe(
+    "assets/en/pictures/forms/editor",
+  );
+  expect(attachmentUploadDirectory(config, "ru", "docs/en/forms/editor.mdx")).toBe(
+    "assets/ru/pictures/en/forms/editor",
+  );
+  expect(attachmentUploadDirectory(config, "en")).toBe("assets/en/pictures");
+  expect(() => attachmentUploadDirectory(config, "../en", "docs/article.mdx")).toThrow("локаль");
 });
 
 it("creates a document and its declared companion without repository-specific code", () => {
@@ -133,22 +246,6 @@ it("creates a document and its declared companion without repository-specific co
     { path: "docs/intro.md", content: "# Introduction\n" },
     { path: "i18n/en/docs/intro.md", content: "# Translation of Introduction\n" },
   ]);
-});
-
-it("resolves localized media paths separately from public links", () => {
-  const config = parseProjectConfig(
-    JSON.stringify({
-      version: 1,
-      media: {
-        directory: "staticLocalized/{locale}/img/{documentDir}",
-        publicUrl: "pathname:///img/{documentDir}",
-      },
-    }),
-  );
-  expect(assetLocation(config, "ru", "docs/forms/survey.mdx", "guide.gif")).toEqual({
-    path: "staticLocalized/ru/img/forms/guide.gif",
-    url: "pathname:///img/forms/guide.gif",
-  });
 });
 
 it.each([
@@ -198,27 +295,9 @@ it("rejects unknown template ids and collisions", () => {
   expect(() => planDocument(config, "duplicate", { slug: "intro" })).toThrow();
 });
 
-it("rejects control characters, excessive paths and unsafe media destinations", () => {
+it("rejects control characters and excessive paths", () => {
   for (const path of ["", "a".repeat(1001), "docs/\0x", "docs/\x7fx"])
     expect(() => safePath(path)).toThrow();
-  for (const [locale, name] of [
-    ["../en", "a.png"],
-    ["en", ""],
-    ["en", "a/b"],
-    ["en", "a\\b"],
-  ])
-    expect(() =>
-      assetLocation(parseProjectConfig(), locale ?? "", "docs/a.md", name ?? ""),
-    ).toThrow();
-  for (const publicUrl of ["//evil.test", "https://evil.test", "relative"])
-    expect(() =>
-      assetLocation(
-        { ...parseProjectConfig(), media: { directory: "static/img", publicUrl } },
-        "en",
-        "docs/a.md",
-        "a.png",
-      ),
-    ).toThrow();
 });
 
 it("allows document files anywhere and limits code editing to declared files", () => {

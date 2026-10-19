@@ -8,7 +8,8 @@
     "./config": "./src/config.ts",
     "./editing": "./src/editing.ts",
     "./metadata": "./src/metadata.ts",
-    "./media": "./src/media.ts"
+    "./media": "./src/media.ts",
+    "./media-paths": "./src/media-paths.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

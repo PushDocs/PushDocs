@@ -1,10 +1,19 @@
 "use client";
 
 import { safePath } from "@pushdocs/content/config";
+import {
+  groupMediaAssets,
+  isDocMediaFile,
+  isVideoFile,
+  mediaDisplayPath,
+} from "@pushdocs/content/media";
 import { Button } from "@pushdocs/ui";
-import { ExternalLink, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
+import { Download, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AttachmentDirectory } from "./attachment-directory";
+import { MediaGallery } from "./media-gallery";
+import { MediaPreview } from "./media-preview";
 import { AssetUsages, useUploadConflict } from "./upload-conflict";
 
 interface Asset {
@@ -15,15 +24,20 @@ interface Asset {
   status: string;
   size: number | null;
   usages: string[];
+  shadowedBy?: string;
 }
 interface MediaState {
   assets: Asset[];
+  directories?: string[];
+  sharedDirectories?: string[];
   uploadDirectory?: string;
   revision: number;
   status: string;
   role: string;
   locale: string;
 }
+
+const isNewAsset = (asset: Asset) => asset.status === "upload" && !asset.inRepository;
 
 export function MediaLibrary({
   projectId,
@@ -34,29 +48,36 @@ export function MediaLibrary({
   onBusyChange,
   initialQuery = "",
   replacePath,
-  uploadOnly = false,
+  insertionMode,
   onUploadComplete,
 }: {
   projectId: string;
   branch: string;
   document: string;
-  onInsert?: (url: string) => void;
+  onInsert?: (url: string, path: string) => void;
   onChanged?: (path?: string) => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
   initialQuery?: string;
   replacePath?: string;
-  uploadOnly?: boolean;
+  insertionMode?: "markdown" | "docmedia" | "video";
   onUploadComplete?: (assets: Array<{ path: string; url: string }>) => void;
 }) {
   const conflict = useUploadConflict();
   const [localReplacePath, setLocalReplacePath] = useState<string>();
   const replacementPath = replacePath ?? localReplacePath;
   const [state, setState] = useState<MediaState>();
+  const [localUploadDirectory, setLocalUploadDirectory] = useState<string>();
+  const docMedia = insertionMode === "docmedia";
+  const video = insertionMode === "video";
+  const componentMedia = docMedia || video;
+  const supportsFile = video ? isVideoFile : docMedia ? isDocMediaFile : () => true;
+  const insertMode = insertionMode !== undefined;
+  const directory = localUploadDirectory ?? state?.uploadDirectory ?? "";
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const uploadRegion = useRef<HTMLElement>(null);
+  const scrollRegion = useRef<HTMLElement>(null);
   const [query, setQuery] = useState(initialQuery);
-  const [onlyArticle, setOnlyArticle] = useState(false);
   const [selected, setSelected] = useState<Asset>();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ name: string; percent: number }>();
@@ -67,12 +88,19 @@ export function MediaLibrary({
   const endpoint = `/api/projects/${projectId}/media`;
   const reload = useCallback(async () => {
     const params = new URLSearchParams({ branch, document });
+    if (insertionMode === "docmedia" || insertionMode === "video")
+      params.set("mode", insertionMode);
+    else if (insertMode) params.set("mode", "article");
     const response = await fetch(`${endpoint}?${params}`, { cache: "no-store" });
     const next = await response.json();
     if (!response.ok) throw new Error(next.error);
     setState(next);
+    setLocalUploadDirectory((current) => current ?? next.uploadDirectory);
     return next as MediaState;
-  }, [branch, document, endpoint]);
+  }, [branch, document, endpoint, insertionMode, insertMode]);
+  useEffect(() => {
+    if (insertMode && !replacementPath) setQuery(directory.trim().replace(/\/+$/, ""));
+  }, [insertMode, replacementPath, directory]);
   useEffect(() => {
     const refresh = () => {
       void reload().catch((cause) => setError(String(cause)));
@@ -93,8 +121,17 @@ export function MediaLibrary({
       setError("Для замены выберите один файл.");
       return;
     }
-    if (uploadOnly && files.length > 1) {
+    if (insertMode && files.length > 1) {
       setError("Для вставки выберите один файл.");
+      return;
+    }
+    if (files.some((file) => !supportsFile(file.name))) {
+      setError(video ? "Video поддерживает MP4." : "DocMedia поддерживает изображения и MP4.");
+      return;
+    }
+    const targetDirectory = directory.trim().replace(/\/+$/, "");
+    if (!replacementPath && !targetDirectory) {
+      setError("Укажите папку для загрузки вложений.");
       return;
     }
     uploading.current = true;
@@ -114,10 +151,8 @@ export function MediaLibrary({
         const current = await reload();
         let targetPath = replacementPath;
         let replace = !!replacementPath;
-        if (!targetPath && current.uploadDirectory !== undefined) {
-          targetPath = safePath(
-            `${current.uploadDirectory ? `${current.uploadDirectory}/` : ""}${file.name}`,
-          );
+        if (!targetPath) {
+          targetPath = safePath(`${safePath(targetDirectory)}/${file.name}`);
           while (current.assets.some((asset) => asset.path === targetPath)) {
             const decision = await conflict.ask(targetPath);
             if (decision.action === "skip") {
@@ -130,9 +165,7 @@ export function MediaLibrary({
             }
             if (!decision.name || /[/\\]/.test(decision.name))
               throw new Error("Введите имя файла без папок");
-            targetPath = safePath(
-              `${current.uploadDirectory ? `${current.uploadDirectory}/` : ""}${decision.name}`,
-            );
+            targetPath = safePath(`${targetDirectory}/${decision.name}`);
           }
           if (!targetPath) {
             pending.current.shift();
@@ -147,7 +180,7 @@ export function MediaLibrary({
           revision: String(current.revision),
           replace: String(replace),
           ...(targetPath ? { path: targetPath } : {}),
-          ...(replacementPath ? { destination: "repository" } : {}),
+          destination: "repository",
         });
         setProgress({ name: file.name, percent: 0 });
         const uploadedPath = await new Promise<string | undefined>((resolve, reject) => {
@@ -194,7 +227,7 @@ export function MediaLibrary({
       }
       const refreshed = await reload();
       setLocalReplacePath(undefined);
-      if (uploadOnly && uploadedPaths.length) {
+      if (insertMode && uploadedPaths.length) {
         const uploadedAssets = uploadedPaths.flatMap((path) => {
           const asset = refreshed.assets.find((item) => item.path === path);
           return asset?.url ? [{ path, url: asset.url }] : [];
@@ -251,14 +284,27 @@ export function MediaLibrary({
       setBusy(false);
     }
   }
-  const showLibrary = !uploadOnly && !replacementPath;
+  const showLibrary = !replacementPath;
+  const scopedDirectory = directory.trim().replace(/\/+$/, "");
   const assets = state?.assets.filter(
     (asset) =>
-      asset.path.toLowerCase().includes(query.toLowerCase()) &&
-      (!onlyArticle || asset.usages.includes(document)),
+      supportsFile(asset.path) &&
+      (insertMode && scopedDirectory && query === scopedDirectory
+        ? asset.path.startsWith(`${scopedDirectory}/`)
+        : asset.path.toLowerCase().includes(query.toLowerCase())),
   );
+  const newAssets = assets?.filter(isNewAsset) ?? [];
+  const groups = groupMediaAssets(
+    assets?.filter((asset) => !isNewAsset(asset)) ?? [],
+    state?.directories,
+  );
+  if (newAssets.length) groups.unshift({ id: "new", label: "Новые файлы", assets: newAssets });
   return (
-    <section className="media-library" aria-label="Медиатека">
+    <section
+      className={`media-library${replacementPath ? " media-library-replacement" : ""}`}
+      aria-label="Медиатека"
+      ref={scrollRegion}
+    >
       {conflict.panel}
       {state && readOnly ? (
         <p role="status">
@@ -285,6 +331,14 @@ export function MediaLibrary({
           ) : null}
         </div>
       ) : null}
+      {!replacementPath ? (
+        <AttachmentDirectory
+          value={directory}
+          sharedDirectories={state?.sharedDirectories}
+          disabled={readOnly || busy}
+          onChange={setLocalUploadDirectory}
+        />
+      ) : null}
       <section
         ref={uploadRegion}
         className="media-upload"
@@ -295,16 +349,22 @@ export function MediaLibrary({
           void upload(Array.from(event.dataTransfer.files));
         }}
       >
-        <label className="media-upload-picker" aria-disabled={readOnly || busy}>
+        <label
+          className="media-upload-picker"
+          aria-disabled={readOnly || busy || (!replacementPath && !directory.trim())}
+        >
           <span>
             <Upload size={16} /> Загрузить файлы
           </span>
           <small>или перетащите сюда · до 64 МиБ</small>
           <input
             type="file"
+            accept={
+              video ? ".mp4" : docMedia ? ".png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.mp4" : undefined
+            }
             aria-label="Загрузить файлы"
-            multiple={!replacementPath && !uploadOnly}
-            disabled={readOnly || busy}
+            multiple={!replacementPath && !insertMode}
+            disabled={readOnly || busy || (!replacementPath && !directory.trim())}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
               event.target.value = "";
@@ -337,44 +397,28 @@ export function MediaLibrary({
         ) : null}
       </section>
       {showLibrary ? (
-        <>
-          <div className="media-toolbar">
-            <label>
-              Найти файл
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                type="search"
-              />
-            </label>
+        <div className="media-toolbar">
+          <label>
+            Найти файл
+            <input value={query} onChange={(event) => setQuery(event.target.value)} type="search" />
+          </label>
 
-            <Button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                void reload()
-                  .then(() => setError(""))
-                  .catch((cause) => setError(String(cause)));
-              }}
-            >
-              Обновить
-            </Button>
-          </div>
-          {document ? (
-            <label className="media-article-filter">
-              <input
-                type="checkbox"
-                checked={onlyArticle}
-                onChange={(event) => setOnlyArticle(event.target.checked)}
-              />{" "}
-              Только в этой статье
-            </label>
-          ) : null}
-        </>
+          <Button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void reload()
+                .then(() => setError(""))
+                .catch((cause) => setError(String(cause)));
+            }}
+          >
+            Обновить
+          </Button>
+        </div>
       ) : null}
       {success ? <p role="status">{success}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
-      {!state ? <p role="status">Загружаем медиатеку…</p> : null}
+      {!state && !error ? <p role="status">Загружаем медиатеку…</p> : null}
       {showLibrary && selected ? (
         <section className="media-confirm" aria-label="Удаление файла">
           <h2>Удалить {selected.path}?</h2>
@@ -415,14 +459,18 @@ export function MediaLibrary({
         </section>
       ) : null}
       {showLibrary ? (
-        <div className="asset-grid">
-          {assets?.map((asset) => (
+        <MediaGallery
+          key={`${projectId}:${branch}:${state?.revision}`}
+          groups={groups}
+          scrollRef={scrollRegion}
+          resetKey={query}
+          renderAsset={(asset, directory) => (
             <article className="media-card" key={asset.path}>
-              {asset.status !== "delete" && /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(asset.path) ? (
-                // biome-ignore lint/performance/noImgElement: private media require the authenticated asset route
-                <img
-                  alt={asset.path}
-                  loading="lazy"
+              {asset.status !== "delete" &&
+              /\.(png|jpe?g|gif|webp|avif|svg|mp4)$/i.test(asset.path) ? (
+                <MediaPreview
+                  key={`${projectId}:${branch}:${asset.path}:${state?.revision}`}
+                  path={asset.path}
                   src={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
                 />
               ) : (
@@ -430,7 +478,13 @@ export function MediaLibrary({
                   {asset.status === "delete" ? "Удаление" : <FileText size={30} />}
                 </span>
               )}
-              <strong>{asset.path}</strong>
+              <strong title={asset.path}>{asset.path.split("/").at(-1)}</strong>
+              <small className="media-card-path">{mediaDisplayPath(asset.path, directory)}</small>
+              {asset.shadowedBy ? (
+                <small className="media-card-path">
+                  Вставка недоступна: этот URL используется файлом {asset.shadowedBy}.
+                </small>
+              ) : null}
               {asset.status !== "clean" || asset.size !== null ? (
                 <small>
                   {asset.status === "upload"
@@ -444,31 +498,20 @@ export function MediaLibrary({
                 </small>
               ) : null}
               <div className="media-actions">
-                <a
-                  href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision) })}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="media-icon-action"
-                  aria-label={`Открыть ${asset.path}`}
-                  title="Открыть"
-                >
-                  <ExternalLink aria-hidden size={16} />
-                </a>
-                {asset.url && onInsert && asset.status !== "delete" ? (
+                {asset.url && onInsert && supportsFile(asset.path) && asset.status !== "delete" ? (
                   <Button
                     type="button"
                     disabled={busy || readOnly}
-                    className="media-icon-action"
-                    aria-label="Вставить ссылку"
-                    title="Вставить ссылку"
+                    aria-label={`Вставить ${asset.path}`}
+                    title="Вставить"
                     onClick={() => {
-                      if (asset.url) onInsert(asset.url);
+                      if (asset.url) onInsert(asset.url, asset.path);
                     }}
                   >
-                    <Link2 aria-hidden size={16} />
+                    <Link2 aria-hidden size={16} /> Вставить
                   </Button>
                 ) : null}
-                {asset.status !== "delete" ? (
+                {!componentMedia && asset.status !== "delete" ? (
                   <Button
                     type="button"
                     disabled={readOnly || busy}
@@ -485,9 +528,19 @@ export function MediaLibrary({
                     <Upload aria-hidden size={16} /> Заменить
                   </Button>
                 ) : null}
+                <a
+                  href={`/api/projects/${projectId}/assets?${new URLSearchParams({ branch, path: asset.path, revision: String(state?.revision), download: "true" })}`}
+                  download={asset.path.split("/").at(-1)}
+                  className="media-icon-action"
+                  aria-label={`Скачать ${asset.path}`}
+                  title="Скачать"
+                >
+                  <Download aria-hidden size={16} />
+                </a>
                 <Button
                   type="button"
                   disabled={readOnly || busy || !asset.canDelete}
+                  className="media-icon-action"
                   tone={asset.status === "delete" ? "secondary" : "danger"}
                   title={
                     !asset.canDelete
@@ -507,13 +560,12 @@ export function MediaLibrary({
                   ) : (
                     <Trash2 aria-hidden size={16} />
                   )}
-                  {asset.status === "delete" ? "Отменить удаление" : "Удалить"}
                 </Button>
               </div>
               {!asset.canDelete ? <small>Удаление запрещено настройками проекта</small> : null}
             </article>
-          ))}
-        </div>
+          )}
+        />
       ) : null}
       {showLibrary && state && state.assets.length > 0 && assets?.length === 0 ? (
         <p>Файлы не найдены.</p>

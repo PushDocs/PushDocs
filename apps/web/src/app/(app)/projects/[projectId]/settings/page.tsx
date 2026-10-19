@@ -1,9 +1,9 @@
 import { GitBranch, LockKeyhole, Trash2 } from "lucide-react";
 import type { Metadata } from "next";
 import { ComponentCatalog } from "@/components/component-catalog";
-import { componentExamples } from "@/components/component-examples";
 import { CriticalForm } from "@/components/critical-form";
 import { SettingsNavigation } from "@/components/settings-navigation";
+import { projectComponentCatalog } from "@/lib/project-components";
 import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Настройки проекта" };
@@ -27,7 +27,7 @@ export default async function ProjectSettingsPage({
   const state = branches.some((item) => item.full_ref === project.defaultBranch)
     ? await store.listWorkingFiles(projectId, project.defaultBranch)
     : undefined;
-  const examples = componentExamples(
+  const catalog = projectComponentCatalog(
     components,
     state?.files.filter((file) => file.status !== "delete") ?? [],
   );
@@ -122,8 +122,8 @@ export default async function ProjectSettingsPage({
         </section>
       ) : null}
       <ComponentCatalog
-        components={components}
-        examples={examples}
+        components={catalog.components}
+        examples={catalog.examples}
         projectId={projectId}
         branch={project.defaultBranch}
         repositoryPaths={state?.branch.repository_paths ?? []}

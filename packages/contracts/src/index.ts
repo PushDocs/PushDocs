@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mediaConfigSchema } from "./media-config";
 
 export const metadataFieldSchema = z.object({
   name: z
@@ -32,12 +33,7 @@ export const projectConfigSchema = z
         { name: "sidebar_position", label: "Позиция в меню", type: "number" },
         { name: "draft", label: "Черновик Docusaurus", type: "boolean" },
       ]),
-    media: z
-      .object({
-        directory: z.string().default("static/img"),
-        publicUrl: z.string().default("/img"),
-      })
-      .default({ directory: "static/img", publicUrl: "/img" }),
+    media: mediaConfigSchema,
     templates: z
       .array(
         z.object({

@@ -567,6 +567,26 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
                 .execute();
             },
           },
+          "021-project-attachment-directory": {
+            async up(database) {
+              await sql`alter table projects add column attachment_directory text not null default 'static/img'`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table projects drop column attachment_directory`.execute(database);
+            },
+          },
+          "022-configured-attachment-directories": {
+            async up(database) {
+              await sql`alter table projects drop column attachment_directory`.execute(database);
+            },
+            async down(database) {
+              await sql`alter table projects add column attachment_directory text not null default 'static/img'`.execute(
+                database,
+              );
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (
