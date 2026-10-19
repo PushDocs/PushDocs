@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { parseProjectConfig, safePath } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { prepareVpnAccess } from "@pushdocs/vpn";
+import { clearPackageCache, clearWebpackCache } from "./caches";
 import { prepareDocusaurusPreview } from "./docusaurus";
 import {
   nodeHeapLimitMb,
@@ -47,6 +48,7 @@ type RunningPreview = {
   revision: number;
   stopping: boolean;
   workspace: string;
+  cwd: string;
   stopMemoryWatch: () => void;
   launchHash: string;
   uid: number;
@@ -749,6 +751,8 @@ export function createPreviewService(options: PreviewServiceOptions) {
         legacyWorkspace: undefined,
         lastUsedAt: Date.now(),
       });
+      await clearPackageCache(workspace, cwd).catch((error) => logger.error(String(error)));
+      lastInventoryAt = 0;
       if (controller.signal.aborted) throw new Error("Запуск предпросмотра отменён");
       await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
       const startCommand = await prepareDocusaurusPreview({
@@ -773,6 +777,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       const active: RunningPreview = {
         ...draft,
+        cwd,
         child,
         headSha: state.headSha,
         revision: state.revision,
@@ -927,6 +932,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
         });
     }
     await stopRuntimeProcesses(active.uid);
+    await clearWebpackCache(active.workspace, active.cwd).catch((error) =>
+      logger.error(String(error)),
+    );
+    lastInventoryAt = 0;
     if (active.generatedConfig) await rm(active.generatedConfig, { force: true });
     if (process.platform === "linux" && process.getuid?.() === 0)
       await run(["chown", "0:0", active.workspace], { cwd: active.workspace, timeoutMs: 30_000 });
