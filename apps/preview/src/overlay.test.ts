@@ -25,7 +25,14 @@ vi.mock("node:child_process", async (importOriginal) => {
         stderr: new PassThrough(),
       });
       if (command !== "fixture" || !args.includes("start"))
-        queueMicrotask(() => child.emit("close", 0));
+        queueMicrotask(async () => {
+          if (command === "fixture" && args.includes("install")) {
+            const cache = (options as { env: { YARN_CACHE_FOLDER: string } }).env.YARN_CACHE_FOLDER;
+            await mkdir(cache, { recursive: true });
+            await writeFile(path.join(cache, "package.tgz"), "downloaded package");
+          }
+          child.emit("close", 0);
+        });
       return child;
     },
   };
@@ -55,6 +62,8 @@ it("updates only changed files, preserves dependencies across commits and reinst
     head_commit_sha: string;
   }> = [];
   let revision = 1;
+  let leaseExpired = false;
+  const logger = { error: vi.fn(), log: vi.fn() };
   let preview: ReturnType<typeof createPreviewService> | undefined;
   try {
     await mkdir(path.join(workspace, ".pushdocs"), { recursive: true });
@@ -95,9 +104,12 @@ it("updates only changed files, preserves dependencies across commits and reinst
     preview = createPreviewService({
       workspaceRoot: root,
       attachmentsRoot: root,
+      logger,
       gitAccess: async () => ({ remote, env: process.env }),
       repository: {
-        reconcilePreviewLeases: async () => undefined,
+        reconcilePreviewLeases: async () => {
+          if (leaseExpired) session.desired_state = "stopped";
+        },
         listPreviewSessions: async () => sessions,
         listPreviewWorkspaces: async () => backgroundBranches,
         getProjectSyncTarget: async () => ({
@@ -142,6 +154,9 @@ it("updates only changed files, preserves dependencies across commits and reinst
     const article = entries.find((entry) => entry.endsWith("docs/unchanged.md"));
     if (!article) throw new Error("Preview article is missing");
     const currentWorkspace = path.dirname(path.dirname(path.join(root, article)));
+    await expect(stat(path.join(currentWorkspace, ".package-cache/yarn"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     const paths = ["docs/unchanged.md", "static/new/folder/image.png"].map((file) =>
       path.join(currentWorkspace, file),
     );
@@ -203,8 +218,17 @@ it("updates only changed files, preserves dependencies across commits and reinst
     expect(installations()).toBe(2);
 
     // An explicit stop and restart must keep dependencies without reinstalling.
+    const webpackCache = path.join(currentWorkspace, ".cache/pushdocs-webpack");
+    await mkdir(webpackCache, { recursive: true });
+    await writeFile(path.join(webpackCache, "cache.pack"), "compiled modules");
+    await writeFile(path.join(currentWorkspace, ".cache/other"), "keep");
     session.desired_state = "stopped";
     await preview.tick();
+    await expect(stat(webpackCache)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(currentWorkspace, ".cache/other"), "utf8")).toBe("keep");
+    expect(await readFile(path.join(currentWorkspace, "node_modules/installed"), "utf8")).toBe(
+      "dependencies",
+    );
     session.desired_state = "running";
     session.status = "queued";
     await preview.tick();
@@ -227,8 +251,15 @@ it("updates only changed files, preserves dependencies across commits and reinst
     expect(queued.status).toBe("queued");
     expect(queued.log).toContain("Ожидаем свободное место");
     expect(starts()).toBe(beforeQueue);
-    session.desired_state = "stopped";
+    // Lease expiry uses the same stop path, even if cache cleanup fails.
+    await rm(path.join(currentWorkspace, ".cache"), { recursive: true });
+    await writeFile(path.join(currentWorkspace, ".cache"), "not a directory");
+    leaseExpired = true;
     await preview.tick();
+    expect(session.status).toBe("stopped");
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("не является папкой"));
+    await rm(path.join(currentWorkspace, ".cache"));
+    leaseExpired = false;
     await vi.waitFor(() => expect(queued.status).toBe("ready"));
 
     queued.desired_state = "stopped";
