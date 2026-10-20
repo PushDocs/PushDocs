@@ -464,8 +464,7 @@ export function MediaLibrary({
           resetKey={query}
           renderAsset={(asset, directory) => (
             <article className="media-card" key={asset.path}>
-              {asset.status !== "delete" &&
-              /\.(png|jpe?g|gif|webp|avif|svg|mp4)$/i.test(asset.path) ? (
+              {asset.status !== "delete" && isVisualMediaFile(asset.path) ? (
                 <MediaPreview
                   key={`${projectId}:${branch}:${asset.path}:${state?.revision}`}
                   path={asset.path}

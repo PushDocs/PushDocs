@@ -8,8 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "migrate": "docker compose up -d --wait postgres && yarn migrate:run",
-    "migrate:run": "tsx src/migrate.ts",
+    "migrate": "tsx src/migrate.ts",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },
