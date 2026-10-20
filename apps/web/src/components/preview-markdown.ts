@@ -1,10 +1,14 @@
+import { parseProjectConfig } from "@pushdocs/content/config";
+import { mediaComponentUrl, mediaReferenceCandidates } from "@pushdocs/content/media-paths";
+import type { ProjectConfig } from "@pushdocs/contracts";
 export interface PreviewContext {
   projectId: string;
   branch: string;
   path: string;
   repositoryPaths: string[];
   locale?: string;
-  media?: { directory: string; publicUrl: string };
+  defaultLocale?: string;
+  media?: ProjectConfig["media"];
 }
 
 interface Node {
@@ -92,65 +96,31 @@ export function preparePreviewSource(source: string, lineMap?: number[]) {
     .join("\n");
 }
 
-function normalizedPath(value: string) {
-  const parts: string[] = [];
-  for (const part of value.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (!parts.length) return undefined;
-      parts.pop();
-    } else parts.push(part);
-  }
-  return parts.join("/");
+function previewConfig(context: PreviewContext) {
+  return parseProjectConfig(
+    JSON.stringify({
+      version: 1,
+      ...(context.defaultLocale ? { defaultLocale: context.defaultLocale } : {}),
+      ...(context.media ? { media: context.media } : {}),
+    }),
+  );
 }
-
+function previewLocale(context: PreviewContext, config: ProjectConfig) {
+  return context.locale && context.locale !== "default"
+    ? context.locale
+    : (context.path.match(/^i18n\/([^/]+)\//)?.[1] ?? config.defaultLocale);
+}
 export function previewAssetUrl(url: string, context: PreviewContext) {
   if (/^(https?:)?\/\//i.test(url)) return url;
-  let value = url.replace(/^pathname:\/\//, "");
-  if (/^[a-z][\w+.-]*:/i.test(value)) return "";
-  value = value.split(/[?#]/)[0] ?? "";
-  try {
-    value = decodeURIComponent(value);
-  } catch {
-    return "";
-  }
-  const directory = context.path.split("/").slice(0, -1).join("/");
-  const candidates = value.startsWith("@site/")
-    ? [value.slice(6)]
-    : value.startsWith("/")
-      ? [`static/${value.slice(1)}`, value.slice(1)]
-      : [`${directory}/${value}`, value];
-  if (value.startsWith("/")) {
-    const relative = context.path.replace(/^[^/]+\//, "");
-    const values: Record<string, string> = {
-      locale: context.locale ?? "ru",
-      documentDir: relative.includes("/") ? relative.slice(0, relative.lastIndexOf("/")) : "",
-      document: relative.replace(/\.[^.]+$/, ""),
-    };
-    const expand = (template: string) =>
-      template.replace(/\{(locale|documentDir|document)\}/g, (_, key: string) => values[key] ?? "");
-    if (context.media) {
-      const publicRoot = expand(context.media.publicUrl)
-        .replace(/^pathname:\/\//, "")
-        .replace(/\/+$/, "");
-      if (value.startsWith(`${publicRoot}/`))
-        candidates.unshift(
-          `${expand(context.media.directory)}/${value.slice(publicRoot.length + 1)}`,
-        );
-    }
-    // Resolve additional static directories from the imported tree, with the current locale first.
-    const matching = context.repositoryPaths.filter((path) => path.endsWith(value));
-    matching.sort(
-      (a, b) =>
-        Number(b.includes(`/${values.locale}/`)) - Number(a.includes(`/${values.locale}/`)) ||
-        a.localeCompare(b),
-    );
-    candidates.push(...matching);
-    const localized = matching.find((path) => path.includes(`/${values.locale}/`));
-    if (localized) candidates.unshift(localized);
-  }
-  const paths = candidates.map(normalizedPath).filter((path): path is string => Boolean(path));
-  const path = paths.find((candidate) => context.repositoryPaths.includes(candidate)) ?? paths[0];
+  const config = previewConfig(context);
+  const candidates = mediaReferenceCandidates(
+    config,
+    previewLocale(context, config),
+    context.path,
+    url,
+  );
+  const path =
+    candidates.find((candidate) => context.repositoryPaths.includes(candidate)) ?? candidates[0];
   return path
     ? `/api/projects/${context.projectId}/assets?${new URLSearchParams({ branch: context.branch, path })}`
     : "";
@@ -219,11 +189,28 @@ export function previewPlugin(context: PreviewContext) {
               data: { hName: "summary" },
             });
             element(node, "details");
-          } else if (name === "Video") {
-            element(node, "video", {
-              controls: true,
-              preload: "none",
-              src: previewAssetUrl(attributes.src ?? "", context),
+          } else if (context.media?.components[name ?? ""]) {
+            const config = previewConfig(context);
+            const component = config.media.components[name ?? ""];
+            if (!component) return [];
+            const src = attributes.src
+              ? (mediaComponentUrl(
+                  config,
+                  previewLocale(context, config),
+                  attributes.src,
+                  component,
+                ) ?? "")
+              : "";
+            const video = /\.mp4(?:[?#]|$)/i.test(src);
+            element(node, video ? "video" : "img", {
+              src: src ? previewAssetUrl(src, context) : "",
+              alt: attributes.alt ?? "",
+              ...(video ? { controls: true, preload: "none", "aria-label": attributes.alt } : {}),
+              ...Object.fromEntries(
+                ["width", "height", "title"]
+                  .filter((key) => attributes[key])
+                  .map((key) => [key, attributes[key]]),
+              ),
             });
           } else if (name === "Redirect") {
             node.children = [{ type: "text", value: `Перенаправление на ${attributes.to ?? "/"}` }];

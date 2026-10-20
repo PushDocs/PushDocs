@@ -18,6 +18,7 @@
     },
     "dev": {
       "cache": false,
+      "passThroughEnv": ["PUSHDOCS_*", "PORT"],
       "persistent": true
     },
     "test": {

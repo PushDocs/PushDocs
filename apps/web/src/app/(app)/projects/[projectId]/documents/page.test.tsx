@@ -1,3 +1,4 @@
+import { parseProjectConfig } from "@pushdocs/content/config";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -44,7 +45,12 @@ beforeEach(() => {
   mocks.context.mockResolvedValue({
     state: { files: [], branch: { id: "branch", repository_paths: [], head_commit_sha: "sha" } },
     access: { role: "editor" },
-    config: {},
+    config: parseProjectConfig(
+      JSON.stringify({
+        version: 1,
+        media: { components: { DocMedia: { storage: "images", srcBase: "/img" } } },
+      }),
+    ),
   });
   mocks.workingFile.mockResolvedValue(undefined);
   mocks.attachments.mockResolvedValue([
@@ -118,6 +124,31 @@ it("renders the file tree from metadata and loads only the initially selected bo
     expect.objectContaining({ path: "docs/a.md", content: "# A", loaded: true }),
     expect.objectContaining({ path: "docs/b.md", content: "", loaded: false }),
   ]);
+});
+
+it("loads the selected branch registry and offers DocMedia without an import", async () => {
+  const context = await mocks.context();
+  context.state.files = [
+    { path: "docs/a.md", content: "", loaded: false, status: "clean" },
+    { path: "src/theme/MDXComponents/index.tsx", content: "", loaded: false, status: "clean" },
+  ];
+  mocks.workingFile.mockImplementation(async (_project, branch, path) => {
+    expect(branch).toBe("docs/fix");
+    return {
+      path,
+      content: path.endsWith(".tsx") ? "export default { DocMedia };" : "# A",
+      status: "clean",
+      loaded: true,
+    };
+  });
+  const view = await page();
+  expect(view.props.components).toEqual([
+    expect.objectContaining({
+      name: "DocMedia",
+      snippet: '<DocMedia src="" alt="Описание изображения" />',
+    }),
+  ]);
+  expect(mocks.workingFile).toHaveBeenCalledTimes(2);
 });
 
 it("opens the attachment panel with only uploads belonging to this draft", async () => {

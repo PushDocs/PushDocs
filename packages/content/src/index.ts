@@ -7,13 +7,21 @@ import matter from "gray-matter";
 
 export {
   assertProjectFileEditable,
-  assetLocation,
+  attachmentUploadDirectory,
   isEditableFile,
   parseProjectConfig,
   planDocument,
   planTemplate,
   safePath,
 } from "./config";
+
+export {
+  mediaComponentUrl,
+  mediaLocales,
+  mediaReferenceCandidates,
+  mediaRoots,
+  repositoryMediaUrl,
+} from "./media-paths";
 
 export interface ImportedDocument extends DocumentSummary {
   content: string;
@@ -137,6 +145,11 @@ export {
   searchDocuments,
   topicWords,
 } from "./intelligence";
+export {
+  isMdxComponentsPath,
+  mdxComponentPaths,
+  registeredMdxComponents,
+} from "./mdx-components";
 export { isMediaFile, mediaCatalog } from "./media";
 export type { NavigationPosition } from "./navigation";
 export {

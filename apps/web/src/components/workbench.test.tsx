@@ -168,7 +168,17 @@ beforeEach(() => {
     branches: [{ full_ref: "main" }, { full_ref: "docs/new" }],
     role: "editor",
     repositoryPaths: [],
-    config: parseProjectConfig(),
+    config: parseProjectConfig(
+      JSON.stringify({
+        version: 1,
+        media: {
+          components: {
+            DocMedia: { storage: "images", srcBase: "/{locale}/img" },
+            Video: { storage: "video" },
+          },
+        },
+      }),
+    ),
   };
   vi.stubGlobal(
     "fetch",
@@ -232,7 +242,11 @@ function mount(options: { metadataTabEnabled?: boolean } = {}) {
       projectName="Docs"
       branch="main"
       initial={structuredClone(state)}
-      components={[{ label: "Widget", snippet: '<Widget title="Hi" />' }]}
+      components={[
+        { name: "Widget", label: "Widget", snippet: '<Widget title="Hi" />' },
+        { name: "DocMedia", label: "DocMedia", snippet: '<DocMedia src="example.png" alt="" />' },
+        { name: "Video", label: "Video", snippet: '<Video src="" />' },
+      ]}
       metadataTabEnabled={options.metadataTabEnabled}
     />,
   );
@@ -493,6 +507,47 @@ async function tick(ms = 1200) {
     await vi.advanceTimersByTimeAsync(ms);
   });
 }
+
+it.each(["md", "mdx"])(
+  "inserts components into .%s without renaming the document",
+  async (extension) => {
+    const first = state.files[0];
+    if (!first) throw new Error("Missing fixture");
+    const path = `docs/a.${extension}`;
+    Object.assign(first, { path, content: "# Original\r\nBody\r\n" });
+    mount();
+    const input = screen.getByLabelText("Исходник документа") as HTMLTextAreaElement;
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.click(screen.getByText("Компонент").closest("summary") as HTMLElement);
+    expect(screen.getByRole("menuitem", { name: "Widget" })).toHaveProperty("disabled", false);
+    await click("Widget");
+    await tick();
+    expect(requests).toEqual([
+      expect.objectContaining({
+        action: "files",
+        files: [{ path, content: '# Original\r\nBody\r\n\r\n<Widget title="Hi" />\r\n' }],
+      }),
+    ]);
+    expect(screen.getByRole("tab", { name: `a.${extension}` }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(screen.queryByText("Преобразовать в .mdx")).toBeNull();
+  },
+);
+
+it("opens an imported component registry as read-only", () => {
+  const first = state.files[0];
+  if (!first) throw new Error("Missing fixture");
+  state.files = [
+    {
+      ...first,
+      path: "src/theme/MDXComponents/index.tsx",
+      content: "export default { DocMedia };",
+    },
+  ];
+  mount();
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
+});
 
 it("keeps MDX bytes on open and exposes technical files without filters", async () => {
   mount();
@@ -850,30 +905,75 @@ it("previews template files before applying them atomically", async () => {
     values: { title: "Doc", slug: "new", locale: "ru" },
   });
 });
-it("hides the existing media library when inserting a new file", async () => {
+it.each([
+  ["DocMedia", "static/img/a.png", "/img/a.png", '<DocMedia src="a.png" alt="a.png" />'],
+  ["Video", "static/video/a.mp4", "pathname:///video/a.mp4", '<Video src="/video/a.mp4" />'],
+])(
+  "opens the full media library from %s and inserts the selected component",
+  async (component, path, assetUrl, snippet) => {
+    const original = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (String(url).includes("/media?"))
+        return Response.json({
+          assets: [{ path, url: assetUrl, status: "clean", size: null, usages: [] }],
+          role: "editor",
+          revision: 3,
+          status: "open",
+          locale: "ru",
+        });
+      if (!original) throw new Error("Missing fixture");
+      return original(url, options);
+    });
+    mount();
+    await click(component);
+    expect(screen.getByRole("heading", { name: `Вставить ${component}` })).toBeTruthy();
+    expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("multiple", false);
+    expect(screen.getByRole("dialog").querySelector(".media-toolbar")).toBeTruthy();
+    expect(screen.queryByText("Настройки загрузки")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Вставить файл" })).toBeNull();
+    await click(`Вставить ${path}`);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((screen.getByLabelText("Исходник документа") as HTMLTextAreaElement).value).toContain(
+      snippet,
+    );
+  },
+);
+
+it("offers generic Markdown attachments without DocMedia and keeps the folder field inside the modal", async () => {
   const original = vi.mocked(fetch).getMockImplementation();
   vi.mocked(fetch).mockImplementation(async (url, options) => {
     if (String(url).includes("/media?"))
       return Response.json({
         assets: [
-          { path: "static/img/a.png", url: "/img/a.png", status: "clean", size: null, usages: [] },
+          {
+            path: "static/files/guide.pdf",
+            url: "/files/guide.pdf",
+            status: "clean",
+            size: null,
+            usages: [],
+          },
         ],
         role: "editor",
-        revision: 3,
+        revision: 0,
         status: "open",
         locale: "ru",
+        uploadDirectory: "static/img",
       });
     if (!original) throw new Error("Missing fixture");
     return original(url, options);
   });
-  mount();
-  await click("Вставить файл");
-  expect(screen.getByRole("heading", { name: "Вставить файл" })).toBeTruthy();
-  expect(screen.getByLabelText("Загрузить файлы")).toHaveProperty("multiple", false);
-  expect(screen.getByRole("dialog").querySelector(".media-toolbar")).toBeNull();
-  expect(screen.queryByText("Настройки загрузки")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Вставить ссылку" })).toBeNull();
-  expect(screen.queryByRole("img", { name: "static/img/a.png" })).toBeNull();
+  render(<Workbench projectId="project" projectName="Docs" branch="main" initial={state} />);
+  expect(screen.queryByLabelText("Папка загрузки")).toBeNull();
+  await click("Вставить вложение");
+  expect(screen.getByRole("dialog").contains(screen.getByLabelText("Папка загрузки"))).toBe(true);
+  expect(screen.getByLabelText("Папка загрузки")).toHaveProperty("value", "static/img");
+  fireEvent.change(screen.getByLabelText("Найти файл"), { target: { value: "" } });
+  await click("Вставить static/files/guide.pdf");
+  expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
+    "value",
+    expect.stringContaining("[guide.pdf](pathname:///files/guide.pdf)"),
+  );
+  expect(screen.queryByLabelText("Папка загрузки")).toBeNull();
 });
 it("keeps the selected document and branch when opening the files section", async () => {
   mount();
@@ -1132,9 +1232,16 @@ it("shows committed changes and immediate unsaved edits in the tree and tabs", a
   expect(requests).toHaveLength(0);
 });
 
-it.each(["/img/new.png", "pathname:///img/new.png"])(
-  "saves the article and inserts an uploaded file with pathname:/// from %s",
-  async (assetUrl) => {
+it.each([
+  ["docmedia", "/img/a/new.png", "static/img/a/new.png"],
+  ["docmedia", "pathname:///img/custom/new.png", "static/img/custom/new.png"],
+  ["markdown", "/files/new.png", "static/files/new.png"],
+  ["video", "/video/a/new.mp4", "static/video/a/new.mp4"],
+  ["video", "pathname:///en/video/custom/new.mp4", "staticLocalized/en/video/custom/new.mp4"],
+])(
+  "saves the article and inserts an uploaded %s attachment",
+  async (insertionMode, assetUrl, assetPath) => {
+    const name = assetPath.split("/").at(-1) ?? "";
     const original = vi.mocked(fetch).getMockImplementation();
     if (!original) throw new Error("Missing fixture");
     vi.mocked(fetch).mockImplementation(async (url, options) => {
@@ -1147,6 +1254,7 @@ it.each(["/img/new.png", "pathname:///img/new.png"])(
             size: 5,
             usages: [],
           })),
+          uploadDirectory: insertionMode === "video" ? "static/video/a" : "static/img/a",
           revision: state.revision,
           role: "editor",
           status: "open",
@@ -1157,15 +1265,17 @@ it.each(["/img/new.png", "pathname:///img/new.png"])(
     class UploadRequest extends EventTarget {
       upload = new EventTarget();
       status = 200;
-      responseText = JSON.stringify({ path: "static/img/new.png" });
+      responseText = JSON.stringify({ path: assetPath });
       open(_method: string, url: string) {
         const query = new URL(url, "https://cms.test").searchParams;
         expect(query.get("branch")).toBe("main");
         expect(query.get("document")).toBe("docs/a.mdx");
         expect(query.get("revision")).toBe("1");
+        expect(query.get("path")).toBe(assetPath);
+        expect(query.has("destination")).toBe(false);
       }
       send() {
-        state.uploads = [{ path: "static/img/new.png" }];
+        state.uploads = [{ path: assetPath }];
         state.revision++;
         queueMicrotask(() => this.dispatchEvent(new Event("load")));
       }
@@ -1176,31 +1286,55 @@ it.each(["/img/new.png", "pathname:///img/new.png"])(
     fireEvent.change(screen.getByLabelText("Исходник документа"), {
       target: { value: "# Unsaved article" },
     });
-    await click("Вставить файл");
+    await click(
+      insertionMode === "video"
+        ? "Video"
+        : insertionMode === "docmedia"
+          ? "DocMedia"
+          : "Вставить вложение",
+    );
+    const directory = screen.getByLabelText("Папка загрузки");
+    const initialDirectory = insertionMode === "video" ? "static/video/a" : "static/img/a";
+    expect(directory).toHaveProperty("value", initialDirectory);
+    expect(screen.getByLabelText("Найти файл")).toHaveProperty("value", initialDirectory);
+    if (assetPath !== "static/img/a/new.png")
+      fireEvent.change(directory, {
+        target: { value: assetPath.slice(0, assetPath.lastIndexOf("/")) },
+      });
     expect(requests[0]).toMatchObject({
       files: [{ path: "docs/a.mdx", content: "# Unsaved article" }],
     });
     await act(async () => {
       fireEvent.change(screen.getByLabelText("Загрузить файлы"), {
-        target: { files: [new File(["image"], "new.png")] },
+        target: { files: [new File(["media"], name)] },
       });
     });
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("treeitem", { name: "new.png" }).textContent).toContain("A");
+    expect(screen.getByRole("treeitem", { name }).textContent).toContain("A");
     expect(screen.getByLabelText("Исходник документа")).toHaveProperty(
       "value",
-      expect.stringContaining("![new.png](pathname:///img/new.png)"),
+      expect.stringContaining(
+        insertionMode === "docmedia"
+          ? `<DocMedia src="${assetPath.slice("static/img/".length)}" alt="new.png" />`
+          : insertionMode === "video"
+            ? `<Video src="${assetUrl.replace(/^pathname:\/\//, "")}" />`
+            : "![new.png](pathname:///files/new.png)",
+      ),
     );
     const calls = vi.mocked(fetch).mock.calls.length;
-    await click("new.png");
+    await click(name);
     expect(
       vi
         .mocked(fetch)
         .mock.calls.slice(calls)
         .some(([url]) => String(url).includes("workbench?") && String(url).includes("path=")),
     ).toBe(false);
-    expect(screen.getByRole("img", { name: "new.png" }).getAttribute("src")).toContain(
-      "/assets?branch=main&path=static%2Fimg%2Fnew.png",
+    const preview =
+      insertionMode === "video"
+        ? screen.getByLabelText(`Видео ${name}`)
+        : screen.getByRole("img", { name });
+    expect(preview?.getAttribute("src")).toContain(
+      `/assets?branch=main&path=${encodeURIComponent(assetPath)}`,
     );
   },
 );
@@ -1228,6 +1362,34 @@ it("opens a replacement upload from the draft instead of downloading the old Git
       ),
   ).toBe(false);
 });
+
+it.each([false, true])(
+  "opens MP4 with playback controls (draft replacement: %s)",
+  async (draft) => {
+    const path = "static/video/demo.mp4";
+    state.repositoryPaths = [path];
+    state.uploads = draft ? [{ path }] : [];
+    vi.mocked(fetch).mockImplementation(async () => Response.json({ content: null }));
+    await act(async () => {
+      render(
+        <Workbench
+          projectId="project"
+          projectName="Docs"
+          branch="main"
+          initial={state}
+          initialPath={path}
+        />,
+      );
+    });
+    const video = screen.getByLabelText("Видео demo.mp4") as HTMLVideoElement;
+    expect(video.controls).toBe(true);
+    expect(video.getAttribute("src")).toBe(
+      "/api/projects/project/assets?branch=main&path=static%2Fvideo%2Fdemo.mp4&revision=0",
+    );
+    expect(screen.getByRole("button", { name: "Заменить файл" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Скачать файл" })).toBeTruthy();
+  },
+);
 
 it("saves the open draft before a dropped article and reveals its branch change", async () => {
   mount();
@@ -1475,7 +1637,7 @@ it("groups binary file actions and confirms deletion with a result dialog", asyn
 });
 
 it("reports invalid media configuration and an unsuccessful Git status response", async () => {
-  state.config.media = { directory: "../{name}", publicUrl: "pathname:///img" };
+  state.config.media = { components: {}, images: { directory: "../{name}", publicUrl: "/img" } };
   const original = vi.mocked(fetch).getMockImplementation();
   vi.mocked(fetch).mockImplementation(async (url, options) => {
     if (String(url).includes("file-statuses"))

@@ -4,8 +4,10 @@ import path from "node:path";
 import {
   analyzeDocusaurusFiles,
   isEditableFile,
+  isMdxComponentsPath,
   isMediaFile,
   parseProjectConfig,
+  registeredMdxComponents,
 } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { createProvider, type GitProvider, type ProviderFileChange } from "@pushdocs/providers";
@@ -245,7 +247,9 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const prefix = target.root_path === "." ? "" : `${target.root_path.replace(/\/$/, "")}/`;
     const paths = allPaths.filter(
       (filePath) =>
-        filePath.startsWith(prefix) && isEditableFile(config, filePath.slice(prefix.length)),
+        filePath.startsWith(prefix) &&
+        (isEditableFile(config, filePath.slice(prefix.length)) ||
+          isMdxComponentsPath(filePath.slice(prefix.length))),
     );
     await onDocumentsLoaded?.(0, paths.length);
     const contents = new Map<string, string>();
@@ -287,7 +291,14 @@ export function createWorkerService(options: WorkerServiceOptions) {
         .filter((filePath) => filePath.startsWith(prefix))
         .map((filePath) => filePath.slice(prefix.length)),
     );
-    await repository.ensureProjectComponents(projectId, profile.unknownComponents);
+    const registered = [...contents].flatMap(([filePath, content]) =>
+      isMdxComponentsPath(filePath.slice(prefix.length))
+        ? (registeredMdxComponents(content, filePath) ?? [])
+        : [],
+    );
+    await repository.ensureProjectComponents(projectId, [
+      ...new Set([...profile.unknownComponents, ...registered]),
+    ]);
   }
 
   async function synchronizeProject(projectId: string): Promise<void> {

@@ -39,7 +39,6 @@ it("uploads text and binary files to the exact directory with fresh revisions an
   expect(Object.fromEntries(query)).toMatchObject({
     branch: "feature/a",
     path: "docs/nested/image.png",
-    destination: "repository",
     revision: "1",
   });
   expect(result).toEqual({

@@ -219,6 +219,44 @@ describe("branch and review synchronization", () => {
     );
   });
 
+  it("snapshots the MDX registry inside the project root and detects unused global components", async () => {
+    const port = repository();
+    const client = provider();
+    const registry = "export default { DocMedia, SupportLink };";
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue({
+      ...syncTarget,
+      root_path: "site",
+    } as never);
+    vi.mocked(client.listBranches).mockResolvedValue([{ name: "main", sha: "head" }]);
+    vi.mocked(client.listFiles).mockResolvedValue([
+      "src/theme/MDXComponents/index.tsx",
+      "site/docs/intro.md",
+      "site/src/theme/MDXComponents/index.tsx",
+      "site/src/components/DocMedia.tsx",
+    ]);
+    vi.mocked(client.readFile).mockImplementation(async (_repo, _sha, path) =>
+      path.endsWith("intro.md") ? "# Intro" : registry,
+    );
+    await createWorkerService({ repository: port }).synchronizeBranch("project", "main", client);
+    expect(port.ensureProjectComponents).toHaveBeenCalledWith("project", [
+      "DocMedia",
+      "SupportLink",
+    ]);
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "main",
+      "head",
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "src/theme/MDXComponents/index.tsx",
+          content: registry,
+        }),
+      ]),
+      expect.any(Array),
+    );
+    expect(client.readFile).toHaveBeenCalledTimes(2);
+  });
+
   it("loads large branches in bounded batches", async () => {
     const port = repository();
     const client = provider();

@@ -84,7 +84,6 @@ export async function uploadExplorerFiles({
           path,
           name: file.name,
           revision: String(state.revision),
-          destination: "repository",
           replace: String(replacing),
         });
         response = await fetch(`/api/projects/${projectId}/assets?${query}`, {

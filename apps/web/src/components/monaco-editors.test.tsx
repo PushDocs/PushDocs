@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, render } from "@testing-library/react";
+import type { languages } from "monaco-editor";
 import { createRef } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MonacoDiff } from "./monaco-diff";
@@ -17,8 +18,14 @@ function runtime() {
   let select = () => {};
   let scroll = () => {};
   const listeners = Array.from({ length: 3 }, () => ({ dispose: vi.fn() }));
+  const completion = { dispose: vi.fn() };
+  const registerCompletionItemProvider = vi.fn(
+    (_language: string, _provider: languages.CompletionItemProvider) => completion,
+  );
   const model = {
     getValue: () => text,
+    getLanguageId: () => "markdown",
+    getLineContent: (line: number) => text.split("\n")[line - 1] ?? "",
     getFullModelRange: () => "full",
     getValueInRange: () => "selected",
     getLineCount: () => 30,
@@ -59,6 +66,10 @@ function runtime() {
     dispose: vi.fn(),
   };
   const api = {
+    languages: {
+      CompletionItemKind: { Folder: 23, File: 20 },
+      registerCompletionItemProvider,
+    },
     editor: {
       createModel: vi.fn((value) => {
         text = value;
@@ -82,6 +93,8 @@ function runtime() {
     api: api as unknown as MonacoApi,
     editor,
     model,
+    completion,
+    registerCompletionItemProvider,
     listeners,
     select: () => select(),
     scroll: () => scroll(),
@@ -102,6 +115,40 @@ it("uses faint indentation guides and chooses the actual file language", () => {
   expect(fileLanguage("_category_.json")).toBe("json");
   expect(fileLanguage("config.yaml")).toBe("yaml");
   expect(fileLanguage("LICENSE")).toBe("plaintext");
+});
+
+it("keeps path suggestions current, scoped to the model and disabled for readers", () => {
+  const rt = runtime();
+  const props = {
+    monaco: rt.api,
+    value: "![alt](./images/)",
+    path: "docs/intro.mdx",
+    repositoryPaths: ["docs/images/old.png"],
+    readOnly: false,
+    onChange: vi.fn(),
+    onSave: vi.fn(),
+    onIndent: vi.fn(),
+    inputRef: createRef<SourceEditorHandle>(),
+  };
+  const view = render(<MonacoSourceEditor {...props} />);
+  expect(rt.registerCompletionItemProvider.mock.calls[0]?.[0]).toBe("markdown");
+  const provider = rt.registerCompletionItemProvider.mock.calls[0]?.[1];
+  const suggest = (model = rt.model) =>
+    provider?.provideCompletionItems(
+      model as never,
+      { lineNumber: 1, column: 17 } as never,
+      {} as never,
+      {} as never,
+    );
+  expect(suggest()).toMatchObject({ suggestions: [{ label: "old.png" }] });
+  expect(suggest({ ...rt.model })).toBeUndefined();
+  view.rerender(<MonacoSourceEditor {...props} repositoryPaths={["docs/images/new.png"]} />);
+  expect(suggest()).toMatchObject({ suggestions: [{ label: "new.png" }] });
+  expect(rt.editor.dispose).not.toHaveBeenCalled();
+  view.rerender(<MonacoSourceEditor {...props} readOnly />);
+  expect(suggest()).toBeUndefined();
+  view.unmount();
+  expect(rt.completion.dispose).toHaveBeenCalledOnce();
 });
 
 it("keeps CRLF bytes, never saves on mount, and applies external replacements without echoing edits", () => {

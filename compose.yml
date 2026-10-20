@@ -22,6 +22,8 @@ x-app: &app
 services:
   postgres:
     image: postgres:17.6-alpine3.22
+    ports:
+      - "127.0.0.1:${PUSHDOCS_POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: pushdocs
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/install.sh first}
@@ -38,10 +40,11 @@ services:
       retries: 20
     networks:
       - database
+      - database-host
 
   migrate:
     <<: *app
-    command: ["yarn", "db:migrate"]
+    command: ["yarn", "workspace", "@pushdocs/db", "migrate"]
     restart: "no"
     depends_on:
       postgres:
@@ -245,6 +248,8 @@ volumes:
 networks:
   database:
     internal: true
+  # Port publishing requires a non-internal network; only PostgreSQL joins it.
+  database-host:
   vpn-control:
     internal: true
   vpn-egress:

@@ -8,9 +8,9 @@ export function ComponentInsertMenu({
   readOnly,
   onInsert,
 }: {
-  components: Array<{ label: string; snippet: string }>;
+  components: Array<{ name: string; label: string; snippet: string }>;
   readOnly: boolean;
-  onInsert: (snippet: string) => void;
+  onInsert: (snippet: string, name: string) => void;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -47,7 +47,7 @@ export function ComponentInsertMenu({
             role="menuitem"
             disabled={readOnly}
             onClick={(event) => {
-              onInsert(item.snippet);
+              onInsert(item.snippet, item.name);
               event.currentTarget.closest("details")?.removeAttribute("open");
             }}
           >

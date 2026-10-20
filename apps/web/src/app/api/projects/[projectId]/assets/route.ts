@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import { assetLocation, safePath } from "@pushdocs/content";
+import { safePath } from "@pushdocs/content";
 import { getDatabase } from "@pushdocs/db";
 import { storeUpload } from "@/lib/upload-stream";
 import {
@@ -43,23 +43,11 @@ export async function POST(request: Request, context: Context) {
     const query = new URL(request.url).searchParams;
     const branch = query.get("branch") ?? "";
     const name = query.get("name") ?? "";
-    const { config, user, store, state } = await localWorkbenchContext(projectId, branch);
+    const { user, store, state } = await localWorkbenchContext(projectId, branch);
     await store.requireProjectAccess(user.id, projectId, "document:write");
     if (state.changeSet && state.changeSet.status !== "open")
       throw new Error("Загрузка недоступна во время отправки или конфликта");
-    const repositoryUpload = query.get("destination") === "repository";
-    const location = repositoryUpload
-      ? { path: safePath(query.get("path") ?? ""), url: "" }
-      : assetLocation(
-          config,
-          query.get("locale") ?? config.defaultLocale,
-          query.get("document") ?? "docs/intro.md",
-          name,
-        );
-    const repositoryPath = safePath(query.get("path") || location.path);
-    const root = path.posix.dirname(location.path);
-    if (!repositoryUpload && !repositoryPath.startsWith(`${root}/`))
-      throw new Error("Каталог не разрешён для вложений");
+    const repositoryPath = safePath(query.get("path") ?? "");
     if (state.branch.repository_paths.includes(repositoryPath) && query.get("replace") !== "true")
       throw new Error("Файл уже существует. Выберите замену явно.");
     const mediaType = mediaTypes[path.extname(repositoryPath).toLowerCase()];
@@ -91,15 +79,7 @@ export async function POST(request: Request, context: Context) {
       createOnly: query.get("replace") !== "true",
       expectedRevision: Number(query.get("revision")),
     });
-    const urlRoot = location.url.slice(0, location.url.lastIndexOf("/"));
     return Response.json({
-      url: repositoryUpload
-        ? null
-        : `${urlRoot}/${repositoryPath
-            .slice(root.length + 1)
-            .split("/")
-            .map(encodeURIComponent)
-            .join("/")}`,
       path: repositoryPath,
       size: stored.size,
     });
@@ -155,15 +135,39 @@ export async function GET(request: Request, context: Context) {
             target.root_path === "." ? filePath : `${target.root_path}/${filePath}`,
           ),
         );
-    return new Response(bytes, {
-      headers: {
-        "Content-Type": mediaType,
-        "Content-Security-Policy": "sandbox",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "private, no-store",
-        ...(mediaType === "image/svg+xml" ? { "Content-Disposition": "attachment" } : {}),
-      },
+    const headers = new Headers({
+      "Content-Type": mediaType,
+      "Content-Security-Policy": "sandbox",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "private, no-store",
+      ...(query.get("download") === "true"
+        ? {
+            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(path.posix.basename(filePath)).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16)}`)}`,
+          }
+        : mediaType === "image/svg+xml"
+          ? { "Content-Disposition": "attachment" }
+          : {}),
     });
+    if (mediaType === "video/mp4") {
+      headers.set("Accept-Ranges", "bytes");
+      const range = request.headers.get("range")?.match(/^bytes=(\d*)-(\d*)$/);
+      // Without a matching validator, If-Range requires the complete representation.
+      if (range && (range[1] || range[2]) && !request.headers.has("if-range")) {
+        const start = range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]));
+        const end =
+          range[1] && range[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+        if (start >= bytes.length || end < start) {
+          headers.set("Content-Range", `bytes */${bytes.length}`);
+          headers.set("Content-Length", "0");
+          return new Response(null, { status: 416, headers });
+        }
+        headers.set("Content-Range", `bytes ${start}-${end}/${bytes.length}`);
+        headers.set("Content-Length", String(end - start + 1));
+        return new Response(bytes.subarray(start, end + 1), { status: 206, headers });
+      }
+    }
+    headers.set("Content-Length", String(bytes.length));
+    return new Response(bytes, { headers });
   } catch (error) {
     return apiError(error);
   }

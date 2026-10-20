@@ -5,6 +5,7 @@ export interface CatalogComponent {
   description: string;
   snippet: string;
   source: string;
+  unavailableReason?: string;
 }
 export interface ComponentExample {
   snippet: string;

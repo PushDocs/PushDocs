@@ -1,9 +1,11 @@
 "use client";
 import { applyEditorInput } from "@pushdocs/content/editing";
+import type { ProjectConfig } from "@pushdocs/contracts";
 import type { editor } from "monaco-editor";
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useMemo, useRef } from "react";
 import { FallbackSourceEditor } from "./fallback-source-editor";
 import { editorOptions, fileLanguage, type MonacoApi, useMonaco } from "./monaco-runtime";
+import { createPathIndex, pathCompletionItems } from "./path-completions";
 
 export interface SourceEditorHandle {
   readonly selectionStart: number;
@@ -23,6 +25,10 @@ interface SourceEditorProps {
   inputRef: RefObject<SourceEditorHandle | null>;
   storageKey?: string;
   path?: string;
+  repositoryPaths?: readonly string[];
+  locale?: string;
+  defaultLocale?: string;
+  media?: ProjectConfig["media"];
   jump?: { line: number; token: number };
 }
 
@@ -36,11 +42,15 @@ export function SourceEditor(props: SourceEditorProps) {
 }
 
 export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoApi }) {
-  const { monaco, storageKey, inputRef, path, value, readOnly, jump } = props;
+  const { monaco, storageKey, inputRef, path, value, readOnly, jump, repositoryPaths } = props;
+  const pathIndex = useMemo(
+    () => (repositoryPaths ? createPathIndex(repositoryPaths) : undefined),
+    [repositoryPaths],
+  );
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const current = useRef(props);
-  current.current = props;
+  const current = useRef({ ...props, pathIndex });
+  current.current = { ...props, pathIndex };
   useEffect(() => {
     /* v8 ignore next -- React attaches the host in the same commit before this effect. */
     if (!host.current) return;
@@ -53,8 +63,27 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
       model,
       readOnly: current.current.readOnly,
       ariaLabel: "Исходник документа",
+      quickSuggestions: { other: true, strings: true, comments: false },
     });
     instance.current = editor;
+    const completions = monaco.languages.registerCompletionItemProvider(model.getLanguageId(), {
+      triggerCharacters: ["/", ".", "(", '"', "'", "<", ":"],
+      provideCompletionItems: (target, position) => {
+        const { pathIndex, readOnly, locale, defaultLocale, media } = current.current;
+        if (target !== model || !pathIndex || readOnly) return undefined;
+        return {
+          suggestions: pathCompletionItems(
+            monaco,
+            pathIndex,
+            path ?? "document.mdx",
+            model.getLineContent(position.lineNumber),
+            position.lineNumber,
+            position.column,
+            { locale, defaultLocale, media, getLineContent: (line) => model.getLineContent(line) },
+          ),
+        };
+      },
+    });
     let syncing = false;
     const change = editor.onDidChangeModelContent(() => {
       if (!syncing && !current.current.readOnly)
@@ -160,6 +189,7 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
       change.dispose();
       position.dispose();
       scroll.dispose();
+      completions.dispose();
       if (inputRef.current === handle) inputRef.current = null;
       syncValue.current = null;
       instance.current = null;

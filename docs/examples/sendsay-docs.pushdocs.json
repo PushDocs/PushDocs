@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "defaultLocale": "ru",
+  "documentRoots": ["docs", "i18n"],
+  "media": {
+    "documentPathPrefixes": {
+      "en": "en/"
+    },
+    "images": {
+      "directory": "staticLocalized/{locale}/img"
+    },
+    "video": {
+      "directory": "staticLocalized/{locale}/video"
+    },
+    "components": {
+      "DocMedia": {
+        "storage": "images",
+        "srcBase": "/{locale}/img"
+      },
+      "Video": {
+        "storage": "video"
+      }
+    }
+  }
+}

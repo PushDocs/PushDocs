@@ -19,7 +19,7 @@ const previews = [
     status: "queued",
     createdAt: "2026-10-09T10:00:00Z",
     readyAt: null,
-    startupMs: 90_000,
+    startupMs: 90_123,
     expiresAt: null,
     diskBytes: 1_250_000_000,
     changedFiles: 3,
@@ -33,7 +33,13 @@ it("identifies completed metrics as previous creation while restarting the site"
     vi.fn(async () =>
       Response.json({
         previews: [
-          { ...previews[0], isDefault: true, status: "starting", readyAt: "2026-10-09T10:00:00Z" },
+          {
+            ...previews[0],
+            isDefault: true,
+            status: "starting",
+            readyAt: "2026-10-09T10:00:00Z",
+            startupMs: 123,
+          },
         ],
       }),
     ),
@@ -42,7 +48,7 @@ it("identifies completed metrics as previous creation while restarting the site"
   await screen.findByText("В процессе создания");
   expect(screen.getByText("Предыдущее создание")).toBeTruthy();
   expect(screen.getByText("Время предыдущего создания")).toBeTruthy();
-  expect(screen.getByText("1,5 мин")).toBeTruthy();
+  expect(screen.getByText("< 1 с")).toBeTruthy();
 });
 it("lets readers open queued previews and switch to their branch with complete metadata", async () => {
   vi.stubGlobal(
@@ -54,7 +60,7 @@ it("lets readers open queued previews and switch to their branch with complete m
   fireEvent.click(screen.getByRole("button", { name: "feature/docs" }));
   expect(screen.getByText("3 файлов")).toBeTruthy();
   expect(screen.getByText("1,3 ГБ")).toBeTruthy();
-  expect(screen.getByText("1,5 мин")).toBeTruthy();
+  expect(screen.getByText("90 с")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Открыть предпросмотр" }).getAttribute("href")).toContain(
     "branch=feature%2Fdocs",
   );

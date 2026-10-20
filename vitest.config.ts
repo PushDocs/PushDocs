@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   oxc: {
-    jsx: "automatic",
+    jsx: { runtime: "automatic" },
   },
   resolve: {
     alias: {
@@ -12,6 +12,7 @@ export default defineConfig({
   },
   test: {
     clearMocks: true,
+    setupFiles: ["./tests/setup.ts"],
     coverage: {
       exclude: ["**/*.test.{ts,tsx}", "**/migrate.ts", "**/migrations.ts", "**/schema.ts"],
       include: [

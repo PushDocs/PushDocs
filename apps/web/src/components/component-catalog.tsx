@@ -100,6 +100,7 @@ function ComponentCard({
       </summary>
       {open ? (
         <div className="component-card-body">
+          {component.unavailableReason ? <p role="status">{component.unavailableReason}</p> : null}
           {!editing ? (
             <div className="component-examples">
               <section>
@@ -196,8 +197,7 @@ function ComponentForm({
   onCancel: () => void;
 }) {
   const [snippet, setSnippet] = useState(
-    component?.snippet ??
-      "import SupportLink from '@site/src/components/SupportLink';\n\n<SupportLink>Написать в поддержку</SupportLink>",
+    component?.snippet ?? "<SupportLink>Написать в поддержку</SupportLink>",
   );
   const [label, setLabel] = useState(component?.label ?? "Ссылка в поддержку");
   const [busy, setBusy] = useState(false);

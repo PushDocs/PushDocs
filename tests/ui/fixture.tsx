@@ -1,6 +1,8 @@
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AssetVideo } from "../../apps/web/src/components/asset-video";
 import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
 import { DiffViewer } from "../../apps/web/src/components/diff-viewer";
 import { FileComments, FileCommentsButton } from "../../apps/web/src/components/file-comments";
@@ -17,6 +19,7 @@ import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
 import { Button, SearchableSelect, Select } from "../../packages/ui/src";
 import { CollaborationFixture } from "./collaboration-fixture";
+import { PathCompletionsFixture } from "./path-completions-fixture";
 import { WorkbenchScrollFixture } from "./workbench-scroll-fixture";
 import "../../packages/ui/src/styles.css";
 import "../../apps/web/src/app/globals.css";
@@ -138,6 +141,14 @@ function CommentsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("video"))
+    return (
+      <div className="wb-binary-preview">
+        <AssetVideo name="demo.mp4" src="/api/projects/p/assets?path=static/video/demo.mp4" />
+      </div>
+    );
+  if (new URLSearchParams(window.location.search).has("path-completions"))
+    return <PathCompletionsFixture />;
   if (new URLSearchParams(window.location.search).has("preview-header"))
     return (
       <div className="workbench">
@@ -298,7 +309,13 @@ function App() {
             projectId="p"
             branch="docs/test-pushdocs"
             document="docs/ecom/ecom-statistics.mdx"
+            replacePath={new URLSearchParams(window.location.search).get("replace") ?? undefined}
             onInsert={() => {}}
+            insertionMode={
+              new URLSearchParams(window.location.search).has("images")
+                ? MediaInsertionMode.Images
+                : undefined
+            }
           />
         </section>
       </div>

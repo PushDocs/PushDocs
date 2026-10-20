@@ -20,14 +20,14 @@ The repository contains a working MVP:
 - One installation can import and manage several projects. Each project has its own members and roles.
 - The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header offers **Обновить из Git** to refresh the selected branch, including the default branch. Editors can use **Влить <default branch>…** on an unprotected task branch before or after creating a PR or MR. This fetches both branches, merges and pushes with an exact branch lease, then reloads the imported documents. Drafts remain in PushDocs. Conflicting Git branches are left unchanged and must be resolved in Git before retrying.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
-- Editors can upload images and PDF files. PushDocs includes documents and attachments in one commit.
+- Editors can upload images, MP4, PDF, ZIP, CSV and TXT files. PushDocs includes documents and attachments in one commit.
 - Readers can comment on documents. Comment and status updates reach open pages through server-sent events.
 - Editors can send a change set to GitHub or GitLab and create a pull request or merge request. Native Git uses an exact branch lease during the push, and a persistent prepared-commit journal makes interrupted submissions retryable without duplicate commits.
 - If the remote branch changes in the same files, PushDocs records a three-way conflict and provides a text conflict editor.
 - The review screen displays open pull requests or merge requests and their current checks.
 - A project can register custom MDX components. The editor inserts their configured source snippets and shows safe placeholders in preview.
 - The document workbench has a file tree, persisted and closeable tabs, content search, language/version/status filters, highlighted MDX source with line numbers, scalar metadata forms, quick Markdown preview, and side-by-side comparison. It preserves untouched MDX bytes and line endings when editing.
-- Administrators can create and edit `.pushdocs/config.json` in the workbench. The configuration defines document roots, editable technical files, document templates with companion files and media paths. It contains no repository-specific rules in application code.
+- Administrators can create and edit `.pushdocs/config.json` in the workbench. It defines document roots, editable technical files, document templates and media paths. Media components are enabled explicitly in `media.components`, with their JSX names, storage and optional `srcBase`. The configuration reference includes a DocMedia/Video example. Every field is described in the [configuration reference](docs/configuration.md).
 - The media library lists existing Git files and uploads, supports drag and drop, progress, cancellation, retry, deletion and link insertion. Uploads require explicit replacement of existing files. Limits are 64 MiB per file, 256 MiB per submission and four active uploads per project.
 - After changes are sent, the review screen links to the documentation preview built by the repository's existing CI pipeline.
 
@@ -47,56 +47,64 @@ The local preview executes repository JavaScript. Enable it only for repositorie
 - The updated development plan is only partially implemented. Rebase, provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
 - A CI preview link becomes available only after the `preview:deploy` check succeeds for the current PR or MR commit.
 
-## Run with Docker Compose
+## Run
 
-During 2FA setup, scan the QR code with Google Authenticator or a compatible app. Store the manual setup key in a password manager so you can restore the authenticator if the phone is lost. PushDocs has no email recovery flow. Codes expire every 30 seconds and cannot be reused, including between login and a critical action. After ten authentication attempts in a 15-minute window, wait for the window to expire. Successful TOTP verification resets the attempt count.
+Choose one mode and follow its commands below. Requires Docker with Compose v2; development also requires Node.js >=20.19.0 and Yarn 4.17.1. Start Docker and run commands from the repository root.
 
-TOTP secrets use the existing installation encryption key and are bound to the user and setup stage. Back up that key with the database. The upgrade preserves password-only login only for operators that already existed when migration 011 ran. Other accounts must enroll. Existing invitations are also capped at 24 hours from creation.
+| Mode | Application processes | Default address |
+| --- | --- | --- |
+| Development | Run through Yarn with automatic reload; PostgreSQL runs in Docker | http://localhost:3000 |
+| Docker | All services run in containers | http://localhost:8080 |
 
-`yarn test:security` uses `PUSHDOCS_TEST_DATABASE_URL` to test upgrade compatibility, concurrent invitation acceptance, TOTP replay protection and session revocation. It creates and removes a separate random database and accepts only a local PostgreSQL server.
+### First run
 
-Run the installer with the public origin of the CMS:
-
-~~~sh
-./scripts/install.sh https://docs.example.com
-~~~
-
-The installer creates `.env` with a PostgreSQL password, session pepper and encryption key. It sets permission mode 600 and does not replace the file on later runs. Back up `.env` separately from the database and attachments because the encryption key is required to read saved Git credentials. VPN support is disabled by default.
-
-Enable VPN support only when a GitLab connection needs an OpenVPN profile:
-
-~~~sh
-./scripts/install.sh https://docs.example.com --enable-vpn
-~~~
-
-`PUSHDOCS_PUBLIC_ORIGIN` is the only value the installer cannot generate. It must match the DNS name and TLS address used by browsers. Production installations require an HTTPS origin. Plain HTTP is accepted only for localhost.
-
-Open the configured origin and create the first operator. Add a Git connection, then connect a Docusaurus project. You can paste a repository URL, a GitLab numeric project ID, a GitLab namespace and path, or a GitHub owner and repository name. The worker imports the default branch in the background.
-
-An operator can attach an optional `.ovpn` file to a GitLab HTTPS connection after VPN support is enabled. The profile must use a TUN device and contain its CA, client certificate, and unencrypted private key in inline blocks. PushDocs rejects profiles that run scripts, load plugins, refer to external credential files, or omit server certificate verification. If the VPN is unavailable, PushDocs does not try the provider without the VPN.
-
-VPN profiles use four gateway containers named `vpn-gateway-1` through `vpn-gateway-4`. Docker Compose starts them only through the `vpn` profile. Each container has its own network routes and receives `NET_ADMIN` and `/dev/net/tun`. The web and worker containers do not receive these permissions. The host must provide `/dev/net/tun` to Docker only when VPN support is enabled.
-
-Every successful production deployment updates the environment file when a release introduces a new generated secret, runs database migrations, and starts the enabled services before the application. Existing secrets remain unchanged. Set the `PUSHDOCS_VPN_ENABLED` deployment variable to `1` before adding a VPN profile. For a manual self-hosted update, run the installer with `--enable-vpn`, or use `--disable-vpn` to stop the gateway containers. Use `--prepare-only` to update `.env` without starting containers. For local evaluation, run `./scripts/install.sh http://localhost:8080`.
-
-## Local development
-
-Start PostgreSQL, copy `.env.example` to `.env`, and replace the secrets. Then run:
+**Development:** create `.env` from `.env.example` if it does not exist. Set the secrets and use the same password in `DATABASE_URL` and `POSTGRES_PASSWORD`. `DATABASE_URL` must point to the local PostgreSQL port (5432 by default).
 
 ~~~sh
 yarn install
+docker compose up -d --wait postgres
 yarn db:migrate
 yarn dev:all
 ~~~
 
-The web application listens on port 3000, and the realtime process listens on port 4100.
-Set `PUSHDOCS_REALTIME_ORIGIN=http://127.0.0.1:4100` for direct local development. Compose routes `/events` through Caddy. Set `PUSHDOCS_PUBLIC_ORIGIN` to the exact public CMS origin when using a reverse proxy.
+**Docker:**
 
-Caddy publishes ports `43000` to `43019` and proxies each port to the preview runner over the Compose network. Set `PUSHDOCS_PREVIEW_PUBLIC_HOST` to the IP address that browsers use to reach the installation. A project can set `preview.install` and `preview.start` in `.pushdocs/config.json`. The default start command is `yarn start --host 0.0.0.0 --port {port} --no-open`; it uses native filesystem watching.
+~~~sh
+./scripts/install.sh http://localhost:8080
+~~~
 
-By default, one site can run at a time (`PUSHDOCS_PREVIEW_MAX_ACTIVE=1`). Additional sites wait in a visible queue. The preview container has a hard limit of 5 GiB of memory, no additional swap, 2 CPU cores and 512 processes. Set `PUSHDOCS_PREVIEW_CONTAINER_MEMORY` and `PUSHDOCS_PREVIEW_CPUS` to adjust the container limits. Each runtime user is monitored against `PUSHDOCS_PREVIEW_MEMORY_MB=4096` MiB, including installation processes and descendants. Node's heap defaults to 1536 MiB (`PUSHDOCS_PREVIEW_NODE_HEAP_MB`) and is capped to leave at least 1024 MiB for other allocations. Increasing the site RSS budget does not automatically increase V8's heap budget. Exceeding the runtime budget stops all processes of that site's isolated user, including detached descendants, and produces a notification. The runner also clears orphaned processes before restarting that runtime user. Keep the combined runtime budgets below the container limit with room for the controller and Git preparation; increasing concurrency requires adjusting the container budget as well. PostgreSQL remains the durable source of drafts, and the workspace can be reconstructed from it and Git. Users start previews explicitly from Documents or open them from the Preview section. Visiting a branch does not start its site. The default branch workspace stays deployed and is protected from deletion and cache eviction. Stopping a site keeps its workspace. Other inactive preview workspaces are retained for one day. Every five minutes, the runner also checks the entire preview directory against `PUSHDOCS_PREVIEW_CACHE_MAX_MB=8192` MiB and removes the least recently used inactive workspaces when it exceeds that budget. Shared Git objects and legacy or interrupted checkouts count towards the budget. Active sites and workspaces being prepared are protected; if they alone exceed the budget, the runner reports it in its logs. Evicted branches are prepared again on demand rather than immediately rebuilt in the background.
+The installer creates `.env`, builds images, applies migrations and starts services. An existing `.env` keeps its configured origin and ports.
 
-For a standard Docusaurus start command, the runner generates a separate preview configuration beside the source configuration. Docusaurus resolves relative plugin paths from that directory. The generated file keeps the original site configuration and plugins, but uses a memory cache with one generation and disables source maps. Large imported GIFs otherwise produce large filesystem cache packs and additional buffers on recompilation. The source configuration and installed dependencies are not modified, and the generated file is removed on shutdown. Commands with an explicit `--config` or `-c` keep their own settings. Other frameworks are unchanged. Media buffers still count toward the site's RSS budget, so sites with large imported assets may need a higher RSS budget even when their JavaScript heap is small.
+Open the application's address and create the first operator.
+
+### Subsequent starts
+
+Start Docker and run the commands for the same mode.
+
+**Development:**
+
+~~~sh
+docker compose up -d --wait postgres
+yarn dev:all
+~~~
+
+Run `yarn db:migrate` against the running database when new migrations appear.
+
+**Docker:**
+
+~~~sh
+docker compose up -d --wait
+~~~
+
+Docker applies migrations automatically
+
+**Extra info:**
+
+See [Installation and operations](docs/operations.md) for switching modes, public installation, VPN and other settings.
+
+## Attachments
+
+Uploads use `static/img` by default and remain drafts until sent to Git. See the [attachment configuration](docs/configuration.md#вложения) for storage paths, localized URLs and a sendsay-docs example.
 
 ## CI preview
 
@@ -124,7 +132,7 @@ yarn check
 
 The coverage check includes domain rules, content import, provider adapters, database repositories, server actions, background services, and shared interface components. It requires 100 percent line coverage, 99 percent statement and function coverage, and 95 percent branch coverage. Current coverage is below those thresholds; the measurements and manual CI option are documented in [CI and container delivery](docs/ci-cd.md).
 
-Architecture decisions are in [the ADR](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
+Architecture decisions are listed in [the ADR index](docs/adr/index.md), starting with [the application architecture](docs/adr/0001-pushdocs-architecture.md). Compatibility notes for sendsay-docs are in [the import report](docs/compatibility/sendsay-docs.md).
 
 The [development plan](docs/development-plan.md) separates delivered capabilities from remaining work. The [verification report](docs/verification-2026-09-08.md) records automated checks, browser scenarios and limits of the compatibility claims.
 

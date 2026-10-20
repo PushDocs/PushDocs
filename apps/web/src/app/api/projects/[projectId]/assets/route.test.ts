@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseProjectConfig } from "@pushdocs/content";
 import { RevisionConflictError } from "@pushdocs/db";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import sendsayExample from "../../../../../../../../docs/examples/sendsay-docs.pushdocs.json";
 
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
@@ -47,6 +48,7 @@ let state: {
 beforeEach(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "pushdocs-assets-route-"));
   vi.stubEnv("PUSHDOCS_ATTACHMENTS_DIR", directory);
+  vi.stubEnv("PUSHDOCS_PUBLIC_ORIGIN", "https://cms.test");
   state = {
     branch: { head_commit_sha: "sha", repository_paths: [] },
     changeSet: { id: "change", status: "open" },
@@ -78,7 +80,7 @@ afterEach(async () => {
 function upload(extra: Record<string, string> = {}, body: BodyInit = "image") {
   return POST(
     new Request(
-      `https://cms.test/api?${new URLSearchParams({ branch: "main", name: "a.png", locale: "ru", document: "docs/a.md", revision: "0", ...extra })}`,
+      `https://cms.test/api?${new URLSearchParams({ branch: "main", name: "a.png", path: "static/img/a.png", revision: "0", ...extra })}`,
       { method: "POST", headers: { Origin: "https://cms.test" }, body },
     ),
     context,
@@ -89,7 +91,6 @@ it("streams a file and returns the URL for a nested custom directory", async () 
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     path: "static/img/guides/a.png",
-    url: "/img/guides/a.png",
     size: 5,
   });
   const record = mocks.record.mock.calls[0]?.[0];
@@ -108,6 +109,35 @@ it("streams a file and returns the URL for a nested custom directory", async () 
   });
   expect(mocks.finish).toHaveBeenCalledWith("upload", "project");
 });
+
+it("preserves the explicitly selected repository folder for an English article", async () => {
+  const current = await mocks.context();
+  mocks.context.mockResolvedValue({
+    ...current,
+    config: parseProjectConfig(JSON.stringify(sendsayExample)),
+  });
+  const response = await upload({
+    path: "manual/en/editor/a.png",
+    locale: "en",
+    document: "i18n/en/docs/en/forms/editor.mdx",
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ path: "manual/en/editor/a.png" });
+  expect(mocks.record).toHaveBeenCalledWith(
+    expect.objectContaining({ repositoryPath: "manual/en/editor/a.png" }),
+  );
+});
+
+it("downloads media with its filename without changing the preview response", async () => {
+  state.branch.repository_paths = ["static/img/a.png"];
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&path=static/img/a.png&download=true"),
+    context,
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Disposition")).toBe("attachment; filename*=UTF-8''a.png");
+});
+
 it("can read the Git version independently of an uploaded replacement", async () => {
   state.branch.repository_paths = ["static/img/a.png"];
   mocks.asset.mockResolvedValue({ storage_key: "must-not-read" });
@@ -136,10 +166,10 @@ it("requires explicit replacement and respects sending state", async () => {
   expect((await upload({ replace: "true" })).status).toBe(400);
 });
 it("rejects invalid targets, unsupported files, missing bodies and oversized files", async () => {
-  expect((await upload({ path: "docs/a.png" })).status).toBe(400);
+  expect((await upload({ path: "" })).status).toBe(400);
   expect((await upload({ path: "../a.png" })).status).toBe(400);
-  expect((await upload({ name: "a.exe" })).status).toBe(400);
-  const empty = new Request("https://cms.test/api?branch=main&name=a.png", {
+  expect((await upload({ path: "static/img/a.exe" })).status).toBe(400);
+  const empty = new Request("https://cms.test/api?branch=main&name=a.png&path=static/img/a.png", {
     method: "POST",
     headers: { Origin: "https://cms.test" },
   });
@@ -166,6 +196,53 @@ it("serves existing Git bytes at an immutable SHA with safe response headers", a
   expect(mocks.binary).toHaveBeenCalledWith("42", "sha", "static/img/a.png");
   expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 255]));
 });
+
+it.each([
+  ["bytes=2-4", 206, "bytes 2-4/10", "234"],
+  ["bytes=7-", 206, "bytes 7-9/10", "789"],
+  ["bytes=-3", 206, "bytes 7-9/10", "789"],
+  ["bytes=8-99", 206, "bytes 8-9/10", "89"],
+  ["bytes=-99", 206, "bytes 0-9/10", "0123456789"],
+  ["bytes=10-", 416, "bytes */10", ""],
+  ["bytes=5-2", 416, "bytes */10", ""],
+  ["bytes=-0", 416, "bytes */10", ""],
+  ["bytes=0-1,5-6", 200, null, "0123456789"],
+  ["invalid", 200, null, "0123456789"],
+  ["", 200, null, "0123456789"],
+])("serves MP4 playback range %s", async (range, status, contentRange, body) => {
+  state.branch.repository_paths = ["static/video/demo.mp4"];
+  mocks.binary.mockResolvedValue(Buffer.from("0123456789"));
+  const response = await GET(
+    new Request("https://cms.test/api?branch=main&path=static/video/demo.mp4", {
+      headers: range ? { Range: range } : {},
+    }),
+    context,
+  );
+  expect(response.status).toBe(status);
+  expect(response.headers.get("Content-Type")).toBe("video/mp4");
+  expect(response.headers.get("Accept-Ranges")).toBe("bytes");
+  expect(response.headers.get("Content-Range")).toBe(contentRange);
+  expect(response.headers.get("Content-Length")).toBe(String(body.length));
+  expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  expect(await response.text()).toBe(body);
+});
+
+it("seeks in draft MP4 replacements and sends the full file for an unmatched If-Range", async () => {
+  await upload({ name: "demo.mp4" }, "draft-video");
+  const record = mocks.record.mock.calls[0]?.[0];
+  mocks.asset.mockResolvedValue({ storage_key: record.storageKey });
+  const url = "https://cms.test/api?branch=main&path=static/img/demo.mp4";
+  const partial = await GET(new Request(url, { headers: { Range: "bytes=6-" } }), context);
+  expect(partial.status).toBe(206);
+  expect(await partial.text()).toBe("video");
+  const full = await GET(
+    new Request(url, { headers: { Range: "bytes=6-", "If-Range": '"old-version"' } }),
+    context,
+  );
+  expect(full.status).toBe(200);
+  expect(await full.text()).toBe("draft-video");
+  expect(mocks.binary).not.toHaveBeenCalled();
+});
 it("serves uploaded SVG as a download and rejects missing files", async () => {
   await upload({ name: "a.svg" }, "<svg />");
   const record = mocks.record.mock.calls[0]?.[0];
@@ -188,7 +265,7 @@ it("serves uploaded SVG as a download and rejects missing files", async () => {
 
 it("rejects oversized declared lengths before writing bytes", async () => {
   const response = await POST(
-    new Request("https://cms.test/api?branch=main&name=a.png", {
+    new Request("https://cms.test/api?branch=main&name=a.png&path=static/img/a.png", {
       method: "POST",
       body: "image",
       headers: { Origin: "https://cms.test", "Content-Length": "999999999" },
@@ -235,9 +312,9 @@ it("uses the scoped local data directory when no storage override is configured"
 
 it("uploads explorer assets at the requested repository location without media-root redirection", async () => {
   for (const filePath of ["logo.png", "docs/guide/logo.png"]) {
-    const response = await upload({ destination: "repository", path: filePath });
+    const response = await upload({ path: filePath });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ path: filePath, url: null });
+    expect(await response.json()).toMatchObject({ path: filePath });
     expect(mocks.record).toHaveBeenLastCalledWith(
       expect.objectContaining({ repositoryPath: filePath, createOnly: true }),
     );

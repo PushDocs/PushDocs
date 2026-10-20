@@ -11,6 +11,7 @@ import {
   createConnectionSchema,
   createDocumentSchema,
   createProjectSchema,
+  defaultMediaLocations,
   deleteConnectionSchema,
   deleteProjectSchema,
   inviteMemberSchema,
@@ -546,7 +547,7 @@ export async function uploadAttachmentAction(formData: FormData): Promise<void> 
     .replace(/[^a-zA-Z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  const repositoryPath = `static/img/${sha256.slice(0, 10)}-${safeName || "asset"}${extension}`;
+  const repositoryPath = `${defaultMediaLocations.images.directory}/${sha256.slice(0, 10)}-${safeName || "asset"}${extension}`;
   const storageKey = `${projectId}/${randomBytes(16).toString("hex")}${extension}`;
   const destination = attachmentStoragePath(storageKey);
   const temporary = `${destination}.uploading`;

@@ -1,4 +1,12 @@
-import { assetLocation, isMediaFile, mediaCatalog, safePath } from "@pushdocs/content";
+import {
+  attachmentUploadDirectory,
+  isMediaFile,
+  mediaCatalog,
+  mediaLocales,
+  mediaRoots,
+  safePath,
+} from "@pushdocs/content";
+import { MediaInsertionMode } from "@pushdocs/contracts";
 import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { apiError, assertSameOrigin, localWorkbenchContext } from "@/lib/workbench";
@@ -20,13 +28,33 @@ export async function GET(request: Request, context: Context) {
     const branch = query.get("branch") ?? "";
     const { config, state, store, access } = await localWorkbenchContext(projectId, branch);
     const document = query.get("document") ?? "";
-    const locale =
+    const mode = z
+      .enum(MediaInsertionMode)
+      .default(MediaInsertionMode.Library)
+      .parse(query.get("mode") ?? undefined);
+    const articleLocale =
       query.get("locale") ??
       state.files.find((file) => file.path === document)?.locale ??
+      document.match(/^i18n\/([^/]+)\//)?.[1] ??
       config.defaultLocale;
+    const locale = articleLocale === "default" ? config.defaultLocale : articleLocale;
     const uploads = (await store.listAttachments(projectId)).filter(
       (file) => file.change_set_id === state.changeSet?.id,
     );
+    const roots = mediaRoots(
+      config,
+      locale,
+      mediaLocales(config, [
+        ...state.branch.repository_paths,
+        ...uploads.map((file) => file.repository_path),
+      ]),
+    );
+    const kind =
+      mode === MediaInsertionMode.Video && config.media.video
+        ? "video"
+        : mode === MediaInsertionMode.Images && config.media.images
+          ? "images"
+          : undefined;
     return Response.json(
       {
         assets: mediaCatalog({
@@ -40,10 +68,22 @@ export async function GET(request: Request, context: Context) {
             size: Number(file.size_bytes),
           })),
         }),
-        uploadDirectory: assetLocation(config, locale, document, "placeholder")
-          .path.split("/")
-          .slice(0, -1)
-          .join("/"),
+        sharedDirectories: [
+          ...new Set(roots.filter((root) => root.shared).map((root) => root.directory)),
+        ],
+        directories: [
+          ...new Set(
+            roots
+              .filter((root) => root.group && (!kind || root.kind === kind))
+              .map((root) => root.directory),
+          ),
+        ],
+        uploadDirectory: attachmentUploadDirectory(
+          config,
+          locale,
+          mode === MediaInsertionMode.Library ? undefined : document,
+          mode === MediaInsertionMode.Video ? "video" : "images",
+        ),
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",
         role: access.role,
