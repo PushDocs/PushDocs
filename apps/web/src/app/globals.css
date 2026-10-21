@@ -3276,15 +3276,23 @@ textarea:where(:not(.monaco-editor *)):focus {
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
   margin-top: auto;
 }
 .media-actions > button:not(.media-icon-action) {
+  min-width: 0;
   min-height: 32px;
   height: 32px;
-  padding: 6px 8px;
+  padding: 6px;
   font-size: 12px;
-  gap: 6px;
+  gap: 4px;
+}
+.media-actions > button > svg {
+  flex-shrink: 0;
+}
+.media-action-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .media-actions > .media-icon-action {
   display: inline-flex;

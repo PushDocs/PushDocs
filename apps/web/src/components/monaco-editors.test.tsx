@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render } from "@testing-library/react";
 import type { languages } from "monaco-editor";
-import { createRef } from "react";
+import { createRef, StrictMode, useLayoutEffect, useRef, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MonacoDiff } from "./monaco-diff";
 import { editorOptions, fileLanguage, type MonacoApi } from "./monaco-runtime";
@@ -177,6 +177,62 @@ it("keeps CRLF bytes, never saves on mount, and applies external replacements wi
   expect(rt.editor.pushUndoStop).toHaveBeenCalledTimes(2);
   act(() => rt.editor.addCommand.mock.calls[0]?.[1]());
   expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+it("keeps newer input when a controlled value commits before the next keystroke", () => {
+  const rt = runtime();
+  function ControlledEditor() {
+    const [value, setValue] = useState("");
+    const inputRef = useRef<SourceEditorHandle>(null);
+    useLayoutEffect(() => {
+      if (value === "a") rt.type("ab");
+    }, [value]);
+    return (
+      <MonacoSourceEditor
+        monaco={rt.api}
+        value={value}
+        inputRef={inputRef}
+        readOnly={false}
+        onChange={setValue}
+        onSave={() => {}}
+        onIndent={() => {}}
+      />
+    );
+  }
+  render(
+    <StrictMode>
+      <ControlledEditor />
+    </StrictMode>,
+  );
+  act(() => rt.type("a"));
+  expect(rt.model.getValue()).toBe("ab");
+  expect(rt.editor.executeEdits).not.toHaveBeenCalled();
+});
+
+it("recreates the model before syncing the value when switching documents", () => {
+  const rt = runtime();
+  const props = {
+    monaco: rt.api,
+    value: "first document",
+    path: "first.md",
+    storageKey: "first",
+    inputRef: createRef<SourceEditorHandle>(),
+    readOnly: false,
+    onChange: vi.fn(),
+    onSave: vi.fn(),
+    onIndent: vi.fn(),
+  };
+  const view = render(<MonacoSourceEditor {...props} />);
+  view.rerender(
+    <MonacoSourceEditor {...props} path="second.md" storageKey="second" value="second document" />,
+  );
+  expect(rt.api.editor.createModel).toHaveBeenLastCalledWith("second document", "markdown");
+  expect(rt.model.getValue()).toBe("second document");
+  expect(rt.editor.executeEdits).not.toHaveBeenCalled();
+  expect(JSON.parse(sessionStorage.getItem("first:monaco") ?? "null")).toEqual({
+    cursorState: ["position"],
+    viewState: { scrollTop: 96 },
+  });
 });
 
 it("inserts components as undoable edits, honors permission changes and restores file position", () => {

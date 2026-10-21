@@ -505,7 +505,8 @@ export function MediaLibrary({
                       if (asset.url) onInsert(asset.url, asset.path);
                     }}
                   >
-                    <Link2 aria-hidden size={16} /> Вставить
+                    <Link2 aria-hidden size={16} />
+                    <span className="media-action-label">Вставить</span>
                   </Button>
                 ) : null}
                 {!componentMedia && asset.status !== "delete" ? (
@@ -522,7 +523,8 @@ export function MediaLibrary({
                       });
                     }}
                   >
-                    <Upload aria-hidden size={16} /> Заменить
+                    <Upload aria-hidden size={16} />
+                    <span className="media-action-label">Заменить</span>
                   </Button>
                 ) : null}
                 <a

@@ -613,6 +613,7 @@ test("media gallery groups new files and shrinks for replacement", async ({ page
     });
   });
   await page.goto(`${baseURL}/?media`);
+  await page.addStyleTag({ content: "body { font-family: Arial, sans-serif; }" });
   const dialog = page.getByRole("dialog", { name: "Вложения" });
   await expect(page.locator(".media-card")).toHaveCount(3);
   await expect(page.locator(".media-group h3").first()).toHaveText("Новые файлы");
@@ -642,6 +643,9 @@ test("media gallery groups new files and shrinks for replacement", async ({ page
     ]);
     const boxes = await Promise.all(icons.map((icon) => icon.boundingBox()));
     expect(new Set(boxes.map((box) => box?.y)).size).toBe(1);
+    expect(await actions.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
     for (const icon of icons) {
       await expect(icon.locator("svg")).toHaveCount(1);
     }

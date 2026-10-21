@@ -2,7 +2,7 @@
 import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import type { editor } from "monaco-editor";
-import { type RefObject, useEffect, useMemo, useRef } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { FallbackSourceEditor } from "./fallback-source-editor";
 import { editorOptions, fileLanguage, type MonacoApi, useMonaco } from "./monaco-runtime";
 import { createPathIndex, pathCompletionItems } from "./path-completions";
@@ -51,7 +51,7 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
   const instance = useRef<editor.IStandaloneCodeEditor | null>(null);
   const current = useRef({ ...props, pathIndex });
   current.current = { ...props, pathIndex };
-  useEffect(() => {
+  useLayoutEffect(() => {
     /* v8 ignore next -- React attaches the host in the same commit before this effect. */
     if (!host.current) return;
     const model = monaco.editor.createModel(
@@ -198,7 +198,8 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
     };
   }, [monaco, storageKey, path, inputRef]);
   const syncValue = useRef<((value: string) => void) | null>(null);
-  useEffect(() => {
+  // A delayed prop echo must not overwrite newer input and cancel path suggestions.
+  useLayoutEffect(() => {
     syncValue.current?.(value);
   }, [value]);
   useEffect(() => {
