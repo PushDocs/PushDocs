@@ -271,7 +271,7 @@ jobs:
           }
 
           archive="$RUNNER_TEMP/pushdocs-deploy.tar.gz"
-          tar -czf "$archive" compose.yml deploy/Caddyfile scripts/install.sh scripts/deploy.sh
+          tar -czf "$archive" compose.yml deploy/Caddyfile scripts/install.sh scripts/deploy.sh scripts/verify-mptcp-disabled.sh
           options=(
             -i "$HOME/.ssh/pushdocs"
             -o BatchMode=yes

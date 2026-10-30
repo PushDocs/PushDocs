@@ -21,6 +21,8 @@ x-app: &app
 
 services:
   postgres:
+    sysctls:
+      net.mptcp.enabled: "0"
     image: postgres:17.6-alpine3.22
     ports:
       - "127.0.0.1:${PUSHDOCS_POSTGRES_PORT:-5432}:5432"
@@ -43,6 +45,8 @@ services:
       - database-host
 
   migrate:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *app
     command: ["yarn", "workspace", "@pushdocs/db", "migrate"]
     restart: "no"
@@ -55,6 +59,8 @@ services:
       - database
 
   web:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *app
     command: ["node", "apps/web/.next/standalone/apps/web/server.js"]
     environment:
@@ -85,6 +91,8 @@ services:
       retries: 20
 
   worker:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *app
     command: ["yarn", "workspace", "@pushdocs/worker", "start"]
     depends_on:
@@ -101,6 +109,8 @@ services:
       - vpn-control
 
   preview:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *app
     user: root
     init: true
@@ -140,6 +150,8 @@ services:
       - vpn-control
 
   vpn-gateway-1: &vpn-gateway
+    sysctls:
+      net.mptcp.enabled: "0"
     profiles: ["vpn"]
     build:
       context: .
@@ -172,24 +184,32 @@ services:
       retries: 20
 
   vpn-gateway-2:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *vpn-gateway
     environment:
       PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
       PUSHDOCS_VPN_SLOT: "2"
 
   vpn-gateway-3:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *vpn-gateway
     environment:
       PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
       PUSHDOCS_VPN_SLOT: "3"
 
   vpn-gateway-4:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *vpn-gateway
     environment:
       PUSHDOCS_VPN_GATEWAY_TOKEN: ${PUSHDOCS_VPN_GATEWAY_TOKEN:?Run ./scripts/install.sh first}
       PUSHDOCS_VPN_SLOT: "4"
 
   realtime:
+    sysctls:
+      net.mptcp.enabled: "0"
     <<: *app
     command: ["yarn", "workspace", "@pushdocs/realtime", "start"]
     environment:
@@ -210,6 +230,8 @@ services:
       retries: 20
 
   caddy:
+    sysctls:
+      net.mptcp.enabled: "0"
     image: caddy:2.10.2-alpine
     depends_on:
       preview:
