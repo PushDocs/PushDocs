@@ -1,4 +1,4 @@
-FROM node:20.19.6-bookworm-slim AS build
+FROM node:24.22.2-bookworm-slim AS build
 
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
@@ -30,7 +30,7 @@ RUN yarn build
 RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static \
   && cp -R apps/web/public apps/web/.next/standalone/apps/web/public
 
-FROM node:20.19.6-bookworm-slim AS runtime
+FROM node:24.22.2-bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends acl git ca-certificates openvpn iproute2 iptables \
   && apt-get clean

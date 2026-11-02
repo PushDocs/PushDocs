@@ -49,7 +49,7 @@ The local preview executes repository JavaScript. Enable it only for repositorie
 
 ## Run
 
-Choose one mode and follow its commands below. Requires Docker with Compose v2; development also requires Node.js >=20.19.0 and Yarn 4.17.1. Start Docker and run commands from the repository root.
+Choose one mode and follow its commands below. Requires Docker with Compose v2; development also requires Node.js >=24.22.2 and Yarn 4.17.1. Start Docker and run commands from the repository root.
 
 | Mode | Application processes | Default address |
 | --- | --- | --- |
