@@ -25,6 +25,7 @@ RUN yarn install --immutable
 COPY apps ./apps
 COPY packages ./packages
 COPY scripts ./scripts
+COPY docs/examples ./docs/examples
 
 RUN yarn build
 RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static \
