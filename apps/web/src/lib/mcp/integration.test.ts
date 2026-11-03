@@ -886,6 +886,7 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
         ),
       ],
       ["static/img/pic.gif", await base.clone().gif().toBuffer()],
+      ["static/img/pic.avif", await base.clone().avif({ quality: 100 }).toBuffer()],
     ]);
     vi.mocked(providerForConnection).mockResolvedValue({
       readBinary: vi.fn(async (_id, _sha, filePath) => {
@@ -926,7 +927,7 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
         images: Array<{ path: string; sha256: string }>;
         changeSetRevision: number;
       };
-      expect(result.images.length).toBe(5);
+      expect(result.images.length).toBe(6);
       let expectedRevision = result.changeSetRevision;
       let changedCount = 0;
       for (const image of result.images.filter((i) => !i.path.endsWith(".gif"))) {

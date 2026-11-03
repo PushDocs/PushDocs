@@ -241,10 +241,9 @@ export async function compressImage(
   const svg = input.imagePath.toLowerCase().endsWith(".svg") ? assertStaticSvg(image.bytes) : null;
   const pipeline = sharp(image.bytes, { limitInputPixels: 40_000_000 });
   const metadata = await pipeline.metadata();
-  if (
-    (metadata.pages ?? 1) > 1 ||
-    !["jpeg", "png", "webp", "avif", "svg"].includes(metadata.format ?? "")
-  )
+  const format =
+    metadata.format === "heif" && metadata.compression === "av1" ? "avif" : metadata.format;
+  if ((metadata.pages ?? 1) > 1 || !["jpeg", "png", "webp", "avif", "svg"].includes(format ?? ""))
     throw new McpError(
       "IMAGE_FORMAT_UNSUPPORTED",
       "Only non-animated JPEG, PNG, WebP, AVIF and static SVG are supported.",
@@ -262,10 +261,10 @@ export async function compressImage(
   pipeline.keepIccProfile();
   if (metadata.orientation)
     pipeline.withExif({ IFD0: { Orientation: String(metadata.orientation) } });
-  if (metadata.format === "jpeg") pipeline.jpeg({ quality: input.quality ?? 90, mozjpeg: true });
-  if (metadata.format === "png") pipeline.png({ compressionLevel: 9 });
-  if (metadata.format === "webp") pipeline.webp({ quality: input.quality ?? 90 });
-  if (metadata.format === "avif") pipeline.avif({ quality: input.quality ?? 80, effort: 4 });
+  if (format === "jpeg") pipeline.jpeg({ quality: input.quality ?? 90, mozjpeg: true });
+  if (format === "png") pipeline.png({ compressionLevel: 9 });
+  if (format === "webp") pipeline.webp({ quality: input.quality ?? 90 });
+  if (format === "avif") pipeline.avif({ quality: input.quality ?? 80, effort: 4 });
   const result = svg
     ? {
         data: Buffer.from(optimize(svg, { multipass: true }).data),
