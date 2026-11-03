@@ -23,7 +23,7 @@ services:
   postgres:
     sysctls:
       net.mptcp.enabled: "0"
-    image: postgres:17.6-alpine3.22
+    image: postgres:17.11-alpine3.23
     ports:
       - "127.0.0.1:${PUSHDOCS_POSTGRES_PORT:-5432}:5432"
     environment:
@@ -232,7 +232,7 @@ services:
   caddy:
     sysctls:
       net.mptcp.enabled: "0"
-    image: caddy:2.10.2-alpine
+    image: caddy:2.11.7-alpine
     depends_on:
       preview:
         condition: service_started

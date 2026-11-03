@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:17.6-alpine3.22
+        image: postgres:17.11-alpine3.23
         env:
           POSTGRES_USER: pushdocs
           POSTGRES_PASSWORD: ci-only-password
