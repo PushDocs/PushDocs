@@ -310,7 +310,7 @@ export async function compressImage(
       repositoryPath: input.imagePath,
       storageKey,
       originalName: path.posix.basename(input.imagePath),
-      mediaType: metadata.format === "svg" ? "image/svg+xml" : `image/${metadata.format}`,
+      mediaType: format === "svg" ? "image/svg+xml" : `image/${format}`,
       sizeBytes: result.data.length,
       sha256: createHash("sha256").update(result.data).digest("hex"),
       expectedRevision: input.expectedRevision,

@@ -950,6 +950,16 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
           savedBytes: number;
         };
         expect(output.savedBytes).toBeGreaterThanOrEqual(0);
+        if (image.path.endsWith(".avif")) {
+          expect(output.changed).toBe(true);
+          const attachment = await getDatabase()
+            .selectFrom("attachments")
+            .select("media_type")
+            .where("project_id", "=", projectId)
+            .where("repository_path", "=", image.path)
+            .executeTakeFirstOrThrow();
+          expect(attachment.media_type).toBe("image/avif");
+        }
         if (output.changed) changedCount++;
         expectedRevision = output.changeSetRevision;
       }
