@@ -160,6 +160,7 @@ else
 fi
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview
 "${compose[@]}" up --detach --no-build --no-deps --wait --wait-timeout 180 caddy
+bash ./scripts/verify-mptcp-disabled.sh --env-file .env -f compose.yml
 
 health_url="$public_origin/api/health"
 for _ in {1..30}; do

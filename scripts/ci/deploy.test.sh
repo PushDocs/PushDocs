@@ -23,7 +23,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$deployment_root/scripts" "$mock_bin"
-cp scripts/deploy.sh scripts/install.sh "$deployment_root/scripts/"
+cp scripts/deploy.sh scripts/install.sh scripts/verify-mptcp-disabled.sh "$deployment_root/scripts/"
 chmod 700 "$deployment_root/scripts/deploy.sh" "$deployment_root/scripts/install.sh"
 
 printf '%s\n' \
@@ -39,6 +39,18 @@ cat > "$mock_bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$PUSHDOCS_DOCKER_LOG"
+if [[ "$*" == *'ps --quiet --status running' ]]; then
+  echo 'test-container'
+fi
+if [[ "$*" == 'inspect --format {{.Name}} test-container' ]]; then
+  echo '/test-container'
+fi
+if [[ "$*" == 'inspect --format {{index .HostConfig.Sysctls "net.mptcp.enabled"}} test-container' ]]; then
+  echo 0
+fi
+if [[ "$*" == 'inspect --format {{.State.Pid}} test-container' ]]; then
+  echo 123
+fi
 if [[ "$*" == 'image ls '* ]]; then
   for spec in '2026-09-15T13:00:00 1' '2026-09-15T13:00:00 1' '2026-09-15T12:00:00 2' '2026-09-15T11:00:00 3' '2026-09-15T10:00:00 4'; do
     read -r created id <<< "$spec"
@@ -76,6 +88,16 @@ cat > "$mock_bin/flock" <<'EOF'
 exit 0
 EOF
 
+cat > "$mock_bin/id" <<'EOF'
+#!/usr/bin/env bash
+echo 0
+EOF
+
+cat > "$mock_bin/nsenter" <<'EOF'
+#!/usr/bin/env bash
+echo "${PUSHDOCS_TEST_MPTCP_ENABLED:-0}"
+EOF
+
 cat > "$mock_bin/find" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -90,6 +112,7 @@ if (( BASH_VERSINFO[0] < 4 )); then
 fi
 EOF
 chmod 700 "$mock_bin/docker" "$mock_bin/openssl" "$mock_bin/curl" "$mock_bin/flock" "$mock_bin/find"
+chmod 700 "$mock_bin/id" "$mock_bin/nsenter"
 
 image="ghcr.io/pushdocs/pushdocs@sha256:$(printf '%064d' 1)"
 revision=$(printf '%040d' 2)
@@ -149,6 +172,14 @@ if PUSHDOCS_TEST_MIGRATION_FAIL=1 "$deployment_root/scripts/deploy.sh" \
   exit 1
 fi
 ! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
+[[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
+
+# A runtime MPTCP regression must not be recorded as a successful deployment.
+if PUSHDOCS_TEST_MPTCP_ENABLED=1 "$deployment_root/scripts/deploy.sh" \
+  "$image" https://docs.example.com '' 44 "$revision" 0; then
+  echo "Deployment accepted a container with MPTCP enabled" >&2
+  exit 1
+fi
 [[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
 
 echo 'PASS: deploy retains current images and data, removes old images before pull, stops on migration failure and gates VPN gateways'

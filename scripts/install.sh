@@ -201,4 +201,5 @@ else
     vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4 >/dev/null 2>&1 || true
 fi
 "${compose[@]}" up --build --detach --wait
+bash ./scripts/verify-mptcp-disabled.sh --env-file "$env_file"
 echo "PushDocs is ready. Open the configured public origin to create the first operator."
