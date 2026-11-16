@@ -1,4 +1,9 @@
-import { hasBranchConflicts, MediaInsertionMode, needsBranchUpdate } from "@pushdocs/contracts";
+import {
+  BranchUpdateStrategy,
+  hasBranchConflicts,
+  MediaInsertionMode,
+  needsBranchUpdate,
+} from "@pushdocs/contracts";
 import { GitPullRequest, X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -26,6 +31,7 @@ import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/s
 import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
 import { Button, SearchableSelect, Select } from "../../packages/ui/src";
+import { resolvedBranchUpdatePolicy } from "../fixtures/branch-update-policy";
 import { BranchImportFixture } from "./branch-import-fixture";
 import { ChangeReviewFixture } from "./change-review-fixture";
 import { CollaborationFixture } from "./collaboration-fixture";
@@ -237,6 +243,7 @@ function App() {
     const updateReason = new URLSearchParams(window.location.search).get("update");
     const branch = updateReason ? `docs/${"long-branch-name-".repeat(6)}` : "docs/update";
     const details = {
+      branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
       headSha: "sha",
       readiness: { state: "blocked" as const, reason: updateReason ?? "not_approved" },
       labels: [

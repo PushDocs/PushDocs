@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { analyzeContent } from "@pushdocs/content";
 import { readMetadata } from "@pushdocs/content/metadata";
 import {
+  branchUpdateLimits,
   ConflictReportMode,
   conflictReportLimits,
   reviewDescriptionMaxLength,
@@ -97,6 +98,7 @@ const toolScopes: Record<string, string> = Object.fromEntries([
   ["stop_preview", "pushdocs:preview"],
   ["submit_changes", "pushdocs:submit"],
   ["update_review_branch", "pushdocs:submit"],
+  ["resume_review_branch_update", "pushdocs:submit"],
   ["resolve_review_conflicts", "pushdocs:submit"],
   ["resume_conflict_resolution", "pushdocs:submit"],
 ]);
@@ -109,10 +111,11 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
     {
       instructions:
         "PushDocs manages documentation stored in Git repositories. Read/search before editing. Change sets are shared by all project users on a branch. Create a branch for your task. Reload after revision conflicts. Review the complete change set before submitting. Only submit when the user explicitly requests commit/push/PR/MR. Preview when appropriate. Poll operation IDs until completion. " +
-        "To update ALL open PRs/MRs from stable (or another named target), paginate list_open_reviews with that exact targetBranch; never use list_branches as the update set. Update each distinct source/target branch pair once using update_review_branch and its listed headSha. Poll each operation and continue other branches after individual failures. Summarize updated, already_current, conflicted and failed items with review links; never create new reviews or merge/close reviews. " +
+        "To update ALL open PRs/MRs from stable (or another named target), paginate list_open_reviews with that exact targetBranch; never use list_branches as the update set. Update each distinct source/target branch pair once using update_review_branch and its listed headSha. The update strategy comes from repository settings with git.updateStrategy overriding it in the target branch project config; readiness status never selects the strategy. Poll each operation and continue other branches after individual failures. Summarize updated, already_current, conflicted and failed items with review links; never create new reviews or merge/close reviews. " +
+        "To recover interrupted work in a new chat, read get_project with the source branch: pendingOperation identifies the operation reserving it even after the PR/MR closes. Poll queued/running operations. When canResumeReviewBranchUpdate is true and the user requests resuming the update/push, call resume_review_branch_update with that operationId and a NEW idempotencyKey. Preserve the prepared result; do not start a replacement update. Reading recovery state never resumes or publishes it. " +
         "If an update/resolution is blocked by saved changes, show the affected paths and editor/review links. Recommend reviewing and explicitly committing AND pushing the entire shared change set, canceling explicitly selected unwanted edits in the editor, or keeping drafts and skipping the branch. If an upload/operation is active, recommend waiting first. A blocked result has no operationId: do not poll it, and continue other reviews. Never suggest stash or automatically submit/discard drafts to unblock an update; a bulk branch-update request does not authorize publishing saved drafts. Local unsaved browser/computer edits are not visible to MCP. " +
         "Conflict reports are for nontechnical text editors. Default to editorial mode: article/section and links, common original version, what changed in the current target, what changed in the user's branch, then suggested combined wording, consequences and any concrete question needed. Distinguish confirmed text changes from inferred intentions. Dates identify commit snapshots, not paragraph edits or PR merge dates. Use actual branch names, never ambiguous ours/theirs. Use detailed mode only for an explicit request for detailed conflict analysis, raw changes or diff; show exact fragments and surrounding context. Read further pages and get_conflict_file when context is insufficient; disclose truncation and stale reports. " +
-        "Both conflict modes are metadata-only for media. Never automatically fetch/open image, GIF, video or binary links, generate thumbnails, extract frames or compare pixels. A detailed request does NOT authorize media viewing; only a separate explicit request for the selected media does. Check article references before recommending media deletion, and disclose incomplete reference checks. Analysis alone must not apply changes. On an explicit request to resolve, apply clear decisions; ask only about unresolved semantic/media choices. Use fragment decisions to preserve clean changes. Never substitute a merge resolution for a required rebase.",
+        "Both conflict modes are metadata-only for media. Never automatically fetch/open image, GIF, video or binary links, generate thumbnails, extract frames or compare pixels. A detailed request does NOT authorize media viewing; only a separate explicit request for the selected media does. Check article references before recommending media deletion, and disclose incomplete reference checks. Analysis alone must not apply changes. On an explicit request to resolve, apply clear decisions; ask only about unresolved semantic/media choices. Use fragment decisions to preserve clean changes. Never substitute a merge resolution for a required rebase. At needs_resolution, stop polling and get_conflict_report with the same operationId as inspectionId. For comparisonKind=rebase, explain the actual commit and sideMeaning; pass its exact rebase.conflictId to resolve_review_conflicts. Continue polling the same operationId after resolving; another commit may need a separate decision. Intermediate commits are never pushed.",
     },
   );
   const auth = new McpRepository(db);
@@ -140,6 +143,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
             "get_branch_changes",
             "list_open_reviews",
             "update_review_branch",
+            "resume_review_branch_update",
             "inspect_review_conflicts",
             "get_conflict_report",
             "resolve_review_conflicts",
@@ -219,7 +223,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "get_project",
-    "Read project configuration, roots, templates and branch snapshot. Credentials are never returned.",
+    "Read project configuration, roots, templates, branch snapshot and pendingOperation. Use the source branch to discover reserved work after losing its operationId, including after the PR/MR closes. This read never resumes or publishes work. Credentials are never returned.",
     { projectId, branch: branch.optional() },
     "pushdocs:read",
     false,
@@ -270,8 +274,25 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
     (s, i) => new ReviewService(s, principal.grantId).update(i),
   );
   tool(
+    "resume_review_branch_update",
+    "Resume the SAME prepared review branch update after a failed/uncertain push, with renewed authorization. Find its operationId in get_project(projectId, branch).pendingOperation or get_operation_status when canResumeReviewBranchUpdate=true. Only on an explicit resume/update/push request. Pass a NEW idempotencyKey; replay that same key if this call's response is lost. The original strategy, commits and SHAs are preserved. An already published result is reconciled even after the PR/MR closes; an unpublished result still requires a live open review and current safety checks. Poll operationId.",
+    { projectId, operationId: z.string().uuid(), idempotencyKey: write.idempotencyKey },
+    "pushdocs:submit",
+    true,
+    async (s, i) => {
+      const operationId = await s.store.retryReviewBranchUpdate(
+        i.projectId,
+        i.operationId,
+        principal.userId,
+        principal.grantId,
+      );
+      const operation = await s.store.getMcpOperation(i.projectId, operationId);
+      return { operationId, status: operation?.status, branch: operation?.result.branch };
+    },
+  );
+  tool(
     "inspect_review_conflicts",
-    "Queue read-only Git merge-conflict inspection of a live open review. Media identities are compared without requesting their contents. No commit/push. Poll operationId, then call get_conflict_report using inspectionId. Does not inspect conflicts of individual rebase commits.",
+    "Inspect a live open review without committing or pushing. If rebase is paused, returns the same operationId and its current conflicting commit. Otherwise compares branch tips. Media contents are excluded. Poll until done or needs_resolution, then call get_conflict_report using inspectionId. A rebase tip comparison requires update_review_branch before resolving individual commits.",
     {
       projectId,
       reviewId: z.string().min(1).max(200),
@@ -335,10 +356,15 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "resolve_review_conflicts",
-    "Apply explicitly requested decisions for ALL conflict files and PUSH a merge into the source branch; PR/MR stays open. Requires current inspectionId. For text, choice branch/target selects that side of all conflict fragments while preserving clean edits from both branches. For media or modify/delete, it chooses the complete file including deletion. combine supplies EVERY conflict fragment by zero-based index, choosing branch/target/manual text. Never guess ambiguous text/media choices. Required rebase resolutions are unsupported.",
+    "Apply explicitly requested decisions for ALL conflict files. Merge publishes a merge commit; a paused rebase continues the SAME operation and may return needs_resolution for another commit. Rebase pushes only after all commits are replayed. PR/MR stays open. Requires current inspectionId. For text, choice branch/target selects that side of all conflict fragments while preserving clean edits from both branches. For media or modify/delete, it chooses the complete file including deletion. combine supplies EVERY conflict fragment by zero-based index, choosing branch/target/manual text. Never guess ambiguous text/media choices. For rebase, branch means the current rebased foundation and target means the original commit being replayed. Read comparisonKind and rebase metadata before choosing sides.",
     {
       projectId,
       inspectionId: z.string().uuid(),
+      conflictId: z
+        .string()
+        .max(branchUpdateLimits.conflictIdChars)
+        .optional()
+        .describe("Required for rebase: exact conflictId from the current report."),
       files: conflictResolutionInput,
       idempotencyKey: write.idempotencyKey,
     },
@@ -559,7 +585,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "get_operation_status",
-    "Read branch creation, update, conflict inspection/resolution or submission status. Poll until completion; only done updates have updateOutcome. A failed prepared conflict resolution may expose canResumeConflictResolution for safe recovery.",
+    "Read branch creation, update, conflict inspection/resolution or submission status. Poll until done, failed or needs_resolution. At needs_resolution, read get_conflict_report with this operationId as inspectionId, resolve the current commit, then continue polling the same operationId. Only done updates have updateOutcome. Failed prepared operations expose canResumeReviewBranchUpdate or canResumeConflictResolution for recovery of the same result. If the operationId was lost, read get_project(projectId, branch).pendingOperation.",
     { projectId, operationId: z.string().uuid() },
     "pushdocs:read",
     false,

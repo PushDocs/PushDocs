@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
-import { BranchConflictChoice } from "@pushdocs/contracts";
+
+import {
+  BranchConflictChoice,
+  BranchUpdateStrategy,
+  branchConflictLimits,
+} from "@pushdocs/contracts";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { resolvedBranchUpdatePolicy } from "../../../../tests/fixtures/branch-update-policy";
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -9,14 +15,20 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   submit: vi.fn(),
   retry: vi.fn(),
+  start: vi.fn(),
+  cancel: vi.fn(),
   router: { refresh: vi.fn(), push: vi.fn(), replace: vi.fn() },
 }));
-vi.mock("@/app/actions", () => ({ gitOperationStatusAction: mocks.status }));
+vi.mock("@/app/actions", () => ({
+  gitOperationStatusAction: mocks.status,
+  startGitOperationAction: mocks.start,
+}));
 vi.mock("@/app/conflict-actions", () => ({
   prepareConflictResolutionAction: mocks.prepare,
   inspectReviewConflictsAction: mocks.inspect,
   submitConflictResolutionAction: mocks.submit,
   retryConflictResolutionAction: mocks.retry,
+  cancelRebaseUpdateAction: mocks.cancel,
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => mocks.router }));
 
@@ -31,6 +43,7 @@ import { conflictInspectionStore } from "./conflict-inspection";
 import { clearDraft, draftKey, writeDraft } from "./draft-storage";
 
 const snapshot = {
+  updatePolicy: resolvedBranchUpdatePolicy(),
   branch: "docs/task",
   sourceBranch: "stable",
   parentSha: "parent",
@@ -74,6 +87,110 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   conflictInspectionStore.clear();
+  vi.useRealTimers();
+});
+
+it("offers to start rebase from the branch tip comparison", async () => {
+  mocks.status.mockResolvedValue({
+    status: "done",
+    conflictSnapshot: {
+      ...snapshot,
+      updatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+    },
+  });
+  render(<BranchConflictResolver {...props} />);
+  expect(await screen.findByText(/Для проекта выбран rebase/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Отправить исправления в docs/task" })).toBeNull();
+  expect(
+    (screen.getByRole("button", { name: "Начать rebase" }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+const rebaseSnapshot = (index: number) => ({
+  ...snapshot,
+  updatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+  rebase: {
+    operationId: "rebase",
+    conflictId: `conflict-${index}`,
+    commitSha: `commit-${index}`,
+    currentParentSha: `rebased-${index}`,
+    originalParentSha: `original-${index}`,
+    index,
+    total: 2,
+    title: `Edit ${index}`,
+  },
+});
+
+it("starts rebase and resolves consecutive commits in the same operation without reusing the previous draft", async () => {
+  let step = 0;
+  mocks.status.mockImplementation(async (_project, id) =>
+    id === "inspect"
+      ? {
+          status: "done",
+          conflictSnapshot: {
+            ...snapshot,
+            updatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+          },
+        }
+      : step < 3
+        ? { status: "needs_resolution", conflictSnapshot: rebaseSnapshot(step) }
+        : { status: "done" },
+  );
+  mocks.start.mockImplementation(async () => {
+    step = 1;
+    return "rebase";
+  });
+  mocks.submit.mockImplementation(async () => {
+    step++;
+    return "rebase";
+  });
+  render(<BranchConflictResolver {...props} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Начать rebase" }));
+  expect(await screen.findByText(/Edit 1/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("radio", { name: "Оставить актуальную основу" }));
+  fireEvent.click(screen.getByRole("button", { name: "Продолжить rebase" }));
+  expect(await screen.findByText(/Edit 2/)).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Продолжить rebase" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(
+    (screen.getByRole("radio", { name: "Оставить актуальную основу" }) as HTMLInputElement).checked,
+  ).toBe(false);
+  fireEvent.click(screen.getByRole("radio", { name: "Применить изменения коммита" }));
+  fireEvent.click(screen.getByRole("button", { name: "Продолжить rebase" }));
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(2));
+  expect(mocks.submit).toHaveBeenNthCalledWith(
+    1,
+    "project",
+    "rebase",
+    [{ path: "docs/a.md", choice: BranchConflictChoice.Manual, content: "Ours" }],
+    "conflict-1",
+  );
+  expect(mocks.submit).toHaveBeenNthCalledWith(
+    2,
+    "project",
+    "rebase",
+    [{ path: "docs/a.md", choice: BranchConflictChoice.Manual, content: "Theirs" }],
+    "conflict-2",
+  );
+  expect(await screen.findByText(/Rebase завершён/)).toBeTruthy();
+});
+
+it("reopens the current paused commit after reload and cancels that exact conflict", async () => {
+  mocks.prepare.mockResolvedValue([
+    { branch: "docs/task", paths: [], busy: true, mergeJobId: "rebase" },
+  ]);
+  mocks.status.mockResolvedValue({
+    status: "needs_resolution",
+    conflictSnapshot: rebaseSnapshot(2),
+  });
+  render(<BranchConflictResolver {...props} />);
+  expect(await screen.findByText(/Edit 2/)).toBeTruthy();
+  expect(mocks.start).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Отменить rebase" }));
+  await waitFor(() => expect(mocks.cancel).toHaveBeenCalledWith("project", "rebase", "conflict-2"));
+  expect(mocks.router.push).toHaveBeenCalledWith("/projects/project/changes?branch=docs%2Ftask");
 });
 
 it("keeps conflicts visible in documents after the background inspection finishes", async () => {
@@ -629,3 +746,145 @@ it("discards fragment choices when the inspected branch versions change", async 
       .disabled,
   ).toBe(true);
 });
+
+it("allows retrying a failed branch check without starting an inspection prematurely", async () => {
+  mocks.prepare.mockRejectedValueOnce(new Error("Branch state is unavailable"));
+  render(<BranchConflictResolver {...props} />);
+  expect((await screen.findByRole("alert")).textContent).toBe("Branch state is unavailable");
+  expect(mocks.inspect).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+  expect(await screen.findByLabelText("Оставить ваш текст")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps decisions after a submission error and lets the user send them again", async () => {
+  mocks.submit.mockRejectedValueOnce(new Error("Submission unavailable"));
+  render(<BranchConflictResolver {...props} />);
+  fireEvent.click(await screen.findByLabelText("Оставить ваш текст"));
+  const submit = screen.getByRole("button", { name: "Отправить исправления в docs/task" });
+  fireEvent.click(submit);
+  expect((await screen.findByRole("alert")).textContent).toBe("Submission unavailable");
+  expect(screen.getByLabelText("Оставить ваш текст")).toHaveProperty("checked", true);
+  expect(submit).toHaveProperty("disabled", false);
+  expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toContain(
+    "Ours",
+  );
+  fireEvent.click(submit);
+  expect(await screen.findByText("Решение отправлено в docs/task")).toBeTruthy();
+  expect(mocks.submit).toHaveBeenCalledTimes(2);
+  expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toBeNull();
+});
+
+it("preserves visible decisions through a network error and retries the same failed send", async () => {
+  render(<BranchConflictResolver {...props} />);
+  const choice = await screen.findByLabelText("Оставить ваш текст");
+  fireEvent.click(choice);
+  vi.useFakeTimers();
+  mocks.status
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce({ status: "failed", last_error: "Push rejected" })
+    .mockResolvedValueOnce({ status: "done" });
+  mocks.retry.mockResolvedValueOnce(undefined);
+  fireEvent.click(screen.getByRole("button", { name: "Отправить исправления в docs/task" }));
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain("Нет связи");
+  expect(choice).toHaveProperty("checked", true);
+  expect(choice.closest("fieldset.branch-conflict-files")?.hasAttribute("disabled")).toBe(true);
+  expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toContain(
+    "Ours",
+  );
+  await act(async () => vi.advanceTimersByTimeAsync(branchConflictLimits.pollMs));
+  expect(screen.getByRole("alert").textContent).toBe("Push rejected");
+  expect(choice).toHaveProperty("checked", true);
+  fireEvent.click(screen.getByRole("button", { name: "Проверить и повторить отправку" }));
+  await act(async () => {});
+  expect(mocks.retry).toHaveBeenCalledWith("project", "publish");
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("Решение отправлено в docs/task")).toBeTruthy();
+  expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toBeNull();
+});
+
+it("resumes an existing failed merge and rechecks blockers if retry is refused", async () => {
+  mocks.prepare.mockResolvedValueOnce([
+    { branch: "docs/task", paths: [], busy: true, mergeJobId: "old-merge", mergeFailed: true },
+  ]);
+  mocks.retry.mockRejectedValueOnce(new Error("Branch changed"));
+  render(<BranchConflictResolver {...props} />);
+  const retry = await screen.findByRole("button", { name: "Проверить и повторить отправку" });
+  expect(mocks.inspect).not.toHaveBeenCalled();
+  mocks.prepare.mockResolvedValueOnce([{ branch: "docs/task", paths: ["new.md"], busy: false }]);
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(mocks.router.replace).toHaveBeenCalledWith(
+      "/projects/project/changes?branch=docs%2Ftask&conflict=review",
+    ),
+  );
+  expect(mocks.retry).toHaveBeenCalledWith("project", "old-merge");
+  expect(mocks.submit).not.toHaveBeenCalled();
+  expect(mocks.inspect).not.toHaveBeenCalled();
+});
+
+it.each(["initial", "submit"])("ignores a late %s branch check after leaving", async (stage) => {
+  let finish:
+    | ((pending: Array<{ branch: string; paths: string[]; busy: boolean }>) => void)
+    | undefined;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  if (stage === "initial") mocks.prepare.mockReturnValueOnce(pending);
+  const view = render(<BranchConflictResolver {...props} />);
+  if (stage === "submit") {
+    fireEvent.click(await screen.findByLabelText("Оставить ваш текст"));
+    mocks.prepare.mockReturnValueOnce(pending);
+    fireEvent.click(screen.getByRole("button", { name: "Отправить исправления в docs/task" }));
+  }
+  view.unmount();
+  await act(async () => finish?.([{ branch: "other", paths: ["draft.md"], busy: false }]));
+  expect(mocks.router.replace).not.toHaveBeenCalled();
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it("discards a late submit response when the review changes without losing either draft", async () => {
+  let finish: ((jobId: string) => void) | undefined;
+  mocks.submit.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
+  const view = render(<BranchConflictResolver {...props} />);
+  fireEvent.click(await screen.findByLabelText("Оставить ваш текст"));
+  fireEvent.click(screen.getByRole("button", { name: "Отправить исправления в docs/task" }));
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+  view.rerender(<BranchConflictResolver {...props} reviewId="other-review" />);
+  const choice = await screen.findByLabelText("Откатить до stable");
+  expect(choice).toHaveProperty("checked", false);
+  fireEvent.click(choice);
+  await act(async () => finish?.("old-publish"));
+  expect(mocks.status).not.toHaveBeenCalledWith("project", "old-publish");
+  expect(screen.queryByText("Решение отправлено в docs/task")).toBeNull();
+  expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toContain(
+    "Ours",
+  );
+  expect(
+    localStorage.getItem('pushdocs:merge-resolution:["user","project","other-review"]'),
+  ).toContain("Theirs");
+});
+
+it.each([false, true])(
+  "ignores a late send status after leaving, including failure: %s",
+  async (reject) => {
+    let finish: ((value: unknown) => void) | undefined;
+    const view = render(<BranchConflictResolver {...props} />);
+    fireEvent.click(await screen.findByLabelText("Оставить ваш текст"));
+    mocks.status.mockReturnValueOnce(
+      new Promise((resolve, fail) => {
+        finish = reject ? fail : resolve;
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Отправить исправления в docs/task" }));
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledWith("project", "publish"));
+    view.unmount();
+    const invalidate = vi.spyOn(conflictInspectionStore, "invalidate");
+    await act(async () => finish?.(reject ? new Error("offline") : { status: "done" }));
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(localStorage.getItem('pushdocs:merge-resolution:["user","project","review"]')).toContain(
+      "Ours",
+    );
+  },
+);

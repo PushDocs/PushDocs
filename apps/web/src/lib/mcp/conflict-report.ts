@@ -104,9 +104,21 @@ export function conflictReport(
       ? conflictReportLimits.fileChars
       : conflictReportLimits.excerptChars;
   const root = links.rootPath === "." ? "" : `${links.rootPath.replace(/^\/+|\/+$/g, "")}/`;
+  const branchRef = snapshot.rebase ? undefined : snapshot.parentSha;
+  const targetRef = snapshot.rebase?.commitSha ?? snapshot.sourceSha;
   return {
     mode: input.mode,
-    comparisonKind: "merge",
+    comparisonKind: snapshot.rebase ? "rebase" : "merge",
+    ...(snapshot.rebase
+      ? {
+          rebase: snapshot.rebase,
+          sideMeaning: {
+            base: "Original commit parent",
+            branch: "Current rebased foundation (not published)",
+            target: "Commit being replayed",
+          },
+        }
+      : {}),
     reviewUrl: links.reviewUrl,
     branch: snapshot.branch,
     targetBranch: snapshot.sourceBranch,
@@ -140,8 +152,9 @@ export function conflictReport(
             snapshot.history && (file.versions ? !!file.versions.base : file.baseContent !== null)
               ? conflictFileUrl(links, snapshot.history.base.sha, file.path)
               : null,
-          branch: file.oursExists ? conflictFileUrl(links, snapshot.parentSha, file.path) : null,
-          target: file.theirsExists ? conflictFileUrl(links, snapshot.sourceSha, file.path) : null,
+          branch:
+            file.oursExists && branchRef ? conflictFileUrl(links, branchRef, file.path) : null,
+          target: file.theirsExists ? conflictFileUrl(links, targetRef, file.path) : null,
         },
         facts: {
           baseExists: file.versions ? !!file.versions.base : file.baseContent !== null,
@@ -180,11 +193,14 @@ export function conflictReport(
                     .map((article) => ({
                       ...article,
                       title: article.title.slice(0, conflictReportLimits.titleChars),
-                      url: conflictFileUrl(
-                        links,
-                        article.version === "branch" ? snapshot.parentSha : snapshot.sourceSha,
-                        article.path,
-                      ),
+                      url:
+                        article.version === "branch" && !branchRef
+                          ? null
+                          : conflictFileUrl(
+                              links,
+                              article.version === "branch" ? (branchRef ?? targetRef) : targetRef,
+                              article.path,
+                            ),
                     })) ?? [],
                 note: "Only file identities and presence were compared. Contents, pixels and frames were not inspected. File references must be checked separately; absence of a reference list does not mean unused.",
               },
@@ -225,16 +241,8 @@ export function conflictReport(
                         file.baseContent !== null,
                         context.base.line,
                       ),
-                      branch: fragmentLink(
-                        snapshot.parentSha,
-                        file.oursExists,
-                        context.branch.line,
-                      ),
-                      target: fragmentLink(
-                        snapshot.sourceSha,
-                        file.theirsExists,
-                        context.target.line,
-                      ),
+                      branch: fragmentLink(branchRef, file.oursExists, context.branch.line),
+                      target: fragmentLink(targetRef, file.theirsExists, context.target.line),
                     },
                   };
                 }),

@@ -1,5 +1,7 @@
+import { branchUpdateWaitingStatus } from "@pushdocs/contracts";
 import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
 import { gitOperationPollingDelays } from "./git-operation-timing";
+import { PollingLifecycle } from "./polling-lifecycle";
 
 export enum GitOperationKind {
   Pull = "pull",
@@ -11,7 +13,7 @@ export enum GitOperationKind {
 
 export type GitOperationTask = {
   kind: GitOperationKind;
-  phase: "preparing" | "running" | "done" | "failed";
+  phase: "preparing" | "running" | "done" | "failed" | typeof branchUpdateWaitingStatus;
   jobId?: string;
   message?: string;
 };
@@ -19,8 +21,7 @@ export type GitOperationTask = {
 type Entry = {
   task: GitOperationTask | null;
   listeners: Set<() => void>;
-  polling: boolean;
-  timer?: ReturnType<typeof setTimeout>;
+  poller?: PollingLifecycle<Awaited<ReturnType<typeof gitOperationStatusAction>>>;
 };
 
 export function gitOperationKey(projectId: string, branch: string, kind: GitOperationKind) {
@@ -37,7 +38,7 @@ class GitOperationStore {
   private entry(key: string) {
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { task: null, listeners: new Set(), polling: false };
+      entry = { task: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -50,10 +51,15 @@ class GitOperationStore {
   subscribe(key: string, projectId: string, listener: () => void) {
     const entry = this.entry(key);
     entry.listeners.add(listener);
-    void this.poll(key, projectId, entry);
+    if (entry.task?.phase === branchUpdateWaitingStatus) {
+      entry.poller?.dispose();
+      entry.poller = undefined;
+      this.update(entry, { ...entry.task, phase: "running" });
+    }
+    this.poll(projectId, entry);
     return () => {
       entry.listeners.delete(listener);
-      if (!entry.listeners.size) clearTimeout(entry.timer);
+      if (!entry.listeners.size) entry.poller?.pause();
     };
   }
 
@@ -70,6 +76,8 @@ class GitOperationStore {
   ) {
     const entry = this.entry(key);
     if (entry.task && entry.task.phase !== "failed") return;
+    entry.poller?.dispose();
+    entry.poller = undefined;
     const task: GitOperationTask = { kind, phase: "preparing" };
     this.update(entry, task);
     try {
@@ -93,7 +101,7 @@ class GitOperationStore {
       }
       const jobId = result;
       this.update(entry, { ...running, jobId });
-      void this.poll(key, input.projectId, entry);
+      this.poll(input.projectId, entry);
     } catch {
       if (this.entries.get(key) !== entry) return;
       this.update(entry, {
@@ -104,50 +112,56 @@ class GitOperationStore {
     }
   }
 
-  private async poll(key: string, projectId: string, entry: Entry) {
+  private poll(projectId: string, entry: Entry) {
     const task = entry.task;
-    if (!entry.listeners.size || entry.polling || task?.phase !== "running" || !task.jobId) return;
-    clearTimeout(entry.timer);
-    entry.polling = true;
-    let delay: number = gitOperationPollingDelays.normal;
-    try {
-      const result = await gitOperationStatusAction(projectId, task.jobId);
-      if (this.entries.get(key) !== entry || entry.task !== task) return;
-      if (result.status === "done" || result.status === "failed") {
-        this.update(entry, {
-          ...task,
-          phase: result.status,
-          message:
-            result.status === "failed"
-              ? result.last_error || "Операция не завершена. Повторите попытку."
-              : undefined,
-        });
-      }
-    } catch {
-      if (this.entries.get(key) !== entry || entry.task !== task) return;
-      this.update(entry, {
-        ...task,
-        message: "Нет связи с сервером. Проверяем результат…",
+    if (task?.phase !== "running" || !task.jobId) return;
+    if (!entry.poller) {
+      const jobId = task.jobId;
+      entry.poller = new PollingLifecycle({
+        request: () => gitOperationStatusAction(projectId, jobId),
+        onResult: (result) => {
+          if (
+            result.status !== "done" &&
+            result.status !== "failed" &&
+            result.status !== branchUpdateWaitingStatus
+          )
+            return true;
+          this.update(entry, {
+            ...task,
+            phase: result.status,
+            message:
+              result.status === branchUpdateWaitingStatus
+                ? "Rebase остановлен. Разрешите конфликт текущего коммита."
+                : result.status === "failed"
+                  ? result.last_error || "Операция не завершена. Повторите попытку."
+                  : undefined,
+          });
+          return false;
+        },
+        onError: () => {
+          this.update(entry, {
+            ...task,
+            message: "Нет связи с сервером. Проверяем результат…",
+          });
+          return true;
+        },
+        delays: gitOperationPollingDelays,
       });
-      delay = gitOperationPollingDelays.retry;
-    } finally {
-      entry.polling = false;
-      if (
-        this.entries.get(key) === entry &&
-        entry.task?.phase === "running" &&
-        entry.listeners.size
-      )
-        entry.timer = setTimeout(() => void this.poll(key, projectId, entry), delay);
     }
+    if (entry.listeners.size) entry.poller.start();
   }
 
   acknowledge(key: string, task: GitOperationTask) {
     const entry = this.entries.get(key);
-    if (entry?.task === task) this.update(entry, null);
+    if (entry?.task === task) {
+      entry.poller?.dispose();
+      entry.poller = undefined;
+      this.update(entry, null);
+    }
   }
 
   clear() {
-    for (const entry of this.entries.values()) clearTimeout(entry.timer);
+    for (const entry of this.entries.values()) entry.poller?.dispose();
     this.entries.clear();
   }
 }

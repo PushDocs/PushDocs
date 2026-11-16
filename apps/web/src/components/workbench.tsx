@@ -29,6 +29,7 @@ import {
   startGitOperationAction,
 } from "@/app/actions";
 import { defaultFileSearchOptions } from "@/lib/file-search";
+import { projectChangesHref } from "@/lib/project-paths";
 import { AssetVideo } from "./asset-video";
 import { BranchOperations } from "./branch-operations";
 import {
@@ -332,6 +333,13 @@ export function Workbench({
       ]),
     ],
     [state.repositoryPaths, state.files, state.uploads, branchStatuses],
+  );
+  const searchableFiles = useMemo(
+    () =>
+      state.files.map((file) =>
+        file.path === selected && file.loaded !== false ? { ...file, content: text } : file,
+      ),
+    [state.files, selected, text],
   );
   const completionPaths = useMemo(() => {
     const statuses = mergeFileStatuses(branchStatuses, state.files);
@@ -1277,11 +1285,10 @@ export function Workbench({
           {headerAction}
           <Link
             className="wb-primary"
-            href={`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`}
+            href={projectChangesHref(projectId, branch)}
             onClick={async (event) => {
               event.preventDefault();
-              if (await save())
-                router.push(`/projects/${projectId}/changes?branch=${encodeURIComponent(branch)}`);
+              if (await save()) router.push(projectChangesHref(projectId, branch));
             }}
           >
             К изменениям (
@@ -1557,7 +1564,7 @@ export function Workbench({
             <QuickOpen
               key={`${initial.ownerId ?? ""}:${projectId}:${branch}`}
               paths={explorerPaths}
-              files={state.files}
+              files={searchableFiles}
               searchState={search}
               onSearchChange={updateSearch}
               selectedPath={selected}

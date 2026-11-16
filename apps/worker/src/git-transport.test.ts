@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { BranchConflictChoice, BranchUpdateStrategy } from "@pushdocs/contracts";
 import { afterEach, expect, it, vi } from "vitest";
-import { GitTransport, type GitTransportProgress } from "./git-transport";
+import { GitTransport, type GitTransportProgress, RebaseNeedsResolution } from "./git-transport";
 
 const exec = promisify(execFile);
 const directories: string[] = [];
@@ -44,7 +44,114 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
+const gitOperationTestTimeoutMs = 15_000;
+const rebaseContinuationTestTimeoutMs = 30_000;
 const updateDate = "2026-11-13T10:00:00Z";
+it(
+  "continues two conflicting commits through cache loss and publishes only the final linear history",
+  async () => {
+    const data = await fixture("# Base\n");
+    await git(data.source, "branch", "docs/task");
+    await writeFile(path.join(data.source, "article.md"), "# Target\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Target edit");
+    await git(data.source, "push", "origin", "main");
+    const target = await git(data.source, "rev-parse", "HEAD");
+    await git(data.source, "checkout", "docs/task");
+    await writeFile(path.join(data.source, "article.md"), "# First\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "First conflict");
+    const first = await git(data.source, "rev-parse", "HEAD");
+    await writeFile(path.join(data.source, "clean.md"), "Clean change\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Clean commit");
+    await writeFile(path.join(data.source, "article.md"), "# Second\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Second conflict");
+    await git(data.source, "push", "origin", "docs/task");
+    const original = await git(data.source, "rev-parse", "HEAD");
+    const options = {
+      directory: path.join(data.directory, "rebase"),
+      remote: data.remote,
+      allowLocal: true,
+    };
+    const input = {
+      branch: "docs/task",
+      sourceBranch: "main",
+      strategy: BranchUpdateStrategy.Rebase,
+      createdAt: updateDate,
+      operationId: "operation",
+    };
+    const paused = await new GitTransport(options).prepareUpdate(input).catch((error) => error);
+    expect(paused).toBeInstanceOf(RebaseNeedsResolution);
+    expect(paused.snapshot.rebase).toMatchObject({
+      index: 1,
+      total: 3,
+      commitSha: first,
+      currentParentSha: target,
+    });
+    expect(paused.snapshot.files[0]).toMatchObject({
+      baseContent: "# Base\n",
+      oursContent: "# Target\n",
+      theirsContent: "# First\n",
+    });
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(original);
+    const rebase = {
+      ...paused.progress,
+      resolutions: [
+        {
+          commitSha: first,
+          conflictId: paused.snapshot.rebase.conflictId,
+          files: [
+            { path: "article.md", choice: BranchConflictChoice.Manual, content: "# Combined\n" },
+          ],
+        },
+      ],
+    };
+    await rm(options.directory, { recursive: true, force: true });
+    const next = await new GitTransport(options)
+      .prepareUpdate({ ...input, rebase })
+      .catch((error) => error);
+    expect(next).toBeInstanceOf(RebaseNeedsResolution);
+    expect(next.snapshot.rebase).toMatchObject({ index: 3, total: 3, commitSha: original });
+    expect(next.progress.commits).toHaveLength(2);
+    expect(next.snapshot.files[0]).toMatchObject({
+      baseContent: "# First\n",
+      oursContent: "# Combined\n",
+      theirsContent: "# Second\n",
+    });
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(original);
+    const finalProgress = {
+      ...next.progress,
+      resolutions: [
+        ...next.progress.resolutions,
+        {
+          commitSha: original,
+          conflictId: next.snapshot.rebase.conflictId,
+          files: [
+            { path: "article.md", choice: BranchConflictChoice.Manual, content: "# Final\n" },
+          ],
+        },
+      ],
+    };
+    await rm(options.directory, { recursive: true, force: true });
+    const transport = new GitTransport(options);
+    const prepared = await transport.prepareUpdate({ ...input, rebase: finalProgress });
+    expect(prepared.commits).toHaveLength(3);
+    expect(prepared.commits.slice(0, 2)).toEqual(next.progress.commits);
+    expect(await git(options.directory, "show", `${prepared.sha}:article.md`)).toBe("# Final");
+    expect(await git(options.directory, "show", `${prepared.sha}:clean.md`)).toBe("Clean change");
+    expect(await git(options.directory, "rev-list", "--count", `${target}..${prepared.sha}`)).toBe(
+      "3",
+    );
+    expect(await git(options.directory, "rev-list", "--merges", `${target}..${prepared.sha}`)).toBe(
+      "",
+    );
+    await transport.publish(prepared);
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(prepared.sha);
+  },
+  rebaseContinuationTestTimeoutMs,
+);
 async function updateFixture() {
   const data = await fixture();
   await git(data.source, "branch", "docs/task");
@@ -76,58 +183,66 @@ async function updateFixture() {
   return { ...data, sourceSha, parentSha, original, options, transport: new GitTransport(options) };
 }
 
-it("rebases a linear branch, preserves author/messages and empty commits, and pushes only on request", async () => {
-  const data = await updateFixture();
-  const prepared = await data.transport.prepareUpdate({
-    branch: "docs/task",
-    sourceBranch: "main",
-    strategy: BranchUpdateStrategy.Rebase,
-    createdAt: updateDate,
-  });
-  expect(prepared.commits).toHaveLength(2);
-  expect(await git(data.remote, "rev-parse", "docs/task")).toBe(data.parentSha);
-  const first = prepared.commits[0]?.sha ?? "";
-  expect(await git(data.options.directory, "rev-parse", `${first}^`)).toBe(data.sourceSha);
-  expect(await git(data.options.directory, "show", `${prepared.sha}:upstream.md`)).toBe(
-    "Target branch content",
-  );
-  expect(await git(data.options.directory, "show", `${prepared.sha}:article.md`)).toBe(
-    "# Changed by the author",
-  );
-  expect(await git(data.options.directory, "show", "-s", "--format=%an%n%ae%n%aI%n%B", first)).toBe(
-    await git(data.source, "show", "-s", "--format=%an%n%ae%n%aI%n%B", data.original),
-  );
-  expect(await git(data.options.directory, "show", "-s", "--format=%B", prepared.sha)).toBe(
-    "Keep an empty commit",
-  );
-  expect(await git(data.options.directory, "rev-parse", "refs/pushdocs/update/original")).toBe(
-    data.parentSha,
-  );
-  await data.transport.publish(prepared);
-  expect(await git(data.remote, "rev-parse", "docs/task")).toBe(prepared.sha);
-  expect(await git(data.remote, "rev-parse", "main")).toBe(data.sourceSha);
-  expect(await data.transport.publish(prepared)).toEqual({
-    sha: prepared.sha,
-    alreadyApplied: true,
-  });
-});
+it(
+  "rebases a linear branch, preserves author/messages and empty commits, and pushes only on request",
+  async () => {
+    const data = await updateFixture();
+    const prepared = await data.transport.prepareUpdate({
+      branch: "docs/task",
+      sourceBranch: "main",
+      strategy: BranchUpdateStrategy.Rebase,
+      createdAt: updateDate,
+    });
+    expect(prepared.commits).toHaveLength(2);
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(data.parentSha);
+    const first = prepared.commits[0]?.sha ?? "";
+    expect(await git(data.options.directory, "rev-parse", `${first}^`)).toBe(data.sourceSha);
+    expect(await git(data.options.directory, "show", `${prepared.sha}:upstream.md`)).toBe(
+      "Target branch content",
+    );
+    expect(await git(data.options.directory, "show", `${prepared.sha}:article.md`)).toBe(
+      "# Changed by the author",
+    );
+    expect(
+      await git(data.options.directory, "show", "-s", "--format=%an%n%ae%n%aI%n%B", first),
+    ).toBe(await git(data.source, "show", "-s", "--format=%an%n%ae%n%aI%n%B", data.original));
+    expect(await git(data.options.directory, "show", "-s", "--format=%B", prepared.sha)).toBe(
+      "Keep an empty commit",
+    );
+    expect(await git(data.options.directory, "rev-parse", "refs/pushdocs/update/original")).toBe(
+      data.parentSha,
+    );
+    await data.transport.publish(prepared);
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(prepared.sha);
+    expect(await git(data.remote, "rev-parse", "main")).toBe(data.sourceSha);
+    expect(await data.transport.publish(prepared)).toEqual({
+      sha: prepared.sha,
+      alreadyApplied: true,
+    });
+  },
+  gitOperationTestTimeoutMs,
+);
 
-it("reconstructs exactly the recorded rebase after its local cache is lost", async () => {
-  const data = await updateFixture();
-  const input = {
-    branch: "docs/task",
-    sourceBranch: "main",
-    strategy: BranchUpdateStrategy.Rebase,
-    createdAt: updateDate,
-  };
-  const prepared = await data.transport.prepareUpdate(input);
-  await rm(data.options.directory, { recursive: true, force: true });
-  const restored = new GitTransport(data.options);
-  expect(await restored.prepareUpdate({ ...input, prepared })).toEqual(prepared);
-  await restored.publish(prepared);
-  await rm(data.options.directory, { recursive: true, force: true });
-  expect(await new GitTransport(data.options).isPublished(prepared)).toBe(true);
-});
+it(
+  "reconstructs exactly the recorded rebase after its local cache is lost",
+  async () => {
+    const data = await updateFixture();
+    const input = {
+      branch: "docs/task",
+      sourceBranch: "main",
+      strategy: BranchUpdateStrategy.Rebase,
+      createdAt: updateDate,
+    };
+    const prepared = await data.transport.prepareUpdate(input);
+    await rm(data.options.directory, { recursive: true, force: true });
+    const restored = new GitTransport(data.options);
+    expect(await restored.prepareUpdate({ ...input, prepared })).toEqual(prepared);
+    await restored.publish(prepared);
+    await rm(data.options.directory, { recursive: true, force: true });
+    expect(await new GitTransport(data.options).isPublished(prepared)).toBe(true);
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it.each(["noop", "fast-forward"])("handles %s without rewriting existing commits", async (mode) => {
   const data = await fixture();
@@ -270,30 +385,34 @@ async function conflictFixture(
   return { ...data, transport, snapshot };
 }
 
-it("counts received pack bytes, including lazy fetches, without exposing file contents", async () => {
-  const progress: GitTransportProgress[] = [];
-  await conflictFixture("# Ours\n", "# Theirs\n", "article.md", (value) => progress.push(value));
-  const fetched = Math.max(
-    ...progress
-      .filter((item) => item.stage === "fetching-conflicts")
-      .map((item) => item.transfer.receivedBytes),
-  );
-  expect(fetched).toBeGreaterThan(0);
-  expect(
-    progress.some(
-      (item) => item.stage !== "fetching-conflicts" && item.transfer.receivedBytes > fetched,
-    ),
-  ).toBe(true);
-  expect(
-    progress.every(
-      (item, index) =>
-        item.transfer.receivedBytes >= (progress[index - 1]?.transfer.receivedBytes ?? 0),
-    ),
-  ).toBe(true);
-  expect(progress.at(-1)?.counts).toEqual({ completed: 1, total: 1 });
-  expect(progress.every((item) => item.transfer.totalBytes === null)).toBe(true);
-  expect(JSON.stringify(progress)).not.toContain("# Original");
-}, 15_000);
+it(
+  "counts received pack bytes, including lazy fetches, without exposing file contents",
+  async () => {
+    const progress: GitTransportProgress[] = [];
+    await conflictFixture("# Ours\n", "# Theirs\n", "article.md", (value) => progress.push(value));
+    const fetched = Math.max(
+      ...progress
+        .filter((item) => item.stage === "fetching-conflicts")
+        .map((item) => item.transfer.receivedBytes),
+    );
+    expect(fetched).toBeGreaterThan(0);
+    expect(
+      progress.some(
+        (item) => item.stage !== "fetching-conflicts" && item.transfer.receivedBytes > fetched,
+      ),
+    ).toBe(true);
+    expect(
+      progress.every(
+        (item, index) =>
+          item.transfer.receivedBytes >= (progress[index - 1]?.transfer.receivedBytes ?? 0),
+      ),
+    ).toBe(true);
+    expect(progress.at(-1)?.counts).toEqual({ completed: 1, total: 1 });
+    expect(progress.every((item) => item.transfer.totalBytes === null)).toBe(true);
+    expect(JSON.stringify(progress)).not.toContain("# Original");
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it.each([BranchConflictChoice.Ours, BranchConflictChoice.Theirs, BranchConflictChoice.Manual])(
   "resolves %s from a real merge tree, preserving clean changes and both parents",
@@ -340,47 +459,55 @@ it.each([BranchConflictChoice.Ours, BranchConflictChoice.Theirs, BranchConflictC
     });
     expect((await restored.prepareMerge({ ...input, prepared })).sha).toBe(prepared.sha);
   },
-  15_000,
+  gitOperationTestTimeoutMs,
 );
 
-it("extracts only conflicting fragments and preserves clean edits from both branches in a mixed result", async () => {
-  const gap = Array.from({ length: 8 }, (_, index) => `Shared paragraph ${index}\n`).join("");
-  const base = `Original intro\n${gap}First\n${gap}Second\n${gap}Original footer\n`;
-  const ours = base
-    .replace("Original intro", "Our intro")
-    .replace("First", "Our first")
-    .replace("Second", "Our second");
-  const theirs = base
-    .replace("Original footer", "Their footer")
-    .replace("First", "Their first")
-    .replace("Second", "Their second");
-  const data = await conflictFixture(ours, theirs, "article.md", undefined, base);
-  const sections = data.snapshot.files[0]?.sections;
-  expect(sections?.filter((section) => section.kind === "conflict")).toEqual([
-    { kind: "conflict", base: "First\n", ours: "Our first\n", theirs: "Their first\n" },
-    { kind: "conflict", base: "Second\n", ours: "Our second\n", theirs: "Their second\n" },
-  ]);
-  let conflict = 0;
-  const content = sections
-    ?.map((section) =>
-      section.kind === "text" ? section.content : conflict++ === 0 ? section.ours : section.theirs,
-    )
-    .join("");
-  expect(content).toBe(`Our intro\n${gap}Our first\n${gap}Their second\n${gap}Their footer\n`);
-  const prepared = await data.transport.prepareMerge({
-    branch: "docs/task",
-    sourceBranch: "main",
-    createdAt: "2026-11-13T00:00:00Z",
-    resolution: {
-      snapshot: data.snapshot,
-      files: [{ path: "article.md", choice: BranchConflictChoice.Manual, content }],
-    },
-  });
-  await data.transport.publish(prepared);
-  expect((await exec("git", ["-C", data.remote, "show", "docs/task:article.md"])).stdout).toBe(
-    content,
-  );
-}, 15_000);
+it(
+  "extracts only conflicting fragments and preserves clean edits from both branches in a mixed result",
+  async () => {
+    const gap = Array.from({ length: 8 }, (_, index) => `Shared paragraph ${index}\n`).join("");
+    const base = `Original intro\n${gap}First\n${gap}Second\n${gap}Original footer\n`;
+    const ours = base
+      .replace("Original intro", "Our intro")
+      .replace("First", "Our first")
+      .replace("Second", "Our second");
+    const theirs = base
+      .replace("Original footer", "Their footer")
+      .replace("First", "Their first")
+      .replace("Second", "Their second");
+    const data = await conflictFixture(ours, theirs, "article.md", undefined, base);
+    const sections = data.snapshot.files[0]?.sections;
+    expect(sections?.filter((section) => section.kind === "conflict")).toEqual([
+      { kind: "conflict", base: "First\n", ours: "Our first\n", theirs: "Their first\n" },
+      { kind: "conflict", base: "Second\n", ours: "Our second\n", theirs: "Their second\n" },
+    ]);
+    let conflict = 0;
+    const content = sections
+      ?.map((section) =>
+        section.kind === "text"
+          ? section.content
+          : conflict++ === 0
+            ? section.ours
+            : section.theirs,
+      )
+      .join("");
+    expect(content).toBe(`Our intro\n${gap}Our first\n${gap}Their second\n${gap}Their footer\n`);
+    const prepared = await data.transport.prepareMerge({
+      branch: "docs/task",
+      sourceBranch: "main",
+      createdAt: "2026-11-13T00:00:00Z",
+      resolution: {
+        snapshot: data.snapshot,
+        files: [{ path: "article.md", choice: BranchConflictChoice.Manual, content }],
+      },
+    });
+    await data.transport.publish(prepared);
+    expect((await exec("git", ["-C", data.remote, "show", "docs/task:article.md"])).stdout).toBe(
+      content,
+    );
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it.each(["\n", "\r\n", ""])(
   "preserves %j endings and literal conflict markers in fragment data",
@@ -398,141 +525,167 @@ it.each(["\n", "\r\n", ""])(
       { kind: "conflict", base: `Base${ending}`, ours: `Ours${ending}`, theirs: `Theirs${ending}` },
     ]);
   },
-  15_000,
+  gitOperationTestTimeoutMs,
 );
 
-it("keeps deletion distinct from an empty manual result", async () => {
-  const data = await conflictFixture(null);
-  expect(data.snapshot.files[0]).toMatchObject({
-    oursExists: false,
-    theirsExists: true,
-    kind: "text",
-  });
-  const prepared = await data.transport.prepareMerge({
-    branch: "docs/task",
-    sourceBranch: "main",
-    createdAt: "2026-11-13T00:00:00Z",
-    resolution: {
-      snapshot: data.snapshot,
-      files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
-    },
-  });
-  await data.transport.publish(prepared);
-  expect(await git(data.remote, "ls-tree", "docs/task", "article.md")).toBe("");
-}, 15_000);
-
-it("resolves add/add conflicts with Unicode and spaces in a path", async () => {
-  const data = await conflictFixture("# Ours\n", "# Theirs\n", "new Ω file.md");
-  expect(data.snapshot.files[0]).toMatchObject({
-    path: "new Ω file.md",
-    baseContent: null,
-    kind: "text",
-  });
-  const prepared = await data.transport.prepareMerge({
-    branch: "docs/task",
-    sourceBranch: "main",
-    createdAt: "2026-11-13T00:00:00Z",
-    resolution: {
-      snapshot: data.snapshot,
-      files: [{ path: "new Ω file.md", choice: BranchConflictChoice.Theirs }],
-    },
-  });
-  await data.transport.publish(prepared);
-  expect(await git(data.remote, "show", "docs/task:new Ω file.md")).toBe("# Theirs");
-}, 15_000);
-
-it("shows rename conflicts but blocks their publication", async () => {
-  const data = await fixture();
-  await git(data.source, "branch", "docs/task");
-  await git(data.source, "mv", "article.md", "target.md");
-  await git(data.source, "commit", "-m", "Target rename");
-  await git(data.source, "push", "origin", "main");
-  await git(data.source, "checkout", "docs/task");
-  await git(data.source, "mv", "article.md", "ours.md");
-  await git(data.source, "commit", "-m", "Source rename");
-  await git(data.source, "push", "origin", "docs/task");
-  const transport = new GitTransport({
-    directory: path.join(data.directory, "rename"),
-    remote: data.remote,
-    allowLocal: true,
-  });
-  const snapshot = await transport.inspectConflicts({ branch: "docs/task", sourceBranch: "main" });
-  expect(snapshot.unsupportedReason).toBeTruthy();
-  expect(snapshot.files.length).toBeGreaterThan(0);
-  await expect(
-    transport.prepareMerge({
+it(
+  "keeps deletion distinct from an empty manual result",
+  async () => {
+    const data = await conflictFixture(null);
+    expect(data.snapshot.files[0]).toMatchObject({
+      oursExists: false,
+      theirsExists: true,
+      kind: "text",
+    });
+    const prepared = await data.transport.prepareMerge({
       branch: "docs/task",
       sourceBranch: "main",
       createdAt: "2026-11-13T00:00:00Z",
-      resolution: { snapshot, files: [] },
-    }),
-  ).rejects.toThrow("Git-провайдере");
-}, 15_000);
-
-it("rejects non-UTF8 Git filenames instead of replacing them in the resolved tree", async () => {
-  const data = await fixture();
-  const gitInput = (args: string[], input: Buffer) =>
-    new Promise<string>((resolve, reject) => {
-      const child = execFile("git", ["-C", data.source, ...args], (error, stdout) =>
-        error ? reject(error) : resolve(stdout.trim()),
-      );
-      child.stdin?.end(input);
+      resolution: {
+        snapshot: data.snapshot,
+        files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
+      },
     });
-  const rawPath = Buffer.from([98, 97, 100, 45, 255, 46, 109, 100]);
-  for (const branch of ["main", "docs/task"]) {
-    const blob = await gitInput(["hash-object", "-w", "--stdin"], Buffer.from(branch));
-    const tree = await gitInput(
-      ["mktree", "-z"],
-      Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), rawPath, Buffer.from([0])]),
-    );
-    const commit = await git(
-      data.source,
-      "commit-tree",
-      tree,
-      "-p",
-      data.baseSha,
-      "-m",
-      "Invalid filename fixture",
-    );
-    await git(data.source, "update-ref", `refs/heads/${branch}`, commit);
-  }
-  await git(data.source, "push", "origin", "main", "docs/task");
-  const transport = new GitTransport({
-    directory: path.join(data.directory, "encoding"),
-    remote: data.remote,
-    allowLocal: true,
-  });
-  await expect(
-    transport.inspectConflicts({ branch: "docs/task", sourceBranch: "main" }),
-  ).rejects.toThrow("кодировку");
-}, 15_000);
+    await data.transport.publish(prepared);
+    expect(await git(data.remote, "ls-tree", "docs/task", "article.md")).toBe("");
+  },
+  gitOperationTestTimeoutMs,
+);
 
-it("resolves binary bytes by side and rejects manual binary results", async () => {
-  const data = await conflictFixture(Buffer.from([0, 255, 1]), Buffer.from([0, 128, 2]));
-  expect(data.snapshot.files[0]?.kind).toBe("binary");
-  const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-11-13T00:00:00Z" };
-  await expect(
-    data.transport.prepareMerge({
+it(
+  "resolves add/add conflicts with Unicode and spaces in a path",
+  async () => {
+    const data = await conflictFixture("# Ours\n", "# Theirs\n", "new Ω file.md");
+    expect(data.snapshot.files[0]).toMatchObject({
+      path: "new Ω file.md",
+      baseContent: null,
+      kind: "text",
+    });
+    const prepared = await data.transport.prepareMerge({
+      branch: "docs/task",
+      sourceBranch: "main",
+      createdAt: "2026-11-13T00:00:00Z",
+      resolution: {
+        snapshot: data.snapshot,
+        files: [{ path: "new Ω file.md", choice: BranchConflictChoice.Theirs }],
+      },
+    });
+    await data.transport.publish(prepared);
+    expect(await git(data.remote, "show", "docs/task:new Ω file.md")).toBe("# Theirs");
+  },
+  gitOperationTestTimeoutMs,
+);
+
+it(
+  "shows rename conflicts but blocks their publication",
+  async () => {
+    const data = await fixture();
+    await git(data.source, "branch", "docs/task");
+    await git(data.source, "mv", "article.md", "target.md");
+    await git(data.source, "commit", "-m", "Target rename");
+    await git(data.source, "push", "origin", "main");
+    await git(data.source, "checkout", "docs/task");
+    await git(data.source, "mv", "article.md", "ours.md");
+    await git(data.source, "commit", "-m", "Source rename");
+    await git(data.source, "push", "origin", "docs/task");
+    const transport = new GitTransport({
+      directory: path.join(data.directory, "rename"),
+      remote: data.remote,
+      allowLocal: true,
+    });
+    const snapshot = await transport.inspectConflicts({
+      branch: "docs/task",
+      sourceBranch: "main",
+    });
+    expect(snapshot.unsupportedReason).toBeTruthy();
+    expect(snapshot.files.length).toBeGreaterThan(0);
+    await expect(
+      transport.prepareMerge({
+        branch: "docs/task",
+        sourceBranch: "main",
+        createdAt: "2026-11-13T00:00:00Z",
+        resolution: { snapshot, files: [] },
+      }),
+    ).rejects.toThrow("Git-провайдере");
+  },
+  gitOperationTestTimeoutMs,
+);
+
+it(
+  "rejects non-UTF8 Git filenames instead of replacing them in the resolved tree",
+  async () => {
+    const data = await fixture();
+    const gitInput = (args: string[], input: Buffer) =>
+      new Promise<string>((resolve, reject) => {
+        const child = execFile("git", ["-C", data.source, ...args], (error, stdout) =>
+          error ? reject(error) : resolve(stdout.trim()),
+        );
+        child.stdin?.end(input);
+      });
+    const rawPath = Buffer.from([98, 97, 100, 45, 255, 46, 109, 100]);
+    for (const branch of ["main", "docs/task"]) {
+      const blob = await gitInput(["hash-object", "-w", "--stdin"], Buffer.from(branch));
+      const tree = await gitInput(
+        ["mktree", "-z"],
+        Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), rawPath, Buffer.from([0])]),
+      );
+      const commit = await git(
+        data.source,
+        "commit-tree",
+        tree,
+        "-p",
+        data.baseSha,
+        "-m",
+        "Invalid filename fixture",
+      );
+      await git(data.source, "update-ref", `refs/heads/${branch}`, commit);
+    }
+    await git(data.source, "push", "origin", "main", "docs/task");
+    const transport = new GitTransport({
+      directory: path.join(data.directory, "encoding"),
+      remote: data.remote,
+      allowLocal: true,
+    });
+    await expect(
+      transport.inspectConflicts({ branch: "docs/task", sourceBranch: "main" }),
+    ).rejects.toThrow("кодировку");
+  },
+  gitOperationTestTimeoutMs,
+);
+
+it(
+  "resolves binary bytes by side and rejects manual binary results",
+  async () => {
+    const data = await conflictFixture(Buffer.from([0, 255, 1]), Buffer.from([0, 128, 2]));
+    expect(data.snapshot.files[0]?.kind).toBe("binary");
+    const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-11-13T00:00:00Z" };
+    await expect(
+      data.transport.prepareMerge({
+        ...input,
+        resolution: {
+          snapshot: data.snapshot,
+          files: [{ path: "article.md", choice: BranchConflictChoice.Manual, content: "x" }],
+        },
+      }),
+    ).rejects.toThrow("ручной");
+    const prepared = await data.transport.prepareMerge({
       ...input,
       resolution: {
         snapshot: data.snapshot,
-        files: [{ path: "article.md", choice: BranchConflictChoice.Manual, content: "x" }],
+        files: [{ path: "article.md", choice: BranchConflictChoice.Theirs }],
       },
-    }),
-  ).rejects.toThrow("ручной");
-  const prepared = await data.transport.prepareMerge({
-    ...input,
-    resolution: {
-      snapshot: data.snapshot,
-      files: [{ path: "article.md", choice: BranchConflictChoice.Theirs }],
-    },
-  });
-  await data.transport.publish(prepared);
-  expect(
-    (await exec("git", ["-C", data.remote, "show", "docs/task:article.md"], { encoding: "buffer" }))
-      .stdout,
-  ).toEqual(Buffer.from([0, 128, 2]));
-}, 15_000);
+    });
+    await data.transport.publish(prepared);
+    expect(
+      (
+        await exec("git", ["-C", data.remote, "show", "docs/task:article.md"], {
+          encoding: "buffer",
+        })
+      ).stdout,
+    ).toEqual(Buffer.from([0, 128, 2]));
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it("lists GIF and MP4 conflicts without downloading media blobs, then verifies the original trees before publishing", async () => {
   const data = await fixture();
@@ -657,61 +810,73 @@ it("finds article references to a deleted GIF inside a project root without fetc
     );
 }, 20_000);
 
-it("stops inspection before fetching blobs when the server does not advertise filtering", async () => {
-  const data = await updateFixture();
-  await git(data.remote, "config", "uploadpack.allowFilter", "false");
-  const directory = path.join(data.directory, "unsupported-filter");
-  await expect(
-    new GitTransport({ directory, remote: data.remote, allowLocal: true }).inspectConflicts({
-      branch: "docs/task",
-      sourceBranch: "main",
-    }),
-  ).rejects.toThrow("до скачивания файлов");
-  expect(
-    await git(directory, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"),
-  ).toBe("");
-}, 15_000);
+it(
+  "stops inspection before fetching blobs when the server does not advertise filtering",
+  async () => {
+    const data = await updateFixture();
+    await git(data.remote, "config", "uploadpack.allowFilter", "false");
+    const directory = path.join(data.directory, "unsupported-filter");
+    await expect(
+      new GitTransport({ directory, remote: data.remote, allowLocal: true }).inspectConflicts({
+        branch: "docs/task",
+        sourceBranch: "main",
+      }),
+    ).rejects.toThrow("до скачивания файлов");
+    expect(
+      await git(directory, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"),
+    ).toBe("");
+  },
+  gitOperationTestTimeoutMs,
+);
 
-it("rejects a different conflict version even when its path and branch tips match", async () => {
-  const data = await conflictFixture();
-  const file = data.snapshot.files[0];
-  if (!file?.versions?.ours) throw new Error("Missing reviewed version");
-  file.versions.ours.sha = "a".repeat(40);
-  await expect(
-    data.transport.prepareMerge({
-      branch: "docs/task",
-      sourceBranch: "main",
-      createdAt: "2026-11-13T00:00:00Z",
-      resolution: {
-        snapshot: data.snapshot,
-        files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
-      },
-    }),
-  ).rejects.toThrow("другой конфликт");
-  expect(await git(data.remote, "rev-parse", "docs/task")).toBe(data.snapshot.parentSha);
-}, 15_000);
+it(
+  "rejects a different conflict version even when its path and branch tips match",
+  async () => {
+    const data = await conflictFixture();
+    const file = data.snapshot.files[0];
+    if (!file?.versions?.ours) throw new Error("Missing reviewed version");
+    file.versions.ours.sha = "a".repeat(40);
+    await expect(
+      data.transport.prepareMerge({
+        branch: "docs/task",
+        sourceBranch: "main",
+        createdAt: "2026-11-13T00:00:00Z",
+        resolution: {
+          snapshot: data.snapshot,
+          files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
+        },
+      }),
+    ).rejects.toThrow("другой конфликт");
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(data.snapshot.parentSha);
+  },
+  gitOperationTestTimeoutMs,
+);
 
-it("rejects stale inspections and incomplete decisions without changing remote branches", async () => {
-  const data = await conflictFixture();
-  const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-11-13T00:00:00Z" };
-  await expect(
-    data.transport.prepareMerge({ ...input, resolution: { snapshot: data.snapshot, files: [] } }),
-  ).rejects.toThrow("каждого");
-  await writeFile(path.join(data.source, "new.md"), "Concurrent\n");
-  await git(data.source, "add", ".");
-  await git(data.source, "commit", "-m", "Concurrent");
-  await git(data.source, "push", "origin", "docs/task");
-  await expect(
-    data.transport.prepareMerge({
-      ...input,
-      resolution: {
-        snapshot: data.snapshot,
-        files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
-      },
-    }),
-  ).rejects.toThrow("обновились");
-  expect(await git(data.remote, "show", "docs/task:new.md")).toBe("Concurrent");
-}, 15_000);
+it(
+  "rejects stale inspections and incomplete decisions without changing remote branches",
+  async () => {
+    const data = await conflictFixture();
+    const input = { branch: "docs/task", sourceBranch: "main", createdAt: "2026-11-13T00:00:00Z" };
+    await expect(
+      data.transport.prepareMerge({ ...input, resolution: { snapshot: data.snapshot, files: [] } }),
+    ).rejects.toThrow("каждого");
+    await writeFile(path.join(data.source, "new.md"), "Concurrent\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Concurrent");
+    await git(data.source, "push", "origin", "docs/task");
+    await expect(
+      data.transport.prepareMerge({
+        ...input,
+        resolution: {
+          snapshot: data.snapshot,
+          files: [{ path: "article.md", choice: BranchConflictChoice.Ours }],
+        },
+      }),
+    ).rejects.toThrow("обновились");
+    expect(await git(data.remote, "show", "docs/task:new.md")).toBe("Concurrent");
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it("prepares and pushes a text change without downloading unrelated binary blobs", async () => {
   const data = await fixture();
@@ -745,6 +910,50 @@ it("prepares and pushes a text change without downloading unrelated binary blobs
   expect(await git(data.remote, "show", "main:article.md")).toBe("# Updated");
   expect(await git(data.remote, "rev-parse", "main:large.bin")).toBe(binarySha);
 });
+
+it(
+  "keeps a previous conflict resolution when the next update uses the same merge strategy",
+  async () => {
+    const data = await conflictFixture();
+    const first = await data.transport.prepareMerge({
+      branch: "docs/task",
+      sourceBranch: "main",
+      createdAt: updateDate,
+      resolution: {
+        snapshot: data.snapshot,
+        files: [
+          {
+            path: "article.md",
+            choice: BranchConflictChoice.Manual,
+            content: "# Combined decision\n",
+          },
+        ],
+      },
+    });
+    await data.transport.publish(first);
+    await git(data.source, "checkout", "main");
+    await writeFile(path.join(data.source, "new-upstream.md"), "Another target update\n");
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Next target change");
+    await git(data.source, "push", "origin", "main");
+    const target = await git(data.source, "rev-parse", "HEAD");
+    const next = await data.transport.prepareUpdate({
+      branch: "docs/task",
+      sourceBranch: "main",
+      strategy: BranchUpdateStrategy.Merge,
+      createdAt: updateDate,
+    });
+    await data.transport.publish(next);
+    expect(await git(data.remote, "show", "docs/task:article.md")).toBe("# Combined decision");
+    expect(await git(data.remote, "show", "docs/task:new-upstream.md")).toBe(
+      "Another target update",
+    );
+    expect(await git(data.remote, "show", "-s", "--format=%P", "docs/task")).toBe(
+      `${first.sha} ${target}`,
+    );
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it("rejects a prepared write if another author advances the remote ref", async () => {
   const data = await fixture();

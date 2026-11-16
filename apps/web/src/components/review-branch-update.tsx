@@ -1,8 +1,11 @@
 "use client";
 
 import {
+  BranchUpdatePolicySource,
   BranchUpdateStrategy,
+  branchUpdateMessages,
   branchUpdateStrategy,
+  branchUpdateWaitingStatus,
   type ChangeRequestDetails,
 } from "@pushdocs/contracts";
 import { AlertTriangle, GitMerge, LoaderCircle } from "lucide-react";
@@ -28,6 +31,7 @@ export function ReviewBranchUpdate({
   activeStrategy,
   activeHeadSha,
   hasPendingChanges = false,
+  waitingForResolution = false,
 }: {
   projectId: string;
   ownerId: string;
@@ -35,6 +39,7 @@ export function ReviewBranchUpdate({
   activeStrategy?: BranchUpdateStrategy;
   activeHeadSha?: string;
   hasPendingChanges?: boolean;
+  waitingForResolution?: boolean;
   review: {
     id: string;
     head_sha?: string | null;
@@ -55,18 +60,24 @@ export function ReviewBranchUpdate({
   const headSha = activeHeadSha ?? review.head_sha ?? review.details?.headSha;
   const allowed =
     canWrite &&
+    !!strategy &&
     !!headSha &&
     (activeStrategy !== undefined || review.details?.source?.isFork === false);
-  const { busy, message, error, start } = useGitOperation({
+  const { busy, message, error, start, task } = useGitOperation({
     projectId,
     branch: review.source_branch,
     kind: GitOperationKind.UpdateBranch,
     successMessage: () => "Ветка обновлена и отправлена в Git. Данные PR / MR обновлены.",
     onComplete: () => router.refresh(),
+    onNeedsResolution: () => router.refresh(),
   });
   const pendingChanges = !activeStrategy && !busy && (hasPendingChanges || localChanges);
+  const policyError =
+    !activeStrategy && !strategy
+      ? (review.details?.branchUpdatePolicy?.error ?? branchUpdateMessages.unavailable)
+      : null;
   async function update() {
-    if (!allowed || !headSha || busy || pendingChanges) return;
+    if (!allowed || !headSha || !strategy || busy || pendingChanges) return;
     if (!activeStrategy && listLocalDrafts(projectId, [review.source_branch], ownerId).length) {
       setLocalError("В этой ветке есть локальные правки. Сначала отправьте их в Git или отмените.");
       setConfirming(false);
@@ -77,7 +88,7 @@ export function ReviewBranchUpdate({
     await start({
       projectId,
       branch: review.source_branch,
-      updateReview: { reviewId: review.id, expectedHeadSha: headSha },
+      updateReview: { reviewId: review.id, expectedHeadSha: headSha, expectedStrategy: strategy },
     });
   }
   return (
@@ -98,7 +109,27 @@ export function ReviewBranchUpdate({
               ? `Отправьте текущие правки из ${review.source_branch} в Git или отмените их. После этого можно обновить ветку из ${review.target_branch}.`
               : `Обновите ${review.source_branch}, чтобы продолжить слияние ${reviewLabel}.`}
         </p>
-        {pendingChanges ? (
+        {policyError ? (
+          <p role="alert">{policyError}</p>
+        ) : strategy ? (
+          <p className="muted">
+            Способ обновления: {strategy},{" "}
+            {activeStrategy
+              ? "зафиксирован для текущей операции"
+              : review.details?.branchUpdatePolicy?.source === BranchUpdatePolicySource.Project
+                ? "задан конфигом проекта"
+                : "выбран по настройкам репозитория"}
+            .
+          </p>
+        ) : null}
+        {waitingForResolution || task?.phase === branchUpdateWaitingStatus ? (
+          <Link
+            className="pd-button pd-button--primary"
+            href={`/projects/${projectId}/changes?${new URLSearchParams({ branch: review.source_branch, resolve: review.id })}`}
+          >
+            Разрешить конфликт rebase
+          </Link>
+        ) : pendingChanges ? (
           localChanges ? (
             <Link href={localChangesHref}>Открыть локальные правки</Link>
           ) : null

@@ -39,7 +39,13 @@ export interface FileSearchResult {
 
 export function searchFiles(
   paths: string[],
-  files: Array<{ path: string; title: string; content: string; status: string }>,
+  files: Array<{
+    path: string;
+    title: string;
+    content: string;
+    status: string;
+    loaded?: boolean;
+  }>,
   query: string,
   content: boolean,
   options = defaultFileSearchOptions,
@@ -49,7 +55,7 @@ export function searchFiles(
   return paths
     .flatMap((path) => {
       const file = documents.get(path);
-      if (file?.status === "delete") return [];
+      if (file?.status === "delete" || (content && file?.loaded === false)) return [];
       const haystack = content
         ? /\.mdx?$/i.test(path)
           ? (file?.content ?? "")
@@ -178,12 +184,26 @@ export function QuickOpen({
       controller.abort();
     };
   }, [active, content, query, remoteSearch, revision, matchCase, wholeWord, searchKey]);
-  const results =
-    content && remoteSearch
-      ? remoteResults.key === searchKey
-        ? remoteResults.items
-        : []
-      : localResults;
+  const results = useMemo(() => {
+    if (!content || !remoteSearch) return localResults;
+    const documents = new Map(files.map((file) => [file.path, file]));
+    const matches = new Map<string, FileSearchResult>();
+    if (remoteResults.key === searchKey) {
+      for (const result of remoteResults.items) {
+        const file = documents.get(result.path);
+        // Loaded bodies (including the editor buffer) take precedence over server matches.
+        if (file?.status !== "delete" && (!file || file.loaded === false))
+          matches.set(result.path, result);
+      }
+    }
+    for (const result of localResults) matches.set(result.path, result);
+    return paths
+      .flatMap((path) => {
+        const result = matches.get(path);
+        return result ? [result] : [];
+      })
+      .slice(0, fileSearchLimits.results);
+  }, [content, remoteSearch, localResults, files, remoteResults, searchKey, paths]);
   useEffect(() => {
     if (active && list.current && results.length) list.current.scrollTop = scrollTop;
   }, [active, results, scrollTop]);

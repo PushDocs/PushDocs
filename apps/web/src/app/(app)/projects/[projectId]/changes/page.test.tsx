@@ -188,7 +188,7 @@ it.each(["conflict", "dirty"])(
       details: {
         source: { isFork: false },
         readiness: { state: "blocked", reason },
-        requiredUpdateStrategy: "rebase",
+        updateRequired: true,
       },
     };
     const renderPage = async () =>

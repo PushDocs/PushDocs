@@ -1,5 +1,6 @@
 "use client";
 
+import { branchUpdateWaitingStatus } from "@pushdocs/contracts";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { startGitOperationAction } from "@/app/actions";
 import {
@@ -18,6 +19,7 @@ export function useGitOperation({
   successMessage,
   onComplete,
   onBusyChange,
+  onNeedsResolution,
 }: {
   projectId: string;
   branch: string;
@@ -25,6 +27,7 @@ export function useGitOperation({
   successMessage: (kind: GitOperationKind) => string;
   onComplete: () => unknown;
   onBusyChange?: (busy: boolean) => void;
+  onNeedsResolution?: () => unknown;
 }) {
   const key = gitOperationKey(projectId, branch, kind);
   const subscription = useMemo(
@@ -36,13 +39,13 @@ export function useGitOperation({
   );
   const task = useSyncExternalStore(subscription.subscribe, subscription.snapshot, serverSnapshot);
   const [result, setResult] = useState<{ key: string; message: string; error: boolean }>();
-  const callbacks = useRef({ successMessage, onComplete, onBusyChange });
-  callbacks.current = { successMessage, onComplete, onBusyChange };
+  const callbacks = useRef({ successMessage, onComplete, onBusyChange, onNeedsResolution });
+  callbacks.current = { successMessage, onComplete, onBusyChange, onNeedsResolution };
   const handled = useRef<{
     task: GitOperationTask;
     result: Promise<{ message: string; error: boolean }>;
   } | null>(null);
-  const busy = !!task && task.phase !== "failed";
+  const busy = !!task && task.phase !== "failed" && task.phase !== branchUpdateWaitingStatus;
   const gitBusy = busy && task.phase !== "preparing";
 
   useEffect(() => {
@@ -51,7 +54,11 @@ export function useGitOperation({
   }, [gitBusy]);
 
   useEffect(() => {
-    if (!task || (task.phase !== "done" && task.phase !== "failed")) return;
+    if (
+      !task ||
+      (task.phase !== "done" && task.phase !== "failed" && task.phase !== branchUpdateWaitingStatus)
+    )
+      return;
     let active = true;
     if (handled.current?.task !== task) {
       handled.current = {
@@ -61,7 +68,9 @@ export function useGitOperation({
           let message = task.message || callbacks.current.successMessage(task.kind);
           if (!error) {
             try {
-              await callbacks.current.onComplete();
+              if (task.phase === branchUpdateWaitingStatus)
+                await callbacks.current.onNeedsResolution?.();
+              else await callbacks.current.onComplete();
             } catch {
               error = true;
               message =

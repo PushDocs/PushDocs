@@ -147,28 +147,97 @@ it("searches unloaded article bodies on the server and opens the returned line",
   }
 });
 
-it("shows a server-search error instead of an empty result state", async () => {
+it.each([false, true])(
+  "shows a server-search error and retains loaded matches: %s",
+  async (loaded) => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <QuickOpen
+          paths={paths}
+          files={files.map((file, index) =>
+            loaded && index === 0 ? file : { ...file, content: "", loaded: false },
+          )}
+          onOpen={vi.fn()}
+          onSearchContent={vi.fn().mockRejectedValue(new Error("offline"))}
+          initialContent
+        />,
+      );
+      fireEvent.change(screen.getByLabelText("Поиск файлов"), {
+        target: { value: "письмо" },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(180);
+      });
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Не удалось выполнить поиск. Повторите попытку.",
+      );
+      expect(screen.queryByText("Совпадений в статьях не найдено.")).toBeNull();
+      const results = within(screen.getByRole("list", { name: "Результаты поиска" }));
+      if (loaded) expect(results.getByRole("button").textContent).toContain("docs/start.mdx:3");
+      else expect(results.queryByRole("button")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("uses loaded buffers over server matches without restarting the remote search", async () => {
   vi.useFakeTimers();
   try {
-    render(
-      <QuickOpen
-        paths={paths}
-        files={files.map((file) => ({ ...file, content: "", loaded: false }))}
-        onOpen={vi.fn()}
-        onSearchContent={vi.fn().mockRejectedValue(new Error("offline"))}
-        initialContent
-      />,
+    const remote = vi.fn().mockResolvedValue([
+      { path: "docs/start.mdx", line: 90, excerpt: "письмо в старой версии" },
+      { path: "docs/archive.md", line: 27, excerpt: "письмо из Git" },
+      { path: "docs/deleted.md", line: 1, excerpt: "письмо удалено" },
+    ]);
+    const data = {
+      paths,
+      onOpen: vi.fn(),
+      onSearchContent: remote,
+      initialContent: true,
+    };
+    const partialFiles = files.map((file) =>
+      file.path === "docs/archive.md" ? { ...file, content: "", loaded: false } : file,
     );
-    fireEvent.change(screen.getByLabelText("Поиск файлов"), {
-      target: { value: "искомая" },
-    });
+    const view = render(<QuickOpen {...data} files={partialFiles} />);
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "письмо" } });
+    const list = screen.getByRole("list", { name: "Результаты поиска" });
+    expect(within(list).getByRole("button").textContent).toContain("docs/start.mdx:3");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(180);
     });
-    expect(screen.getByRole("alert").textContent).toBe(
-      "Не удалось выполнить поиск. Повторите попытку.",
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    expect(list.textContent).toContain("docs/archive.md:27");
+    expect(list.textContent).not.toContain("старой версии");
+    expect(list.textContent).not.toContain("deleted.md");
+
+    view.rerender(
+      <QuickOpen
+        {...data}
+        files={partialFiles.map((file) =>
+          file.path === "docs/start.mdx"
+            ? { ...file, content: "# Правка\n\n\nписьмо в буфере" }
+            : file,
+        )}
+      />,
     );
-    expect(screen.queryByText("Совпадений в статьях не найдено.")).toBeNull();
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    expect(list.textContent).toContain("docs/start.mdx:4");
+    expect(list.textContent).toContain("письмо в буфере");
+
+    view.rerender(
+      <QuickOpen
+        {...data}
+        files={partialFiles.map((file) =>
+          file.path === "docs/start.mdx" ? { ...file, content: "# Исправлено" } : file,
+        )}
+      />,
+    );
+    expect(within(list).getByRole("button").textContent).toContain("docs/archive.md:27");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(remote).toHaveBeenCalledTimes(1);
   } finally {
     vi.useRealTimers();
   }

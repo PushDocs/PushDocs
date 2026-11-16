@@ -19,6 +19,7 @@ import {
   isConflictMediaFile,
   type PreparedBranchUpdate,
   projectConfigPaths,
+  type RebaseProgress,
 } from "@pushdocs/contracts";
 import {
   ProviderConflictError,
@@ -38,6 +39,17 @@ class GitCommandError extends Error {
 }
 
 export class BranchMergeConflictError extends Error {}
+
+export class RebaseNeedsResolution extends Error {
+  constructor(
+    readonly progress: RebaseProgress,
+    readonly snapshot: BranchConflictSnapshot,
+  ) {
+    super(
+      `Rebase остановлен на коммите ${snapshot.rebase?.commitSha.slice(0, 8)}: ${snapshot.files.map((file) => file.path).join(", ")}. Ветка в Git не изменена.`,
+    );
+  }
+}
 
 export interface PreparedCommit {
   branch: string;
@@ -443,11 +455,13 @@ export class GitTransport {
   }
 
   /** Preview only: opaque media retain identity without fetching bytes for rename similarity. */
-  private async inspectionTrees(parentSha: string, sourceSha: string) {
-    const bases = (await this.run(["merge-base", "--all", parentSha, sourceSha]))
-      .toString()
-      .trim()
-      .split("\n");
+  private async inspectionTrees(parentSha: string, sourceSha: string, baseRef?: string) {
+    const bases = baseRef
+      ? [baseRef]
+      : (await this.run(["merge-base", "--all", parentSha, sourceSha]))
+          .toString()
+          .trim()
+          .split("\n");
     if (bases.length !== 1 || !bases[0])
       throw new BranchMergeConflictError(
         "У веток несколько общих баз. Разрешите конфликты в Git-провайдере.",
@@ -543,9 +557,25 @@ export class GitTransport {
       );
     const parentSha = await this.head(input.branch);
     const sourceSha = await this.head(input.sourceBranch);
+    return this.inspectCommitConflicts({ ...input, parentSha, sourceSha });
+  }
+
+  private async inspectCommitConflicts(input: {
+    branch: string;
+    sourceBranch: string;
+    parentSha: string;
+    sourceSha: string;
+    baseSha?: string;
+    rootPath?: string;
+  }): Promise<BranchConflictSnapshot> {
+    const { parentSha, sourceSha } = input;
     this.reportProgress(ConflictInspectionStage.Comparing);
-    const preview = await this.inspectionTrees(parentSha, sourceSha);
-    const merged = await this.mergeTree(preview.parentSha, preview.sourceSha, preview.baseTree);
+    const preview = await this.inspectionTrees(parentSha, sourceSha, input.baseSha);
+    const merged = await this.mergeTree(
+      preview.parentSha,
+      preview.sourceSha,
+      preview.baseTree ?? input.baseSha,
+    );
     for (const stages of merged.stages.values()) {
       for (const entry of Object.values(stages))
         entry.sha = preview.originalObjects.get(entry.sha) ?? entry.sha;
@@ -781,6 +811,79 @@ export class GitTransport {
   }
 
   /** Merge full Git trees without checking out files or executing repository configuration. */
+  private async resolvedTree(
+    merged: Awaited<ReturnType<GitTransport["mergeTree"]>>,
+    snapshot: BranchConflictSnapshot,
+    files: BranchConflictResolution,
+  ) {
+    if (
+      snapshot.unsupportedReason ||
+      !snapshot.files.length ||
+      snapshot.files.some((file) => file.kind === "unsupported")
+    )
+      throw new BranchMergeConflictError("Этот конфликт нужно разрешить в Git-провайдере.");
+    if (
+      merged.unsupported ||
+      files.length !== merged.stages.size ||
+      new Set(files.map((file) => file.path)).size !== files.length
+    )
+      throw new BranchMergeConflictError(
+        snapshot.mediaContentsSkipped
+          ? conflictVerificationMessage
+          : "Нужно выбрать решение для каждого конфликтующего файла.",
+      );
+    await this.run(["read-tree", merged.tree]);
+    for (const file of files) {
+      const stages = merged.stages.get(file.path);
+      const inspected = snapshot.files.find((item) => item.path === file.path);
+      if (!stages || !inspected)
+        throw new BranchMergeConflictError(
+          snapshot.mediaContentsSkipped
+            ? conflictVerificationMessage
+            : "Неизвестный конфликтующий файл",
+        );
+      if (
+        inspected.versions &&
+        (["base", "ours", "theirs"] as const).some(
+          (side) =>
+            inspected.versions?.[side]?.sha !== stages[side]?.sha ||
+            inspected.versions?.[side]?.mode !== stages[side]?.mode,
+        )
+      )
+        throw new BranchMergeConflictError(conflictVerificationMessage);
+      let entry = file.choice === BranchConflictChoice.Ours ? stages.ours : stages.theirs;
+      if (file.choice === BranchConflictChoice.Manual) {
+        if (
+          inspected.kind !== "text" ||
+          file.content === undefined ||
+          Buffer.byteLength(file.content) > branchConflictLimits.textBytes
+        )
+          throw new BranchMergeConflictError("Недопустимый ручной результат");
+        const mode = stages.ours?.mode ?? stages.theirs?.mode;
+        if (!mode) throw new BranchMergeConflictError("Недопустимый конфликтующий файл");
+        entry = {
+          mode,
+          sha: (await this.run(["hash-object", "-w", "--stdin"], file.content)).toString().trim(),
+        };
+      }
+      if (entry)
+        await this.run([
+          "update-index",
+          "--add",
+          "--cacheinfo",
+          entry.mode,
+          entry.sha,
+          this.filePath(file.path),
+        ]);
+      else
+        await this.run(
+          ["update-index", "-z", "--index-info"],
+          `0 ${"0".repeat(merged.tree.length)}\t${this.filePath(file.path)}\0`,
+        );
+    }
+    return (await this.run(["write-tree", "--missing-ok"])).toString().trim();
+  }
+
   async prepareMerge(input: {
     branch: string;
     sourceBranch: string;
@@ -835,74 +938,11 @@ export class GitTransport {
     }
     let tree: string;
     if (input.resolution) {
-      const { snapshot, files } = input.resolution;
-      if (
-        snapshot.unsupportedReason ||
-        !snapshot.files.length ||
-        snapshot.files.some((file) => file.kind === "unsupported")
-      )
-        throw new BranchMergeConflictError("Этот конфликт нужно разрешить в Git-провайдере.");
-      const merged = await this.mergeTree(parentSha, sourceSha);
-      if (
-        merged.unsupported ||
-        files.length !== merged.stages.size ||
-        new Set(files.map((file) => file.path)).size !== files.length
-      )
-        throw new BranchMergeConflictError(
-          snapshot.mediaContentsSkipped
-            ? conflictVerificationMessage
-            : "Нужно выбрать решение для каждого конфликтующего файла.",
-        );
-      await this.run(["read-tree", merged.tree]);
-      for (const file of files) {
-        const stages = merged.stages.get(file.path);
-        const inspected = snapshot.files.find((item) => item.path === file.path);
-        if (!stages || !inspected)
-          throw new BranchMergeConflictError(
-            snapshot.mediaContentsSkipped
-              ? conflictVerificationMessage
-              : "Неизвестный конфликтующий файл",
-          );
-        if (
-          inspected.versions &&
-          (["base", "ours", "theirs"] as const).some(
-            (side) =>
-              inspected.versions?.[side]?.sha !== stages[side]?.sha ||
-              inspected.versions?.[side]?.mode !== stages[side]?.mode,
-          )
-        )
-          throw new BranchMergeConflictError(conflictVerificationMessage);
-        let entry = file.choice === BranchConflictChoice.Ours ? stages.ours : stages.theirs;
-        if (file.choice === BranchConflictChoice.Manual) {
-          if (
-            inspected.kind !== "text" ||
-            file.content === undefined ||
-            Buffer.byteLength(file.content) > branchConflictLimits.textBytes
-          )
-            throw new BranchMergeConflictError("Недопустимый ручной результат");
-          const mode = stages.ours?.mode ?? stages.theirs?.mode;
-          if (!mode) throw new BranchMergeConflictError("Недопустимый конфликтующий файл");
-          entry = {
-            mode,
-            sha: (await this.run(["hash-object", "-w", "--stdin"], file.content)).toString().trim(),
-          };
-        }
-        if (entry)
-          await this.run([
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            entry.mode,
-            entry.sha,
-            this.filePath(file.path),
-          ]);
-        else
-          await this.run(
-            ["update-index", "-z", "--index-info"],
-            `0 ${"0".repeat(parentSha.length)}\t${this.filePath(file.path)}\0`,
-          );
-      }
-      tree = (await this.run(["write-tree", "--missing-ok"])).toString().trim();
+      tree = await this.resolvedTree(
+        await this.mergeTree(parentSha, sourceSha),
+        input.resolution.snapshot,
+        input.resolution.files,
+      );
     } else {
       try {
         tree =
@@ -937,12 +977,26 @@ export class GitTransport {
     strategy: BranchUpdateStrategy;
     createdAt: string;
     prepared?: PreparedBranchUpdate;
+    rebase?: RebaseProgress;
+    operationId?: string;
+    rootPath?: string;
   }): Promise<PreparedBranchUpdate> {
     validateBranchName(input.branch);
     validateBranchName(input.sourceBranch);
     if (input.branch === input.sourceBranch) throw new BranchMergeConflictError("Ветки совпадают");
     if (!Number.isFinite(Date.parse(input.createdAt))) throw new Error("Invalid commit identity");
     const saved = input.prepared;
+    const resume = input.rebase;
+    if (
+      resume &&
+      (input.strategy !== BranchUpdateStrategy.Rebase ||
+        resume.version !== branchUpdateLimits.version ||
+        resume.branch !== input.branch ||
+        resume.sourceBranch !== input.sourceBranch ||
+        Buffer.byteLength(JSON.stringify(resume.resolutions)) > branchUpdateLimits.resolutionBytes)
+    )
+      throw new BranchMergeConflictError("План продолжения rebase несовместим.");
+    const original = saved ?? resume;
     if (
       saved &&
       (saved.version !== branchUpdateLimits.version ||
@@ -952,13 +1006,13 @@ export class GitTransport {
     )
       throw new BranchMergeConflictError("План обновления несовместим. Отправка остановлена.");
     await this.initialize();
-    const parentSha = saved ? this.sha(saved.parentSha) : await this.head(input.branch);
-    const sourceSha = saved ? this.sha(saved.sourceSha) : await this.head(input.sourceBranch);
+    const parentSha = original ? this.sha(original.parentSha) : await this.head(input.branch);
+    const sourceSha = original ? this.sha(original.sourceSha) : await this.head(input.sourceBranch);
     for (const [ref, sha] of [
       ["original", parentSha],
       ["target", sourceSha],
     ] as const) {
-      if (saved) {
+      if (original) {
         try {
           await this.run(["cat-file", "-e", `${sha}^{commit}`]);
         } catch {
@@ -1001,6 +1055,17 @@ export class GitTransport {
           .toString()
           .trim();
         const originals = range ? range.split("\n") : [];
+        if (resume && JSON.stringify(originals) !== JSON.stringify(resume.originals))
+          throw new BranchMergeConflictError(
+            "Не удалось восстановить последовательность коммитов rebase.",
+          );
+        const resolutions = resume?.resolutions ?? [];
+        if (
+          new Set(resolutions.map((resolution) => resolution.commitSha)).size !==
+            resolutions.length ||
+          resolutions.some((resolution) => !originals.includes(resolution.commitSha))
+        )
+          throw new BranchMergeConflictError("Недопустимый журнал решений rebase.");
         if (originals.length > branchUpdateLimits.commits)
           throw new BranchMergeConflictError("Слишком много коммитов для автоматического rebase.");
         let previous = base;
@@ -1020,10 +1085,63 @@ export class GitTransport {
         previous = base;
         for (const originalSha of originals) {
           const merged = await this.mergeTree(sha, originalSha, previous);
-          if (merged.unsupported || merged.stages.size)
+          let tree = merged.tree;
+          const resolution = resolutions.find((item) => item.commitSha === originalSha);
+          if (merged.unsupported)
             throw new BranchMergeConflictError(
-              `Rebase остановлен на коммите ${originalSha.slice(0, 8)}: ${[...merged.stages.keys()].join(", ") || "неподдерживаемый конфликт"}. Ветка в Git не изменена.`,
+              "Конфликт rebase затрагивает неподдерживаемые типы файлов или переименования.",
             );
+          if (merged.stages.size) {
+            const conflictId = `${originalSha}:${sha}:${merged.tree}`;
+            const snapshot = await this.inspectCommitConflicts({
+              branch: input.branch,
+              sourceBranch: input.sourceBranch,
+              parentSha: sha,
+              sourceSha: originalSha,
+              baseSha: previous,
+              rootPath: input.rootPath,
+            });
+            if (resolution) {
+              if (resolution.conflictId !== conflictId)
+                throw new BranchMergeConflictError(
+                  "Контекст разрешённого конфликта rebase изменился.",
+                );
+              tree = await this.resolvedTree(merged, snapshot, resolution.files);
+            } else {
+              snapshot.parentSha = parentSha;
+              snapshot.sourceSha = sourceSha;
+              snapshot.rebase = {
+                operationId: input.operationId ?? "",
+                conflictId,
+                commitSha: originalSha,
+                currentParentSha: sha,
+                originalParentSha: previous,
+                index: commits.length + 1,
+                total: originals.length,
+                title: (await this.run(["show", "-s", "--format=%s", originalSha]))
+                  .toString()
+                  .trim()
+                  .slice(0, conflictReportLimits.titleChars),
+              };
+              throw new RebaseNeedsResolution(
+                {
+                  version: branchUpdateLimits.version,
+                  branch: input.branch,
+                  sourceBranch: input.sourceBranch,
+                  parentSha,
+                  sourceSha,
+                  originals,
+                  commits,
+                  resolutions,
+                },
+                snapshot,
+              );
+            }
+          } else if (resolution) {
+            throw new BranchMergeConflictError(
+              "Не удалось воспроизвести разрешённый конфликт rebase.",
+            );
+          }
           const raw = await this.run(["cat-file", "commit", originalSha]);
           const separator = raw.indexOf("\n\n");
           const header = raw.subarray(0, separator).toString();
@@ -1040,7 +1158,7 @@ export class GitTransport {
           const author = header.match(/^author (.*) <([^<>\n]*)> (\d+ [+-]\d{4})$/m);
           if (!author) throw new BranchMergeConflictError("Не удалось прочитать автора коммита.");
           sha = (
-            await this.run(["commit-tree", merged.tree, "-p", sha], message, input.createdAt, {
+            await this.run(["commit-tree", tree, "-p", sha], message, input.createdAt, {
               name: author[1] ?? "",
               email: author[2] ?? "",
               date: author[3] ?? "",
@@ -1049,6 +1167,11 @@ export class GitTransport {
             .toString()
             .trim();
           this.sha(sha);
+          const checkpoint = resume?.commits[commits.length];
+          if (checkpoint && (checkpoint.originalSha !== originalSha || checkpoint.sha !== sha))
+            throw new BranchMergeConflictError(
+              "Не удалось восстановить промежуточный коммит rebase.",
+            );
           commits.push({ originalSha, sha });
           await this.run(["update-ref", `refs/pushdocs/update/commits/${commits.length}`, sha]);
           previous = originalSha;

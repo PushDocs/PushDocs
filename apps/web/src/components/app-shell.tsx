@@ -18,6 +18,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { logoutAction } from "@/app/actions";
+import { projectChangesHref } from "@/lib/project-paths";
 import type { CurrentUser } from "@/lib/server";
 import { ProjectConflictProgress } from "./branch-conflicts";
 import { ProjectBranchImportProgress } from "./branch-import";
@@ -180,7 +181,7 @@ export function AppShell({
                 onValueChange={(branch) => {
                   if (branch === (currentBranch || activeProject.defaultBranch)) return;
                   const href = pathname.endsWith("/changes")
-                    ? `/projects/${activeProject.id}/changes?${new URLSearchParams({ branch })}`
+                    ? projectChangesHref(activeProject.id, branch)
                     : documentHref(activeProject.id, branch);
                   const event = new CustomEvent("pushdocs:branch-switch", {
                     cancelable: true,

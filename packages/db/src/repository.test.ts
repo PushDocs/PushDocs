@@ -5,12 +5,14 @@ import {
   BranchUpdateStrategy,
   branchConflictCache,
   branchUpdateLimits,
+  type RebaseProgress,
 } from "@pushdocs/contracts";
 import { Kysely, PostgresDialect, sql } from "kysely";
 import type { Pool } from "pg";
 import { DataType, newDb } from "pg-mem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
+import { resolvedBranchUpdatePolicy } from "../../../tests/fixtures/branch-update-policy";
 import { decryptSecret } from "./crypto";
 import { checkDatabase, closeDatabase, createDatabase, getDatabase } from "./database";
 import { appendEvent } from "./events";
@@ -173,6 +175,10 @@ async function reviewUpdateFixture() {
       checks: [],
       details: {
         headSha: "task-head",
+        branchUpdatePolicy: resolvedBranchUpdatePolicy({
+          strategy: BranchUpdateStrategy.Rebase,
+          targetSha: "head-1",
+        }),
         readiness: { state: "blocked", reason: "need_rebase" },
         source: { isFork: false, repositoryId: "42", branchUrl: null },
         labels: [],
@@ -188,6 +194,7 @@ async function reviewUpdateFixture() {
     projectId: fixture.projectId,
     reviewId: review.id,
     expectedHeadSha: "task-head",
+    expectedStrategy: BranchUpdateStrategy.Rebase,
     userId: fixture.operatorId,
   };
   const prepared = {
@@ -204,7 +211,433 @@ async function reviewUpdateFixture() {
   return { ...fixture, review, input, prepared };
 }
 
+async function failedReviewUpdateFixture(state: "closed" | "merged" = "merged") {
+  const fixture = await reviewUpdateFixture();
+  const id = await repository.queueReviewBranchUpdate(fixture.input);
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 5 })
+    .where("id", "=", id)
+    .execute();
+  await repository.savePreparedBranchUpdate(id, 5, fixture.prepared);
+  await repository.failJob(id, "Lost push response", false, 5);
+  await database
+    .updateTable("change_requests")
+    .set({ state, head_sha: null, details: null })
+    .where("id", "=", fixture.review.id)
+    .execute();
+  const job = await database
+    .selectFrom("jobs")
+    .selectAll()
+    .where("id", "=", id)
+    .executeTakeFirstOrThrow();
+  return { ...fixture, job };
+}
+
 describe("review branch updates", () => {
+  async function pausedRebase() {
+    const f = await reviewUpdateFixture();
+    const id = await repository.queueReviewBranchUpdate(f.input);
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 8 })
+      .where("id", "=", id)
+      .execute();
+    const progress: RebaseProgress = {
+      version: branchUpdateLimits.version,
+      branch: "docs/task",
+      sourceBranch: "main",
+      parentSha: "task-head",
+      sourceSha: "head-1",
+      originals: ["task-head", "next-commit"],
+      commits: [],
+      resolutions: [],
+    };
+    const snapshot: BranchConflictSnapshot = {
+      branch: progress.branch,
+      sourceBranch: progress.sourceBranch,
+      parentSha: progress.parentSha,
+      sourceSha: progress.sourceSha,
+      inspectionVersion: branchConflictCache.version,
+      updatePolicy: f.review.details?.branchUpdatePolicy,
+      rebase: {
+        operationId: id,
+        conflictId: "conflict-one",
+        commitSha: "task-head",
+        currentParentSha: "head-1",
+        originalParentSha: "base",
+        index: 1,
+        total: 2,
+        title: "Edit",
+      },
+      files: [
+        {
+          path: "docs/intro.md",
+          kind: "text",
+          baseContent: "Base",
+          oursContent: "Target",
+          theirsContent: "Edit",
+          oursExists: true,
+          theirsExists: true,
+        },
+      ],
+    };
+    await repository.pauseRebaseUpdate(id, 8, progress, snapshot, "repository-key");
+    return {
+      ...f,
+      id,
+      progress,
+      snapshot,
+      continuation: {
+        projectId: f.projectId,
+        operationId: id,
+        conflictId: "conflict-one",
+        userId: f.operatorId,
+        files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Theirs }],
+      },
+    };
+  }
+
+  it("reserves a paused rebase, fences stale workers and atomically continues the same operation", async () => {
+    const f = await pausedRebase();
+    expect((await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task"))?.status).toBe(
+      "needs_resolution",
+    );
+    expect(await repository.getBranchConflictBlockers(f.projectId, "docs/task")).toMatchObject({
+      busy: true,
+      mergeJobId: f.id,
+    });
+    expect(await repository.listBranchesNeedingAttention(f.projectId)).toContain("docs/task");
+    expect(await repository.getMcpOperation(f.projectId, f.id)).toMatchObject({
+      status: "needs_resolution",
+      result: { inspectionId: f.id, needsConflictResolution: true },
+    });
+    await expect(
+      repository.pauseRebaseUpdate(f.id, 7, f.progress, f.snapshot, "repository-key"),
+    ).rejects.toThrow("другому обработчику");
+    await expect(
+      repository.continueRebaseUpdate({ ...f.continuation, conflictId: "stale" }),
+    ).rejects.toThrow("изменился");
+    expect(await repository.continueRebaseUpdate(f.continuation)).toBe(f.id);
+    expect(await repository.continueRebaseUpdate(f.continuation)).toBe(f.id);
+    await expect(
+      repository.continueRebaseUpdate({
+        ...f.continuation,
+        files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Ours }],
+      }),
+    ).rejects.toThrow("другое решение");
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", f.id)
+      .executeTakeFirstOrThrow();
+    expect(job).toMatchObject({
+      status: "queued",
+      attempts: 8,
+      locked_at: null,
+      payload: {
+        retryBaseAttempt: 8,
+        rebaseProgress: {
+          resolutions: [{ conflictId: "conflict-one", files: f.continuation.files }],
+        },
+      },
+    });
+    expect(await repository.queueReviewBranchUpdate(f.input)).toBe(f.id);
+    const nextProgress = {
+      ...f.progress,
+      commits: [{ originalSha: "task-head", sha: "rebased-first" }],
+      resolutions: [
+        { conflictId: "conflict-one", commitSha: "task-head", files: f.continuation.files },
+      ],
+    };
+    if (!f.snapshot.rebase) throw new Error("Missing rebase fixture");
+    const nextSnapshot = {
+      ...f.snapshot,
+      rebase: {
+        ...f.snapshot.rebase,
+        conflictId: "conflict-two",
+        commitSha: "next-commit",
+        currentParentSha: "rebased-first",
+        index: 2,
+      },
+    };
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 9 })
+      .where("id", "=", f.id)
+      .execute();
+    await repository.pauseRebaseUpdate(f.id, 9, nextProgress, nextSnapshot, "repository-key");
+    expect(await repository.continueRebaseUpdate(f.continuation)).toBe(f.id);
+    expect((await repository.getProjectJob(f.projectId, f.id))?.status).toBe("needs_resolution");
+    expect(
+      await repository.continueRebaseUpdate({ ...f.continuation, conflictId: "conflict-two" }),
+    ).toBe(f.id);
+  });
+
+  it("requires push permission and a complete supported decision for a paused rebase", async () => {
+    const f = await pausedRebase();
+    const reader = await repository.createUser({
+      displayName: "Reader",
+      email: "reader@example.test",
+      passwordHash: "hash",
+    });
+    await database
+      .insertInto("project_memberships")
+      .values({ project_id: f.projectId, user_id: reader.id, role: "reader" })
+      .execute();
+    await expect(
+      repository.continueRebaseUpdate({ ...f.continuation, userId: reader.id }),
+    ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    await expect(
+      repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", reader.id),
+    ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    await expect(repository.continueRebaseUpdate({ ...f.continuation, files: [] })).rejects.toThrow(
+      "каждого",
+    );
+    await expect(
+      repository.continueRebaseUpdate({
+        ...f.continuation,
+        files: [{ path: "unknown", choice: BranchConflictChoice.Ours }],
+      }),
+    ).rejects.toThrow("каждого");
+    expect((await repository.getProjectJob(f.projectId, f.id))?.status).toBe("needs_resolution");
+  });
+
+  it("cancels only the current paused commit and releases its reservation without deleting the journal", async () => {
+    const f = await pausedRebase();
+    await expect(
+      repository.cancelRebaseUpdate(f.projectId, f.id, "stale", f.operatorId),
+    ).rejects.toThrow("ожидания");
+    await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
+    await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
+    expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toBeUndefined();
+    expect(await repository.getBranchConflictBlockers(f.projectId, "docs/task")).toMatchObject({
+      busy: false,
+    });
+    await expect(repository.continueRebaseUpdate(f.continuation)).rejects.toThrow("изменился");
+    await expect(
+      repository.retryReviewBranchUpdate(f.projectId, f.id, f.operatorId),
+    ).rejects.toThrow("недоступно");
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", f.id)
+      .executeTakeFirstOrThrow();
+    expect(job).toMatchObject({
+      status: "failed",
+      payload: { reservationReleased: true, rebaseProgress: f.progress },
+    });
+  });
+
+  it("renews the technical retry budget without resetting the lease generation", async () => {
+    const f = await pausedRebase();
+    await repository.continueRebaseUpdate(f.continuation);
+    await database
+      .updateTable("jobs")
+      .set({ status: "failed", attempts: 13 })
+      .where("id", "=", f.id)
+      .execute();
+    expect(
+      await repository.retryReviewBranchUpdate(f.projectId, f.id, f.operatorId, "new-grant"),
+    ).toBe(f.id);
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", f.id)
+      .executeTakeFirstOrThrow();
+    expect(job).toMatchObject({
+      status: "queued",
+      attempts: 13,
+      payload: { retryBaseAttempt: 13, oauthGrantId: "new-grant" },
+    });
+  });
+
+  it.each(["closed", "merged"] as const)(
+    "discovers and resumes the same prepared update after its review is %s",
+    async (state) => {
+      const fixture = await failedReviewUpdateFixture(state);
+      expect(await repository.getMcpBranchOperation(fixture.projectId, " docs/task ")).toEqual({
+        operationId: fixture.job.id,
+        kind: "branch.update",
+        status: "failed",
+        canResumeReviewBranchUpdate: true,
+        canResumeConflictResolution: false,
+      });
+      expect(
+        (await repository.getMcpOperation(fixture.projectId, fixture.job.id))?.result,
+      ).toMatchObject({
+        canResumeReviewBranchUpdate: true,
+        canResumeConflictResolution: false,
+      });
+      expect(
+        await repository.retryReviewBranchUpdate(
+          fixture.projectId,
+          fixture.job.id,
+          fixture.operatorId,
+          "renewed-grant",
+        ),
+      ).toBe(fixture.job.id);
+      const resumed = await database
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", fixture.job.id)
+        .executeTakeFirstOrThrow();
+      expect(resumed).toMatchObject({
+        status: "queued",
+        attempts: 5,
+        created_at: fixture.job.created_at,
+        last_error: null,
+        payload: { ...(fixture.job.payload as object), oauthGrantId: "renewed-grant" },
+      });
+      expect(
+        (await repository.getMcpBranchOperation(fixture.projectId, "docs/task"))
+          ?.canResumeReviewBranchUpdate,
+      ).toBe(false);
+    },
+  );
+
+  it.each(["queued", "running"] as const)(
+    "keeps the authorization of an already %s prepared update on another resume",
+    async (status) => {
+      const fixture = await failedReviewUpdateFixture();
+      await repository.retryReviewBranchUpdate(
+        fixture.projectId,
+        fixture.job.id,
+        fixture.operatorId,
+        "first-grant",
+      );
+      await database.updateTable("jobs").set({ status }).where("id", "=", fixture.job.id).execute();
+      expect(
+        await repository.retryReviewBranchUpdate(
+          fixture.projectId,
+          fixture.job.id,
+          fixture.operatorId,
+          "second-grant",
+        ),
+      ).toBe(fixture.job.id);
+      const saved = await database
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", fixture.job.id)
+        .executeTakeFirstOrThrow();
+      expect(saved).toMatchObject({
+        status,
+        attempts: 5,
+        payload: { oauthGrantId: "first-grant" },
+      });
+    },
+  );
+
+  it.each(["unprepared", "released", "done", "other-kind", "other-project", "unknown"])(
+    "rejects recovery of an %s update",
+    async (reason) => {
+      const fixture = await failedReviewUpdateFixture();
+      const payload = { ...(fixture.job.payload as Record<string, unknown>) };
+      if (reason === "unprepared") delete payload.preparedUpdate;
+      if (reason === "released") payload.reservationReleased = true;
+      if (reason === "other-project") payload.projectId = randomUUID();
+      await database
+        .updateTable("jobs")
+        .set({
+          payload,
+          kind: reason === "other-kind" ? "branch.merge" : "branch.update",
+          status: reason === "done" ? "done" : "failed",
+        })
+        .where("id", "=", fixture.job.id)
+        .execute();
+      await expect(
+        repository.retryReviewBranchUpdate(
+          fixture.projectId,
+          reason === "unknown" ? randomUUID() : fixture.job.id,
+          fixture.operatorId,
+        ),
+      ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    },
+  );
+
+  it("requires push permission to resume a prepared update", async () => {
+    const fixture = await failedReviewUpdateFixture();
+    const reader = await repository.createUser({
+      displayName: "Reader",
+      email: "resume-reader@example.test",
+      passwordHash: "hash",
+    });
+    await database
+      .insertInto("project_memberships")
+      .values({
+        project_id: fixture.projectId,
+        role: "reader",
+        user_id: reader.id,
+      })
+      .execute();
+    await expect(
+      repository.retryReviewBranchUpdate(fixture.projectId, fixture.job.id, reader.id),
+    ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect((await repository.getMcpBranchOperation(fixture.projectId, "docs/task"))?.status).toBe(
+      "failed",
+    );
+  });
+
+  it("discovers the actual reservation rather than a newer released or unprepared failure", async () => {
+    const fixture = await failedReviewUpdateFixture();
+    for (const payload of [
+      { ...(fixture.job.payload as object), reservationReleased: true },
+      { projectId: fixture.projectId, branch: "docs/task" },
+    ]) {
+      await database
+        .insertInto("jobs")
+        .values({
+          kind: "branch.update",
+          status: "failed",
+          payload,
+          created_at: new Date(Date.now() + 1000),
+        })
+        .execute();
+    }
+    expect(
+      (await repository.getMcpBranchOperation(fixture.projectId, "docs/task"))?.operationId,
+    ).toBe(fixture.job.id);
+    expect(await repository.getMcpBranchOperation(randomUUID(), "docs/task")).toBeNull();
+    expect(await repository.getMcpBranchOperation(fixture.projectId, "another-branch")).toBeNull();
+    await database
+      .updateTable("jobs")
+      .set({ status: "done" })
+      .where("id", "=", fixture.job.id)
+      .execute();
+    expect(await repository.getMcpBranchOperation(fixture.projectId, "docs/task")).toBeNull();
+  });
+
+  it("does not queue rebase when the user confirmed merge at an unchanged source SHA", async () => {
+    const fixture = await reviewUpdateFixture();
+    await expect(
+      repository.queueReviewBranchUpdate({
+        ...fixture.input,
+        expectedStrategy: BranchUpdateStrategy.Merge,
+      }),
+    ).rejects.toThrow("Политика обновления ветки изменилась");
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
+  it("requires policy refresh for a legacy review instead of deriving strategy from its status", async () => {
+    const fixture = await reviewUpdateFixture();
+    await database
+      .updateTable("change_requests")
+      .set({
+        details: JSON.stringify({
+          ...fixture.review.details,
+          branchUpdatePolicy: undefined,
+        }),
+      })
+      .where("id", "=", fixture.review.id)
+      .execute();
+    await expect(repository.queueReviewBranchUpdate(fixture.input)).rejects.toThrow(
+      "определить способ обновления",
+    );
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
   it("allows an explicit MCP update despite ready/draft status and binds its OAuth grant", async () => {
     const fixture = await reviewUpdateFixture();
     await database
@@ -228,7 +661,7 @@ describe("review branch updates", () => {
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
     expect(job.payload).toMatchObject({
-      strategy: "merge",
+      strategy: "rebase",
       refreshFromTarget: true,
       oauthGrantId: "grant",
     });
@@ -450,9 +883,10 @@ describe("review branch updates", () => {
   });
 });
 
-async function inspectedConflict() {
+async function inspectedConflict(updatePolicy = resolvedBranchUpdatePolicy()) {
   const fixture = await synchronizedProject();
   const snapshot: BranchConflictSnapshot = {
+    updatePolicy,
     inspectionVersion: branchConflictCache.version,
     branch: "main",
     sourceBranch: "stable",
@@ -494,6 +928,47 @@ async function inspectedConflict() {
 }
 
 describe("branch conflict resolution reservation", () => {
+  it("does not queue a merge resolution for a rebase policy", async () => {
+    const fixture = await inspectedConflict(
+      resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+    );
+    await expect(
+      repository.queueConflictMerge({
+        projectId: fixture.projectId,
+        inspectionId: fixture.inspectionId,
+        files: fixture.files,
+        userId: fixture.operatorId,
+      }),
+    ).rejects.toThrow("выбран rebase");
+    expect((await repository.getBranchConflictBlockers(fixture.projectId, "main")).busy).toBe(
+      false,
+    );
+  });
+
+  it("does not reuse a conflict inspection after repository policy changes at the same heads", async () => {
+    const fixture = await inspectedConflict();
+    const key = {
+      projectId: fixture.projectId,
+      reviewId: "review",
+      branch: "main",
+      sourceBranch: "stable",
+      parentSha: "head-1",
+      sourceSha: "target",
+      repositoryKey: "repository-identity",
+    };
+    expect(
+      await repository.findConflictInspection({
+        ...key,
+        updatePolicy: fixture.snapshot.updatePolicy,
+      }),
+    ).toBeDefined();
+    expect(
+      await repository.findConflictInspection({
+        ...key,
+        updatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+      }),
+    ).toBeUndefined();
+  });
   it("exposes numeric download progress and ignores progress from a superseded worker", async () => {
     const fixture = await projectFixture();
     const jobId = await repository.enqueueReviewsSync(fixture.projectId);
@@ -2122,7 +2597,7 @@ describe("reviews and checks", () => {
     );
     await sql`alter table change_requests drop column source_branch_is_local`.execute(database);
     await sql`alter table change_requests alter column head_sha set not null`.execute(database);
-    await sql`delete from kysely_migration where name in ('021-nullable-review-head-sha', '022-branch-menu-metadata')`.execute(
+    await sql`delete from kysely_migration where name in ('021-nullable-review-head-sha', '022-branch-menu-metadata', '023-rebase-resolution')`.execute(
       database,
     );
 

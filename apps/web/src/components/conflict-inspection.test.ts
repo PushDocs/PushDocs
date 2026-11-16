@@ -96,3 +96,23 @@ it("keeps the previous inspection through refresh startup and polling until a ne
     snapshot: updated,
   });
 });
+
+it.each([false, true])(
+  "ignores a late inspection status after invalidation: %s",
+  async (reject) => {
+    let finish: ((value: unknown) => void) | undefined;
+    mocks.status.mockReturnValueOnce(
+      new Promise((resolve, fail) => {
+        finish = reject ? fail : resolve;
+      }),
+    );
+    conflictInspectionStore.ensure(request);
+    await vi.advanceTimersByTimeAsync(0);
+    conflictInspectionStore.invalidate(request.projectId, request.reviewId);
+    finish?.(reject ? new Error("offline") : { status: "done", conflictSnapshot: snapshot });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(conflictInspectionStore.getSnapshot()).toEqual([]);
+    expect(mocks.status).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

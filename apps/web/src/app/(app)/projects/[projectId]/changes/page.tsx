@@ -1,5 +1,6 @@
 import {
   type BranchUpdateStrategy,
+  branchUpdateWaitingStatus,
   hasBranchConflicts,
   needsBranchUpdate,
 } from "@pushdocs/contracts";
@@ -202,6 +203,7 @@ export default async function ChangesPage({
 
       {review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts) ? (
         <ReviewBranchUpdate
+          waitingForResolution={activeUpdate?.status === branchUpdateWaitingStatus}
           review={review}
           provider={project.provider}
           projectId={projectId}

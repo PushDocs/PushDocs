@@ -1,4 +1,4 @@
-import type { ChangeRequestDetails } from "@pushdocs/contracts";
+import type { branchUpdateWaitingStatus, ChangeRequestDetails } from "@pushdocs/contracts";
 import type { ColumnType, Generated } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -281,7 +281,7 @@ export interface JobsTable {
   last_error: string | null;
   locked_at: Timestamp | null;
   payload: unknown;
-  status: Generated<"queued" | "running" | "done" | "failed">;
+  status: Generated<"queued" | "running" | "done" | "failed" | typeof branchUpdateWaitingStatus>;
   updated_at: GeneratedTimestamp;
 }
 

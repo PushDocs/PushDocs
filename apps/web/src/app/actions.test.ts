@@ -1,3 +1,4 @@
+import { BranchUpdateStrategy } from "@pushdocs/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -1329,7 +1330,11 @@ describe("document and review actions", () => {
     const input = {
       projectId,
       branch: "ignored-client-branch",
-      updateReview: { reviewId, expectedHeadSha: "head" },
+      updateReview: {
+        reviewId,
+        expectedHeadSha: "head",
+        expectedStrategy: BranchUpdateStrategy.Merge,
+      },
     };
     expect(await startGitOperationAction(input)).toBe("update-job");
     expect(mocks.repo.queueReviewBranchUpdate).toHaveBeenCalledWith({
@@ -1337,6 +1342,7 @@ describe("document and review actions", () => {
       userId: "user",
       reviewId,
       expectedHeadSha: "head",
+      expectedStrategy: BranchUpdateStrategy.Merge,
     });
     expect(mocks.repo.enqueueBranchMerge).not.toHaveBeenCalled();
     mocks.repo.queueReviewBranchUpdate.mockRejectedValueOnce(

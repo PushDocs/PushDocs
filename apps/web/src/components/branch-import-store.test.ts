@@ -109,3 +109,22 @@ it("does not automatically retry a failed task on return", async () => {
   branchImportStore.ensure(request, true);
   expect(mocks.sync).toHaveBeenCalledTimes(2);
 });
+
+it("continues a background import after a network error using the retry delay", async () => {
+  const unsubscribe = branchImportStore.subscribe(vi.fn());
+  mocks.status
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce({ status: "done" });
+  branchImportStore.ensure(request);
+  await vi.advanceTimersByTimeAsync(0);
+  unsubscribe();
+  expect(branchImportStore.getSnapshot()[0]?.notice).toContain("Нет связи");
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(branchImportStore.getSnapshot()[0]?.state).toBe(BranchImportState.Done);
+  expect(branchImportStore.getSnapshot()[0]?.notice).toBeUndefined();
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(mocks.status).toHaveBeenCalledTimes(2);
+});

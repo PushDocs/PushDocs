@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BranchUpdatePolicy } from "./branch-update";
 
 export const branchConflictLimits = {
   files: 200,
@@ -23,7 +24,7 @@ export interface GitTransferProgress {
   totalBytes: number | null;
 }
 
-export const branchConflictCache = { version: 5, entries: 20 } as const;
+export const branchConflictCache = { version: 6, entries: 20 } as const;
 
 export enum ConflictReportMode {
   Editorial = "editorial",
@@ -118,6 +119,17 @@ export interface BranchConflictFile {
 }
 
 export interface BranchConflictSnapshot {
+  rebase?: {
+    operationId: string;
+    conflictId: string;
+    commitSha: string;
+    currentParentSha: string;
+    originalParentSha: string;
+    index: number;
+    total: number;
+    title: string;
+  };
+  updatePolicy?: BranchUpdatePolicy;
   inspectionVersion?: number;
   mediaContentsSkipped?: boolean;
   branch: string;

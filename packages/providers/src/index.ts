@@ -1,6 +1,17 @@
-import type { ChangeRequestDetails, CheckRunSummary, ProviderKind } from "@pushdocs/contracts";
+import {
+  BranchUpdateStrategy,
+  type ChangeRequestDetails,
+  type CheckRunSummary,
+  type ProviderKind,
+} from "@pushdocs/contracts";
+import { ProviderHttpError } from "./errors";
+
+export { loadBranchUpdatePolicy } from "./branch-update-policy";
+export { ProviderHttpError } from "./errors";
 
 export interface ProviderRepository {
+  /** Default for auto mode; merge methods do not constrain direct source-branch pushes. */
+  defaultUpdateStrategy: BranchUpdateStrategy | null;
   cloneUrl: string;
   defaultBranch: string;
   fullName: string;
@@ -120,7 +131,10 @@ async function paginate<T>(
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(`Provider request failed with ${response.status}: ${detail.slice(0, 500)}`);
+    throw new ProviderHttpError(
+      response.status,
+      `Provider request failed with ${response.status}: ${detail.slice(0, 500)}`,
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -306,6 +320,7 @@ export class GitLabProvider implements GitProvider {
 
   async getRepository(repositoryId: string): Promise<ProviderRepository> {
     const row = await readJson<{
+      merge_method?: string;
       default_branch: string;
       http_url_to_repo: string;
       id: number;
@@ -313,6 +328,12 @@ export class GitLabProvider implements GitProvider {
       web_url: string;
     }>(await this.request(`projects/${encodeURIComponent(repositoryId)}`));
     return {
+      defaultUpdateStrategy:
+        row.merge_method === "merge"
+          ? BranchUpdateStrategy.Merge
+          : row.merge_method === "ff" || row.merge_method === "rebase_merge"
+            ? BranchUpdateStrategy.Rebase
+            : null,
       cloneUrl: row.http_url_to_repo,
       defaultBranch: row.default_branch,
       fullName: row.path_with_namespace,
@@ -463,9 +484,12 @@ export class GitLabProvider implements GitProvider {
     }
     return {
       source,
-      ...(review?.detailed_merge_status === "need_rebase"
-        ? { requiredUpdateStrategy: "rebase" as const }
-        : {}),
+      updateRequired: review?.has_conflicts
+        ? true
+        : review?.detailed_merge_status &&
+            !["checking", "unchecked", "preparing"].includes(review.detailed_merge_status)
+          ? ["need_rebase", "conflict"].includes(review.detailed_merge_status)
+          : null,
       headSha: review?.sha || null,
       readiness: { state, reason },
       labels:
@@ -566,7 +590,10 @@ export class GitLabProvider implements GitProvider {
       `projects/${encodeURIComponent(repositoryId)}/repository/files/${encodeURIComponent(filePath)}/raw?${query.toString()}`,
     );
     if (!response.ok) {
-      throw new Error(`GitLab file request failed with ${response.status}`);
+      throw new ProviderHttpError(
+        response.status,
+        `GitLab file request failed with ${response.status}`,
+      );
     }
     return response.text();
   }
@@ -741,6 +768,9 @@ export class GitHubProvider implements GitProvider {
 
   async getRepository(repositoryId: string): Promise<ProviderRepository> {
     const row = await readJson<{
+      allow_merge_commit?: boolean;
+      allow_rebase_merge?: boolean;
+      allow_squash_merge?: boolean;
       clone_url: string;
       default_branch: string;
       full_name: string;
@@ -748,6 +778,12 @@ export class GitHubProvider implements GitProvider {
       id: number;
     }>(await this.request(`repos/${repositoryId}`));
     return {
+      defaultUpdateStrategy:
+        row.allow_merge_commit === true || row.allow_squash_merge === true
+          ? BranchUpdateStrategy.Merge
+          : row.allow_rebase_merge === true
+            ? BranchUpdateStrategy.Rebase
+            : null,
       cloneUrl: row.clone_url,
       defaultBranch: row.default_branch,
       fullName: row.full_name,
@@ -908,6 +944,12 @@ export class GitHubProvider implements GitProvider {
         })),
     ];
     return {
+      updateRequired:
+        review?.mergeable === false
+          ? true
+          : review?.mergeable_state && review.mergeable_state !== "unknown"
+            ? ["behind", "dirty"].includes(review.mergeable_state)
+            : null,
       source: review?.base
         ? {
             repositoryId: review.head.repo?.full_name ?? null,

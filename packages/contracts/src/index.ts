@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type BranchUpdatePolicy, defaultGitConfig, gitConfigSchema } from "./branch-update";
 import { mediaConfigSchema } from "./media-config";
 
 export {
@@ -20,12 +21,24 @@ export {
 } from "./branch-conflicts";
 export type { BranchReviewSummary, BranchSummary } from "./branch-summary";
 export {
+  type BranchUpdatePolicy,
+  BranchUpdatePolicySource,
   BranchUpdateStrategy,
   branchUpdateJobKind,
   branchUpdateLimits,
+  branchUpdateMessages,
+  branchUpdateModes,
   branchUpdateStrategy,
+  branchUpdateWaitingStatus,
+  conflictResolutionPolicyError,
+  defaultGitConfig,
+  gitConfigSchema,
+  mergeResolutionPolicyError,
   needsBranchUpdate,
   type PreparedBranchUpdate,
+  type RebaseProgress,
+  type RebaseResolution,
+  sameBranchUpdatePolicy,
 } from "./branch-update";
 
 export {
@@ -56,6 +69,7 @@ export const defaultFileExplorerConfig = {
 export const projectConfigSchema = z
   .object({
     version: z.literal(1),
+    git: gitConfigSchema.default(() => ({ ...defaultGitConfig })),
     defaultLocale: z
       .string()
       .regex(/^[a-zA-Z0-9_-]+$/)
@@ -307,10 +321,11 @@ export interface CheckRunSummary {
   url: string | null;
 }
 
-/** Read-only snapshot of the Git provider's review information. Null means unavailable. */
+/** Read-only provider information enriched with the project's target-branch policy. */
 export interface ChangeRequestDetails {
-  /** Retained even when draft/approval status masks the provider's update requirement. */
-  requiredUpdateStrategy?: "rebase";
+  /** Raw provider update requirement, retained when draft/approval status masks readiness. */
+  updateRequired?: boolean | null;
+  branchUpdatePolicy?: BranchUpdatePolicy;
   source?: {
     repositoryId: string | null;
     isFork: boolean;

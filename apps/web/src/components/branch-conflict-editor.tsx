@@ -216,6 +216,7 @@ export function BranchConflictEditor({
   onChange,
   onRefresh,
   refreshing = false,
+  rebase = false,
 }: {
   file: BranchConflictFile;
   branch: string;
@@ -228,6 +229,7 @@ export function BranchConflictEditor({
   ) => void;
   onRefresh: () => void;
   refreshing?: boolean;
+  rebase?: boolean;
 }) {
   const sections = file.sections;
   const conflicts = sections?.flatMap((section, index) =>
@@ -289,8 +291,14 @@ export function BranchConflictEditor({
                 />
                 <div className="conflict-fragment-choices">
                   {[
-                    { choice: BranchConflictChoice.Ours, label: "Оставить ваш текст" },
-                    { choice: BranchConflictChoice.Theirs, label: `Откатить до ${targetBranch}` },
+                    {
+                      choice: BranchConflictChoice.Ours,
+                      label: rebase ? "Оставить актуальную основу" : "Оставить ваш текст",
+                    },
+                    {
+                      choice: BranchConflictChoice.Theirs,
+                      label: rebase ? "Применить изменения коммита" : `Откатить до ${targetBranch}`,
+                    },
                     { choice: BranchConflictChoice.Manual, label: "Свой текст" },
                   ].map((option) => (
                     <label data-selected={selected?.choice === option.choice} key={option.choice}>
@@ -386,8 +394,12 @@ export function BranchConflictEditor({
           {!legacy && conflicts?.length ? (
             <p className="conflict-document-explanation">
               {remaining
-                ? `Выбранные решения применены. В нерешённых фрагментах (${remaining}) пока показан текст из вашей ветки ${branch}. Остальные изменения объединены автоматически.`
-                : `Все выбранные решения применены. Этот документ будет отправлен в ${branch}.`}
+                ? rebase
+                  ? `В нерешённых фрагментах (${remaining}) пока показана актуальная основа rebase. Остальные изменения объединены автоматически.`
+                  : `Выбранные решения применены. В нерешённых фрагментах (${remaining}) пока показан текст из вашей ветки ${branch}. Остальные изменения объединены автоматически.`
+                : rebase
+                  ? "Все выбранные решения применены. Результат станет частью переносимого коммита; ветка будет отправлена после завершения rebase."
+                  : `Все выбранные решения применены. Этот документ будет отправлен в ${branch}.`}
             </p>
           ) : null}
           {legacy && value.choice === BranchConflictChoice.Manual ? (

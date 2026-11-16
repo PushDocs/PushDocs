@@ -18,6 +18,7 @@ async function unsupportedConflictAction(): Promise<never> {
 }
 
 export {
+  unsupportedConflictAction as cancelRebaseUpdateAction,
   unsupportedConflictAction as inspectReviewConflictsAction,
   unsupportedConflictAction as prepareConflictResolutionAction,
   unsupportedConflictAction as retryConflictResolutionAction,

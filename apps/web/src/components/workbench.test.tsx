@@ -333,7 +333,7 @@ it("keeps text search results open after navigating and saves the previous file 
   expect(screen.getByRole("list").querySelector('[aria-current="page"]')).toBeTruthy();
 });
 
-it("edits multiple search results without repeating the query and refreshes matches after saving", async () => {
+it("edits multiple search results without repeating the query and refreshes matches while typing", async () => {
   for (const file of state.files.slice(0, 2)) file.content += "\nискомое";
   mount();
   await click("Поиск");
@@ -344,8 +344,8 @@ it("edits multiple search results without repeating the query and refreshes matc
   fireEvent.change(screen.getByLabelText("Исходник документа"), {
     target: { value: "# Исправлено" },
   });
-  expect(within(list).getAllByRole("button")).toHaveLength(2);
-  await act(async () => fireEvent.click(within(list).getAllByRole("button")[1] as HTMLElement));
+  expect(within(list).getAllByRole("button")).toHaveLength(1);
+  await act(async () => fireEvent.click(within(list).getByRole("button")));
   expect(state.files[0]?.content).toBe("# Исправлено");
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Второй\nискомое");
   expect(input).toHaveProperty("value", "искомое");
@@ -358,6 +358,57 @@ it("edits multiple search results without repeating the query and refreshes matc
   );
   expect(within(list).getAllByRole("button")).toHaveLength(1);
 });
+
+it.each([false, true])(
+  "searches the current buffer after autosave fails (unloaded articles: %s)",
+  async (unloaded) => {
+    if (unloaded)
+      state.files = state.files.map((file) =>
+        file.path === "docs/b.md" ? { ...file, content: "", loaded: false } : file,
+      );
+    mount();
+    await act(async () => {});
+    const text = "# Локально\n\nНовая фраза";
+    fireEvent.change(screen.getByLabelText("Исходник документа"), { target: { value: text } });
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await tick();
+    expect(screen.getByRole("alert").textContent).toContain("Нет связи");
+    expect(state.files[0]?.content).toBe("# Первый\n<Widget />");
+    expect(readDraft(draftKey("project", "main", "docs/a.mdx"))?.text).toBe(text);
+
+    await click("Поиск");
+    const input = screen.getByLabelText("Поиск файлов");
+    fireEvent.change(input, { target: { value: "Новая фраза" } });
+    const list = screen.getByRole("list", { name: "Результаты поиска" });
+    expect(within(list).getByRole("button").textContent).toContain("docs/a.mdx:3");
+    await tick(180);
+    expect(within(list).getByRole("button").textContent).toContain("Новая фраза");
+    fireEvent.change(input, { target: { value: "Первый" } });
+    expect(within(list).queryByRole("button")).toBeNull();
+  },
+);
+
+it.each(["# Первый\n<Widget />", "Earlier base"])(
+  "searches a local backup only after explicit restoration (base: %s)",
+  async (base) => {
+    writeDraft(
+      draftKey("project", "main", "docs/a.mdx"),
+      "# Черновик\nВосстановленная фраза",
+      base,
+    );
+    mount();
+    await click("Поиск");
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), {
+      target: { value: "Восстановленная фраза" },
+    });
+    const list = screen.getByRole("list", { name: "Результаты поиска" });
+    expect(within(list).queryByRole("button")).toBeNull();
+    await click("Восстановить текст");
+    expect(within(list).getByRole("button").textContent).toContain("docs/a.mdx:2");
+    expect(within(list).getByRole("button").textContent).toContain("Восстановленная фраза");
+    expect(requests).toHaveLength(0);
+  },
+);
 
 it("keeps the search and current article when saving before navigation fails", async () => {
   mount();

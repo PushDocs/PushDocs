@@ -181,7 +181,7 @@ const initialMigration: Migration = {
         id uuid primary key default gen_random_uuid(),
         kind text not null,
         payload jsonb not null,
-        status text not null default 'queued' check (status in ('queued', 'running', 'done', 'failed')),
+        status text not null default 'queued' constraint jobs_status_check check (status in ('queued', 'running', 'done', 'failed')),
         attempts integer not null default 0,
         available_at timestamptz not null default now(),
         locked_at timestamptz,
@@ -597,6 +597,20 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
               await sql`alter table branch_contexts
                 drop column last_commit_at,
                 drop column remote_head_sha`.execute(database);
+            },
+          },
+          "023-rebase-resolution": {
+            async up(database) {
+              await sql`alter table jobs drop constraint jobs_status_check`.execute(database);
+              await sql`alter table jobs add constraint jobs_status_check
+                check (status in ('queued', 'running', 'done', 'failed', 'needs_resolution'))`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table jobs drop constraint jobs_status_check`.execute(database);
+              await sql`alter table jobs add constraint jobs_status_check
+                check (status in ('queued', 'running', 'done', 'failed'))`.execute(database);
             },
           },
           "005-preview-builds": {

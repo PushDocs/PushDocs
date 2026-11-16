@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import {
   BranchUpdateStrategy,
   type ChangeRequestDetails,
@@ -6,6 +7,7 @@ import {
 } from "@pushdocs/contracts";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { resolvedBranchUpdatePolicy } from "../../../../tests/fixtures/branch-update-policy";
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), status: vi.fn(), refresh: vi.fn() }));
 vi.mock("@/app/actions", () => ({
@@ -54,6 +56,10 @@ function mount(
       provider_url: "https://git.example/review/42",
       details: {
         ...details("blocked", reason),
+        branchUpdatePolicy: resolvedBranchUpdatePolicy({
+          strategy:
+            reason === "need_rebase" ? BranchUpdateStrategy.Rebase : BranchUpdateStrategy.Merge,
+        }),
         source: { isFork: false, repositoryId: "main", branchUrl: null },
       },
     },
@@ -68,8 +74,8 @@ it.each([
   ["blocked", "conflict", false],
   ["blocked", "dirty", false],
   ["blocked", "not_approved", false],
-  ["ready", "behind", false],
-  ["checking", "need_rebase", false],
+  ["ready", "behind", true],
+  ["checking", "need_rebase", true],
   ["unknown", null, false],
 ] as const)("identifies an actionable update for %s/%s", (state, reason, expected) => {
   expect(needsBranchUpdate(details(state, reason))).toBe(expected);
@@ -78,6 +84,27 @@ it.each([
 it("does not infer branch updates from unavailable provider data", () => {
   expect(needsBranchUpdate(null)).toBe(false);
   expect(needsBranchUpdate(undefined)).toBe(false);
+});
+
+it("blocks an update until a legacy review has a resolved policy", () => {
+  mount("need_rebase", {
+    review: {
+      id: "review",
+      head_sha: "sha",
+      source_branch: "docs/task",
+      target_branch: "release",
+      provider_url: "https://git.example/review/42",
+      details: {
+        ...details("blocked", "need_rebase"),
+        source: { isFork: false, repositoryId: "main", branchUrl: null },
+      },
+    },
+  });
+  expect(screen.getByRole("alert").textContent).toContain("определить способ обновления");
+  expect(
+    (screen.getByRole("button", { name: "Обновить ветку" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(mocks.start).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -104,7 +131,12 @@ it.each([
     expect(mocks.start).toHaveBeenCalledWith({
       projectId: "project",
       branch: "docs/fix #1",
-      updateReview: { reviewId: "review", expectedHeadSha: "sha" },
+      updateReview: {
+        reviewId: "review",
+        expectedHeadSha: "sha",
+        expectedStrategy:
+          reason === "need_rebase" ? BranchUpdateStrategy.Rebase : BranchUpdateStrategy.Merge,
+      },
     });
     expect(mocks.refresh).toHaveBeenCalledOnce();
     expect(screen.getByRole("status").textContent).toContain("Ветка обновлена и отправлена в Git");
@@ -230,7 +262,11 @@ it("can reconcile an existing update after MR data disappears, even with newer l
   await act(async () => {});
   expect(mocks.start).toHaveBeenCalledWith(
     expect.objectContaining({
-      updateReview: { reviewId: "review", expectedHeadSha: "original-head" },
+      updateReview: {
+        reviewId: "review",
+        expectedHeadSha: "original-head",
+        expectedStrategy: BranchUpdateStrategy.Rebase,
+      },
     }),
   );
   expect(mocks.refresh).toHaveBeenCalledOnce();

@@ -218,3 +218,24 @@ it("uses one poller and rejects duplicate submits while a start request is pendi
   await act(async () => started?.("job"));
   expect(mocks.status).toHaveBeenCalledOnce();
 });
+
+it("reuses an in-flight status request when returning to the operation", async () => {
+  vi.useFakeTimers();
+  let finish: ((job: { status: string }) => void) | undefined;
+  mocks.start.mockResolvedValue("job");
+  mocks.status
+    .mockReturnValueOnce(new Promise((resolve) => (finish = resolve)))
+    .mockResolvedValue({ status: "done" });
+  const view = render(<GitOperation projectId="project" branch="main" reviewsOnly />);
+  fireEvent.click(screen.getByRole("button"));
+  await act(async () => {});
+  view.unmount();
+  render(<GitOperation projectId="project" branch="stable" reviewsOnly />);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+  await act(async () => finish?.({ status: "running" }));
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.status).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("status").textContent).toBe("Состояние PR / MR обновлено");
+});

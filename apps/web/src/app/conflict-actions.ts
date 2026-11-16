@@ -1,6 +1,12 @@
 "use server";
 
-import { branchConflictRepositoryKey, branchConflictResolutionSchema } from "@pushdocs/contracts";
+import {
+  branchConflictRepositoryKey,
+  branchConflictResolutionSchema,
+  branchUpdateLimits,
+  branchUpdateWaitingStatus,
+} from "@pushdocs/contracts";
+import { loadBranchUpdatePolicy } from "@pushdocs/providers";
 import { z } from "zod";
 import { providerForConnection } from "@/lib/provider";
 import { repository, requireUser } from "@/lib/server";
@@ -35,6 +41,8 @@ export async function inspectReviewConflictsAction(
   refresh = false,
 ) {
   const { user, store, review } = await conflictReview(projectId, reviewId);
+  const active = await store.getActiveReviewBranchUpdate(projectId, review.source_branch);
+  if (active?.status === branchUpdateWaitingStatus) return active.id;
   const target = await store.getProjectSyncTarget(projectId);
   if (!target) throw new Error("Подключение проекта недоступно");
   const provider = await providerForConnection(target);
@@ -54,7 +62,15 @@ export async function inspectReviewConflictsAction(
     },
     refresh
       ? undefined
-      : { parentSha, sourceSha, repositoryKey: branchConflictRepositoryKey(target) },
+      : {
+          parentSha,
+          sourceSha,
+          repositoryKey: branchConflictRepositoryKey(target),
+          updatePolicy: await loadBranchUpdatePolicy(provider, target.provider_repository_id, {
+            rootPath: target.root_path,
+            targetSha: sourceSha,
+          }),
+        },
   );
 }
 
@@ -62,8 +78,17 @@ export async function submitConflictResolutionAction(
   projectId: string,
   inspectionId: string,
   files: unknown,
+  conflictId?: string,
 ) {
   const user = await requireUser();
+  if (conflictId)
+    return repository().continueRebaseUpdate({
+      projectId,
+      operationId: inspectionId,
+      conflictId: z.string().min(1).max(branchUpdateLimits.conflictIdChars).parse(conflictId),
+      files: branchConflictResolutionSchema.parse(files),
+      userId: user.id,
+    });
   return repository().queueConflictMerge({
     projectId,
     inspectionId,
@@ -72,7 +97,24 @@ export async function submitConflictResolutionAction(
   });
 }
 
+export async function cancelRebaseUpdateAction(
+  projectId: string,
+  operationId: string,
+  conflictId: string,
+) {
+  const user = await requireUser();
+  await repository().cancelRebaseUpdate(
+    projectId,
+    operationId,
+    z.string().min(1).max(branchUpdateLimits.conflictIdChars).parse(conflictId),
+    user.id,
+  );
+}
+
 export async function retryConflictResolutionAction(projectId: string, jobId: string) {
   const user = await requireUser();
+  const job = await repository().getProjectJob(projectId, jobId);
+  if (job?.branchUpdateOperation)
+    return repository().retryReviewBranchUpdate(projectId, jobId, user.id);
   return repository().retryConflictMerge(projectId, jobId, user.id);
 }

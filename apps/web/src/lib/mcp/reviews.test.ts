@@ -1,10 +1,12 @@
 import {
+  BranchUpdateStrategy,
   branchConflictCache,
   branchConflictRepositoryKey,
   ConflictReportMode,
 } from "@pushdocs/contracts";
 import { type PushDocsRepository, RevisionConflictError } from "@pushdocs/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolvedBranchUpdatePolicy } from "../../../../../tests/fixtures/branch-update-policy";
 import { ProjectService } from "../project-service";
 import { providerForConnection } from "../provider";
 import { ReviewService } from "./reviews";
@@ -30,6 +32,7 @@ function fixture() {
     url: "https://gitlab.test/g/docs/-/merge_requests/814",
   };
   const snapshot = {
+    updatePolicy: resolvedBranchUpdatePolicy({ targetSha: "stable-sha" }),
     branch: review.sourceBranch,
     sourceBranch: review.targetBranch,
     parentSha: "branch-sha",
@@ -73,9 +76,12 @@ function fixture() {
       { name: review.sourceBranch, sha: "branch-sha" },
       { name: "stable", sha: "stable-sha" },
     ]),
-    getRepository: vi.fn().mockResolvedValue({ webUrl: "https://gitlab.test/g/docs" }),
+    getRepository: vi.fn().mockResolvedValue({
+      webUrl: "https://gitlab.test/g/docs",
+      defaultUpdateStrategy: resolvedBranchUpdatePolicy().strategy,
+    }),
     readBinary: vi.fn(),
-    readFile: vi.fn(),
+    readFile: vi.fn().mockResolvedValue(JSON.stringify({ version: 1 })),
   };
   vi.mocked(providerForConnection).mockResolvedValue(provider as never);
   const store = {
@@ -85,6 +91,8 @@ function fixture() {
     upsertOpenReview: vi.fn().mockResolvedValue({ id: "stored-review" }),
     queueReviewBranchUpdate: vi.fn().mockResolvedValue("update-job"),
     enqueueConflictInspection: vi.fn().mockResolvedValue("inspection"),
+    getActiveReviewBranchUpdate: vi.fn(),
+    continueRebaseUpdate: vi.fn().mockResolvedValue("rebase-job"),
     queueConflictMerge: vi.fn().mockResolvedValue("resolve-job"),
     getBranchConflictBlockers: vi.fn().mockResolvedValue({ paths: [], busy: false }),
     getMcpConflictInspection: vi.fn().mockResolvedValue({
@@ -106,6 +114,91 @@ beforeEach(() => {
 });
 
 describe("live review operations", () => {
+  it("reports the actual paused commit and continues the same rebase using an exact conflict token", async () => {
+    const f = fixture();
+    const snapshot = {
+      ...f.snapshot,
+      updatePolicy: resolvedBranchUpdatePolicy({
+        strategy: BranchUpdateStrategy.Rebase,
+        targetSha: "stable-sha",
+      }),
+      rebase: {
+        operationId: "rebase-job",
+        conflictId: "exact-token",
+        commitSha: "original-commit",
+        currentParentSha: "local-rebased",
+        originalParentSha: "original-parent",
+        index: 2,
+        total: 3,
+        title: "Edit",
+      },
+    };
+    f.store.getMcpConflictInspection.mockResolvedValue({
+      status: "needs_resolution",
+      snapshot,
+      externalReviewId: "814",
+      targetKey: branchConflictRepositoryKey(target),
+    });
+    f.store.getActiveReviewBranchUpdate.mockResolvedValue({
+      id: "rebase-job",
+      status: "needs_resolution",
+    } as never);
+    f.provider.getRepository.mockResolvedValue({
+      webUrl: "https://gitlab.test/g/docs",
+      defaultUpdateStrategy: BranchUpdateStrategy.Rebase,
+    });
+    expect(
+      await f.service.inspect({ projectId: "project", reviewId: "814", refresh: true }),
+    ).toMatchObject({
+      operationId: "rebase-job",
+      comparisonKind: "rebase",
+      status: "needs_resolution",
+    });
+    expect(f.store.enqueueConflictInspection).not.toHaveBeenCalled();
+    const report = await f.service.report({
+      projectId: "project",
+      inspectionId: "rebase-job",
+      mode: ConflictReportMode.Editorial,
+      offset: 0,
+      limit: 10,
+      fragmentOffset: 0,
+    });
+    expect(report).toMatchObject({
+      comparisonKind: "rebase",
+      resolutionSupported: true,
+      rebase: { conflictId: "exact-token" },
+    });
+    expect(report.items[0]?.links).toMatchObject({
+      branch: null,
+      target: expect.stringContaining("/original-commit/"),
+    });
+    const input = {
+      projectId: "project",
+      inspectionId: "rebase-job",
+      files: [
+        { path: "docs/a.md", choice: "target" as const },
+        { path: "static/img/a.gif", choice: "branch" as const },
+      ],
+    };
+    await expect(f.service.resolve(input)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    await expect(f.service.resolve({ ...input, conflictId: "old-token" })).rejects.toMatchObject({
+      code: "REVISION_CONFLICT",
+    });
+    expect(await f.service.resolve({ ...input, conflictId: "exact-token" })).toMatchObject({
+      operationId: "rebase-job",
+      status: "queued",
+    });
+    expect(f.store.continueRebaseUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "rebase-job",
+        conflictId: "exact-token",
+        oauthGrantId: "grant",
+      }),
+    );
+    expect(f.store.queueConflictMerge).not.toHaveBeenCalled();
+    expect(f.provider.readBinary).not.toHaveBeenCalled();
+  });
+
   it.each(["update", "resolve"] as const)(
     "returns editor advice for saved changes blocking %s",
     async (operation) => {
@@ -209,6 +302,7 @@ describe("live review operations", () => {
       projectId: "project",
       reviewId: "stored-review",
       expectedHeadSha: "branch-sha",
+      expectedStrategy: "merge",
       userId: "user",
       oauthGrantId: "grant",
       refreshFromTarget: true,
@@ -333,10 +427,7 @@ describe("report and resolution safety", () => {
         files: [{ path: "docs/a.md", choice: "ours" }],
       }),
     );
-    f.provider.getChangeRequestDetails.mockResolvedValue({
-      source: { isFork: false },
-      readiness: { state: "blocked", reason: "need_rebase" },
-    } as never);
+    f.provider.getRepository.mockResolvedValue({ defaultUpdateStrategy: "rebase" } as never);
     await expect(
       f.service.resolve({ projectId: "project", inspectionId: "inspection", files: [] }),
     ).rejects.toMatchObject({ code: "REBASE_RESOLUTION_UNSUPPORTED" });

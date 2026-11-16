@@ -4,11 +4,15 @@ import {
   branchConflictRepositoryKey,
   branchConflictResolutionSchema,
   branchUpdateStrategy,
+  branchUpdateWaitingStatus,
   type ConflictReportMode,
   conflictReportLimits,
+  conflictResolutionPolicyError,
   isConflictMediaFile,
+  sameBranchUpdatePolicy,
 } from "@pushdocs/contracts";
 import { McpError, RevisionConflictError } from "@pushdocs/db";
+import { loadBranchUpdatePolicy } from "@pushdocs/providers";
 import type { z } from "zod";
 import type { ProjectService } from "../project-service";
 import { providerForConnection } from "../provider";
@@ -85,6 +89,14 @@ export class ReviewService {
         "PR / MR branches changed. Reload the open reviews.",
         409,
       );
+    details.branchUpdatePolicy = await loadBranchUpdatePolicy(
+      provider,
+      target.provider_repository_id,
+      {
+        rootPath: target.root_path,
+        targetSha: incoming.sha,
+      },
+    );
     return { target, provider, review, details, branches, branch, incoming };
   }
 
@@ -184,6 +196,7 @@ export class ReviewService {
         projectId: input.projectId,
         reviewId: stored.id,
         expectedHeadSha: input.expectedHeadSha,
+        expectedStrategy: branchUpdateStrategy(live.details) ?? undefined,
         userId: this.service.userId,
         oauthGrantId: this.grantId,
         refreshFromTarget: true,
@@ -194,13 +207,26 @@ export class ReviewService {
       branch: live.review.sourceBranch,
       targetBranch: live.review.targetBranch,
       reviewUrl: live.review.url,
-      strategy: branchUpdateStrategy(live.details) ?? BranchUpdateStrategy.Merge,
+      strategy: branchUpdateStrategy(live.details),
     };
   }
 
   async inspect(input: { projectId: string; reviewId: string; refresh: boolean }) {
     const live = await this.liveReview(input.projectId, input.reviewId);
     const stored = await this.remember(input.projectId, live);
+    const active = await this.service.store.getActiveReviewBranchUpdate(
+      input.projectId,
+      live.review.sourceBranch,
+    );
+    if (active?.status === branchUpdateWaitingStatus)
+      return {
+        operationId: active.id,
+        inspectionId: active.id,
+        status: active.status,
+        branch: live.review.sourceBranch,
+        comparisonKind: "rebase",
+        mediaPolicy: "metadata_only",
+      };
     const operationId = await this.service.store.enqueueConflictInspection(
       {
         projectId: input.projectId,
@@ -218,6 +244,7 @@ export class ReviewService {
             parentSha: live.branch.sha,
             sourceSha: live.incoming.sha,
             repositoryKey: branchConflictRepositoryKey(live.target),
+            updatePolicy: live.details.branchUpdatePolicy,
           },
     );
     return {
@@ -235,7 +262,7 @@ export class ReviewService {
     const inspection = await this.service.store.getMcpConflictInspection(projectId, inspectionId);
     if (!inspection)
       throw new McpError("OPERATION_NOT_FOUND", "Conflict inspection not found.", 404);
-    if (inspection.status !== "done" || !inspection.snapshot)
+    if (!["done", branchUpdateWaitingStatus].includes(inspection.status) || !inspection.snapshot)
       throw new McpError(
         "INSPECTION_NOT_READY",
         "Poll get_operation_status until the inspection completes.",
@@ -279,24 +306,29 @@ export class ReviewService {
       : (await this.service.store.listChangeRequests(input.projectId)).find(
           (review) => review.external_id === externalReviewId,
         );
-    const details = review
-      ? await provider.getChangeRequestDetails(target.provider_repository_id, externalReviewId)
-      : null;
-    const rebase = branchUpdateStrategy(details) === BranchUpdateStrategy.Rebase;
+    const targetSha = branches.find((branch) => branch.name === snapshot.sourceBranch)?.sha;
+    const policy =
+      review && targetSha
+        ? await loadBranchUpdatePolicy(provider, target.provider_repository_id, {
+            rootPath: target.root_path,
+            targetSha,
+            repository,
+          })
+        : undefined;
+    const policyError = conflictResolutionPolicyError({ ...snapshot, updatePolicy: policy });
     const stale =
       !review ||
       review.sourceBranch !== snapshot.branch ||
       review.targetBranch !== snapshot.sourceBranch ||
       branches.find((branch) => branch.name === snapshot.branch)?.sha !== snapshot.parentSha ||
-      branches.find((branch) => branch.name === snapshot.sourceBranch)?.sha !== snapshot.sourceSha;
+      targetSha !== snapshot.sourceSha ||
+      !sameBranchUpdatePolicy(snapshot.updatePolicy, policy);
     return {
       inspectionId: input.inspectionId,
       stale,
       resolutionSupported:
-        !!snapshot.files.length && !stale && !rebase && !snapshot.unsupportedReason,
-      limitation: rebase
-        ? "This is a merge comparison of branch tips. It cannot describe or resolve conflicts encountered while replaying individual rebase commits. Do not silently switch a required rebase to merge."
-        : null,
+        !!snapshot.files.length && !stale && !policyError && !snapshot.unsupportedReason,
+      limitation: policyError,
       ...conflictReport(
         snapshot,
         {
@@ -348,6 +380,7 @@ export class ReviewService {
   async resolve(input: {
     projectId: string;
     inspectionId: string;
+    conflictId?: string;
     files: z.infer<typeof conflictResolutionInput>;
   }) {
     await this.service.store.requireProjectAccess(
@@ -358,6 +391,12 @@ export class ReviewService {
     const inspection = await this.inspection(input.projectId, input.inspectionId);
     const live = await this.liveReview(input.projectId, inspection.externalReviewId);
     const snapshot = inspection.snapshot;
+    if (snapshot.rebase && input.conflictId !== snapshot.rebase.conflictId)
+      throw new McpError(
+        "REVISION_CONFLICT",
+        "Read the current rebase report and pass its conflictId before resolving this commit.",
+        409,
+      );
     if (
       live.review.sourceBranch !== snapshot.branch ||
       live.review.targetBranch !== snapshot.sourceBranch ||
@@ -369,12 +408,39 @@ export class ReviewService {
         "Branches changed after analysis. Repeat conflict inspection.",
         409,
       );
-    if (branchUpdateStrategy(live.details) === BranchUpdateStrategy.Rebase)
+    const policyError = conflictResolutionPolicyError({
+      ...snapshot,
+      updatePolicy: live.details.branchUpdatePolicy,
+    });
+    if (policyError)
       throw new McpError(
-        "REBASE_RESOLUTION_UNSUPPORTED",
-        "A required rebase cannot be resolved using a merge snapshot.",
+        branchUpdateStrategy(live.details) === BranchUpdateStrategy.Rebase
+          ? "REBASE_RESOLUTION_UNSUPPORTED"
+          : "UPDATE_POLICY_UNAVAILABLE",
+        policyError,
+      );
+    if (!sameBranchUpdatePolicy(snapshot.updatePolicy, live.details.branchUpdatePolicy))
+      throw new McpError(
+        "REVISION_CONFLICT",
+        "Update policy changed. Repeat conflict inspection.",
+        409,
       );
     const files = branchConflictResolutionSchema.parse(conflictResolutions(snapshot, input.files));
+    if (snapshot.rebase)
+      return {
+        status: "queued",
+        operationId: await this.service.store.continueRebaseUpdate({
+          projectId: input.projectId,
+          operationId: input.inspectionId,
+          conflictId: snapshot.rebase.conflictId,
+          files,
+          userId: this.service.userId,
+          oauthGrantId: this.grantId,
+        }),
+        reviewUrl: live.review.url,
+        branch: snapshot.branch,
+        affectedFiles: files.map((file) => file.path),
+      };
     const result = await this.queueWithAdvice(input.projectId, snapshot.branch, () =>
       this.service.store.queueConflictMerge({
         projectId: input.projectId,

@@ -1,11 +1,18 @@
 import { branchConflictRepositoryKey } from "@pushdocs/contracts";
 import { beforeEach, expect, it, vi } from "vitest";
+import { resolvedBranchUpdatePolicy } from "../../../../tests/fixtures/branch-update-policy";
 
 const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   reviews: vi.fn(),
   target: vi.fn(),
   enqueue: vi.fn(),
+  active: vi.fn(),
+  job: vi.fn(),
+  continueRebase: vi.fn(),
+  retryUpdate: vi.fn(),
+  retryMerge: vi.fn(),
+  cancel: vi.fn(),
   provider: vi.fn(),
   branches: vi.fn(),
 }));
@@ -16,11 +23,22 @@ vi.mock("@/lib/server", () => ({
     listChangeRequests: mocks.reviews,
     getProjectSyncTarget: mocks.target,
     enqueueConflictInspection: mocks.enqueue,
+    getActiveReviewBranchUpdate: mocks.active,
+    getProjectJob: mocks.job,
+    continueRebaseUpdate: mocks.continueRebase,
+    retryReviewBranchUpdate: mocks.retryUpdate,
+    retryConflictMerge: mocks.retryMerge,
+    cancelRebaseUpdate: mocks.cancel,
   }),
 }));
 vi.mock("@/lib/provider", () => ({ providerForConnection: mocks.provider }));
 
-import { inspectReviewConflictsAction } from "./conflict-actions";
+import {
+  cancelRebaseUpdateAction,
+  inspectReviewConflictsAction,
+  retryConflictResolutionAction,
+  submitConflictResolutionAction,
+} from "./conflict-actions";
 
 const target = {
   connection_id: "connection",
@@ -43,7 +61,13 @@ beforeEach(() => {
     },
   ]);
   mocks.target.mockResolvedValue(target);
-  mocks.provider.mockResolvedValue({ listBranches: mocks.branches });
+  mocks.provider.mockResolvedValue({
+    listBranches: mocks.branches,
+    getRepository: vi
+      .fn()
+      .mockResolvedValue({ defaultUpdateStrategy: resolvedBranchUpdatePolicy().strategy }),
+    readFile: vi.fn().mockResolvedValue(JSON.stringify({ version: 1 })),
+  });
   mocks.branches.mockResolvedValue([
     { name: "task", sha: "source" },
     { name: "main", sha: "target" },
@@ -59,8 +83,40 @@ it("validates both live heads before using a cached result", async () => {
       parentSha: "source",
       sourceSha: "target",
       repositoryKey: branchConflictRepositoryKey(target),
+      updatePolicy: resolvedBranchUpdatePolicy({ configPath: "docs/.pushdocs/config.json" }),
     },
   );
+});
+
+it("opens and continues the same paused rebase with the exact conflict token", async () => {
+  mocks.active.mockResolvedValue({ id: "rebase", status: "needs_resolution" });
+  mocks.continueRebase.mockResolvedValue("rebase");
+  expect(await inspectReviewConflictsAction("project", "review", true)).toBe("rebase");
+  expect(mocks.provider).not.toHaveBeenCalled();
+  expect(
+    await submitConflictResolutionAction(
+      "project",
+      "rebase",
+      [{ path: "docs/a.md", choice: "ours" }],
+      "token",
+    ),
+  ).toBe("rebase");
+  expect(mocks.continueRebase).toHaveBeenCalledWith({
+    projectId: "project",
+    operationId: "rebase",
+    conflictId: "token",
+    userId: "user",
+    files: [{ path: "docs/a.md", choice: "ours" }],
+  });
+  await cancelRebaseUpdateAction("project", "rebase", "token");
+  expect(mocks.cancel).toHaveBeenCalledWith("project", "rebase", "token", "user");
+});
+
+it("recovers a branch update even when it failed before its first conflict pause", async () => {
+  mocks.job.mockResolvedValue({ status: "failed", branchUpdateOperation: true });
+  await retryConflictResolutionAction("project", "update");
+  expect(mocks.retryUpdate).toHaveBeenCalledWith("project", "update", "user");
+  expect(mocks.retryMerge).not.toHaveBeenCalled();
 });
 
 it("allows an explicit retry to bypass the completed cache", async () => {

@@ -921,7 +921,7 @@ describe("read-only review details", () => {
     ).getChangeRequestDetails("42", "7");
     expect(details).toMatchObject({
       readiness: { reason: "draft_status" },
-      requiredUpdateStrategy: "rebase",
+      updateRequired: true,
     });
   });
 
@@ -933,6 +933,7 @@ describe("read-only review details", () => {
         "1",
       ),
     ).toEqual({
+      updateRequired: null,
       source: null,
       headSha: null,
       readiness: { state: "unknown", reason: null },

@@ -4,6 +4,7 @@ import type { GitTransferProgress } from "@pushdocs/contracts";
 import { useEffect, useSyncExternalStore } from "react";
 import { gitOperationStatusAction, synchronizeBranchAction } from "@/app/actions";
 import { gitOperationPollingDelays } from "./git-operation-timing";
+import { PollingLifecycle } from "./polling-lifecycle";
 
 export enum BranchImportState {
   Starting = "starting",
@@ -22,7 +23,10 @@ export type BranchImportTask = BranchImportRequest & {
   notice?: string;
   updatedAt: number;
 };
-type Entry = { task: BranchImportTask; timer?: ReturnType<typeof setTimeout> };
+type Entry = {
+  task: BranchImportTask;
+  poller?: PollingLifecycle<Awaited<ReturnType<typeof gitOperationStatusAction>>>;
+};
 const cache = { entries: 20, completedMs: 60_000 } as const;
 const emptyTasks: BranchImportTask[] = [];
 const serverSnapshot = () => emptyTasks;
@@ -80,14 +84,16 @@ class BranchImportStore {
         return;
       if (!retry && Date.now() - updatedAt < cache.completedMs) return;
     }
-    clearTimeout(previous?.timer);
+    previous?.poller?.dispose();
     for (const [oldKey, entry] of this.entries) {
       if (this.entries.size < cache.entries) break;
       if (
         entry.task.state === BranchImportState.Done ||
         entry.task.state === BranchImportState.Failed
-      )
+      ) {
+        entry.poller?.dispose();
         this.entries.delete(oldKey);
+      }
     }
     const entry: Entry = {
       task: {
@@ -112,7 +118,7 @@ class BranchImportStore {
           updatedAt: Date.now(),
         };
         this.notify();
-        if (jobId) void this.poll(key, entry);
+        if (jobId) this.poll(entry, jobId);
       })
       .catch(() => {
         if (this.entries.get(key) !== entry) return;
@@ -126,41 +132,41 @@ class BranchImportStore {
       });
   }
 
-  private async poll(key: string, entry: Entry) {
-    const { projectId, jobId, branch } = entry.task;
-    if (!jobId) return;
-    let delay: number = gitOperationPollingDelays.normal;
-    try {
-      const job = await gitOperationStatusAction(projectId, jobId);
-      if (this.entries.get(key) !== entry) return;
-      entry.task = {
-        ...entry.task,
-        state: job.status as BranchImportState,
-        transfer:
-          job.status === "queued" ? undefined : (job.transferProgress ?? entry.task.transfer),
-        error: job.status === "failed" ? branchImportError(branch, job.last_error) : undefined,
-        notice: undefined,
-        updatedAt: Date.now(),
-      };
-    } catch {
-      if (this.entries.get(key) !== entry) return;
-      entry.task = { ...entry.task, notice: "Нет связи с сервером. Проверяем загрузку…" };
-      delay = gitOperationPollingDelays.retry;
-    }
-    this.notify();
-    if (
-      this.entries.get(key) === entry &&
-      (entry.task.state === BranchImportState.Queued ||
-        entry.task.state === BranchImportState.Running)
-    )
-      entry.timer = setTimeout(() => void this.poll(key, entry), delay);
+  private poll(entry: Entry, jobId: string) {
+    const { projectId, branch } = entry.task;
+    entry.poller = new PollingLifecycle({
+      request: () => gitOperationStatusAction(projectId, jobId),
+      onResult: (job) => {
+        entry.task = {
+          ...entry.task,
+          state: job.status as BranchImportState,
+          transfer:
+            job.status === "queued" ? undefined : (job.transferProgress ?? entry.task.transfer),
+          error: job.status === "failed" ? branchImportError(branch, job.last_error) : undefined,
+          notice: undefined,
+          updatedAt: Date.now(),
+        };
+        this.notify();
+        return (
+          entry.task.state === BranchImportState.Queued ||
+          entry.task.state === BranchImportState.Running
+        );
+      },
+      onError: () => {
+        entry.task = { ...entry.task, notice: "Нет связи с сервером. Проверяем загрузку…" };
+        this.notify();
+        return true;
+      },
+      delays: gitOperationPollingDelays,
+    });
+    entry.poller.start();
   }
 
   clear() {
     clearTimeout(this.cleanupTimer);
     this.connection = undefined;
     this.ownerId = undefined;
-    for (const entry of this.entries.values()) clearTimeout(entry.timer);
+    for (const entry of this.entries.values()) entry.poller?.dispose();
     this.entries.clear();
     this.notify();
   }
