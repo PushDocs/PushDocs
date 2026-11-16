@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  BranchConflictChoice,
+  type BranchConflictSnapshot,
+  BranchUpdateStrategy,
+  branchConflictCache,
+  branchUpdateLimits,
+} from "@pushdocs/contracts";
 import { Kysely, PostgresDialect, sql } from "kysely";
 import type { Pool } from "pg";
 import { DataType, newDb } from "pg-mem";
@@ -140,6 +147,560 @@ async function synchronizedProject() {
 
 afterEach(async () => {
   await database?.destroy();
+});
+
+async function reviewUpdateFixture() {
+  const fixture = await synchronizedProject();
+  await repository.replaceImportedDocuments(fixture.projectId, "docs/task", "task-head", [
+    {
+      path: "docs/intro.md",
+      content: "# Task\n",
+      contentHash: "task-hash",
+      title: "Task",
+      locale: "default",
+      version: "current",
+    },
+  ]);
+  await repository.replaceChangeRequests(fixture.projectId, [
+    {
+      externalId: "42",
+      headSha: "task-head",
+      sourceBranch: "docs/task",
+      targetBranch: "main",
+      state: "open",
+      title: "Task",
+      url: "https://git.example/review/42",
+      checks: [],
+      details: {
+        headSha: "task-head",
+        readiness: { state: "blocked", reason: "need_rebase" },
+        source: { isFork: false, repositoryId: "42", branchUrl: null },
+        labels: [],
+        approvals: null,
+        comments: [],
+        commentsComplete: true,
+      },
+    },
+  ]);
+  const review = (await repository.listChangeRequests(fixture.projectId, "open"))[0];
+  if (!review) throw new Error("Missing review fixture");
+  const input = {
+    projectId: fixture.projectId,
+    reviewId: review.id,
+    expectedHeadSha: "task-head",
+    userId: fixture.operatorId,
+  };
+  const prepared = {
+    version: branchUpdateLimits.version,
+    strategy: BranchUpdateStrategy.Rebase,
+    branch: "docs/task",
+    sourceBranch: "main",
+    parentSha: "task-head",
+    sourceSha: "head-1",
+    sha: "updated-head",
+    commits: [{ originalSha: "task-head", sha: "updated-head" }],
+    targetKey: "identity",
+  };
+  return { ...fixture, review, input, prepared };
+}
+
+describe("review branch updates", () => {
+  it("allows an explicit MCP update despite ready/draft status and binds its OAuth grant", async () => {
+    const fixture = await reviewUpdateFixture();
+    await database
+      .updateTable("change_requests")
+      .set({
+        details: JSON.stringify({
+          ...fixture.review.details,
+          readiness: { state: "ready", reason: null },
+        }),
+      })
+      .where("id", "=", fixture.review.id)
+      .execute();
+    const id = await repository.queueReviewBranchUpdate({
+      ...fixture.input,
+      refreshFromTarget: true,
+      oauthGrantId: "grant",
+    });
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(job.payload).toMatchObject({
+      strategy: "merge",
+      refreshFromTarget: true,
+      oauthGrantId: "grant",
+    });
+    expect((await repository.getMcpOperation(fixture.projectId, id))?.result).not.toHaveProperty(
+      "updateOutcome",
+    );
+  });
+
+  it("refreshes one review without closing unrelated reviews", async () => {
+    const fixture = await reviewUpdateFixture();
+    await repository.upsertOpenReview({
+      projectId: fixture.projectId,
+      externalId: "new",
+      headSha: "new-head",
+      sourceBranch: "docs/another",
+      targetBranch: "stable",
+      title: "Another",
+      url: "https://git.test/review/new",
+      details: fixture.review.details as NonNullable<typeof fixture.review.details>,
+    });
+    expect(
+      (await repository.listChangeRequests(fixture.projectId, "open"))
+        .map((review) => review.external_id)
+        .sort(),
+    ).toEqual(["42", "new"]);
+  });
+
+  it("requires branch write permission", async () => {
+    const fixture = await reviewUpdateFixture();
+    const reader = await repository.createUser({
+      displayName: "Reader",
+      email: "reader@example.test",
+      passwordHash: "hash",
+    });
+    await database
+      .insertInto("project_memberships")
+      .values({ project_id: fixture.projectId, role: "reader", user_id: reader.id })
+      .execute();
+    await expect(
+      repository.queueReviewBranchUpdate({ ...fixture.input, userId: reader.id }),
+    ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
+
+  it("requires active uploads to finish before reserving the source branch", async () => {
+    const fixture = await reviewUpdateFixture();
+    await repository.beginUpload({
+      projectId: fixture.projectId,
+      branch: "docs/task",
+      userId: fixture.operatorId,
+      expectedRevision: 0,
+    });
+    await expect(repository.queueReviewBranchUpdate(fixture.input)).rejects.toThrow(
+      "текущие изменения",
+    );
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
+  it("uses the stored review branches and strategy and reuses a queued operation", async () => {
+    const fixture = await reviewUpdateFixture();
+    const jobId = await repository.queueReviewBranchUpdate(fixture.input);
+    expect(await repository.queueReviewBranchUpdate(fixture.input)).toBe(jobId);
+    const job = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", jobId)
+      .executeTakeFirstOrThrow();
+    expect(job).toMatchObject({
+      kind: "branch.update",
+      payload: {
+        branch: "docs/task",
+        sourceBranch: "main",
+        expectedHeadSha: "task-head",
+        strategy: "rebase",
+        externalReviewId: "42",
+      },
+    });
+    expect(
+      (await repository.getBranchConflictBlockers(fixture.projectId, "docs/task")).mergeJobId,
+    ).toBe(jobId);
+    await expect(
+      repository.stageFiles({
+        projectId: fixture.projectId,
+        branch: "docs/task",
+        userId: fixture.operatorId,
+        expectedRevision: 0,
+        files: [{ path: "docs/intro.md", content: "Concurrent edit" }],
+      }),
+    ).rejects.toThrow("Ветка обновляется");
+    await expect(
+      repository.beginUpload({
+        projectId: fixture.projectId,
+        branch: "docs/task",
+        userId: fixture.operatorId,
+        expectedRevision: 0,
+      }),
+    ).rejects.toThrow("Ветка обновляется");
+  });
+
+  it("does not reserve a branch with saved drafts or an active upload", async () => {
+    const fixture = await reviewUpdateFixture();
+    await repository.saveDraft({
+      projectId: fixture.projectId,
+      branch: "docs/task",
+      userId: fixture.operatorId,
+      expectedRevision: 0,
+      path: "docs/intro.md",
+      content: "Draft",
+      baseCommitSha: "task-head",
+    });
+    await expect(repository.queueReviewBranchUpdate(fixture.input)).rejects.toThrow(
+      "текущие изменения",
+    );
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
+
+  it.each(["fork", "stale", "protected", "unavailable"])(
+    "rejects %s branch updates",
+    async (kind) => {
+      const fixture = await reviewUpdateFixture();
+      if (kind === "fork")
+        await database
+          .updateTable("change_requests")
+          .set({
+            details: {
+              ...fixture.review.details,
+              source: { isFork: true, repositoryId: "fork", branchUrl: null },
+            },
+          } as never)
+          .where("id", "=", fixture.review.id)
+          .execute();
+      if (kind === "protected")
+        await repository.ensureBranches(fixture.projectId, [
+          { name: "docs/task", sha: "task-head", protected: true },
+        ]);
+      const input = {
+        ...fixture.input,
+        ...(kind === "stale" ? { expectedHeadSha: "outdated" } : {}),
+        ...(kind === "unavailable" ? { reviewId: randomUUID() } : {}),
+      };
+      await expect(repository.queueReviewBranchUpdate(input)).rejects.toThrow();
+      expect(
+        await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+      ).toBeUndefined();
+    },
+  );
+
+  it("retains the original journal and reservation after uncertain push, then resumes the same job", async () => {
+    const fixture = await reviewUpdateFixture();
+    const id = await repository.queueReviewBranchUpdate(fixture.input);
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 1 })
+      .where("id", "=", id)
+      .execute();
+    await repository.savePreparedBranchUpdate(id, 1, fixture.prepared);
+    await expect(repository.savePreparedBranchUpdate(id, 2, fixture.prepared)).rejects.toThrow(
+      "другому обработчику",
+    );
+    await expect(
+      repository.savePreparedBranchUpdate(id, 1, { ...fixture.prepared, sha: "different" }),
+    ).rejects.toThrow("уже сохранён");
+    await repository.failJob(id, "Lost response", false, 1);
+    expect((await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"))?.id).toBe(
+      id,
+    );
+    await database
+      .updateTable("change_requests")
+      .set({ state: "merged", head_sha: null, details: null })
+      .where("id", "=", fixture.review.id)
+      .execute();
+    expect(await repository.queueReviewBranchUpdate(fixture.input)).toBe(id);
+    const restored = await database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(restored).toMatchObject({
+      status: "queued",
+      payload: { preparedUpdate: fixture.prepared },
+    });
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 2 })
+      .where("id", "=", id)
+      .execute();
+    await repository.releaseBranchMergeReservation(id, 2);
+    await repository.failJob(id, "Definite lease rejection", false, 2);
+    expect(
+      await repository.getActiveReviewBranchUpdate(fixture.projectId, "docs/task"),
+    ).toBeUndefined();
+  });
+
+  it("lists attention from cached readiness and retains failed updates even after readiness clears", async () => {
+    const fixture = await reviewUpdateFixture();
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
+    const id = await repository.queueReviewBranchUpdate(fixture.input);
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 1 })
+      .where("id", "=", id)
+      .execute();
+    await repository.savePreparedBranchUpdate(id, 1, fixture.prepared);
+    await repository.failJob(id, "Lost response", false, 1);
+    await database
+      .updateTable("change_requests")
+      .set({
+        details: { ...fixture.review.details, readiness: { state: "ready", reason: null } },
+      } as never)
+      .where("id", "=", fixture.review.id)
+      .execute();
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
+    expect(await repository.queueReviewBranchUpdate(fixture.input)).toBe(id);
+  });
+});
+
+async function inspectedConflict() {
+  const fixture = await synchronizedProject();
+  const snapshot: BranchConflictSnapshot = {
+    inspectionVersion: branchConflictCache.version,
+    branch: "main",
+    sourceBranch: "stable",
+    parentSha: "head-1",
+    sourceSha: "target",
+    files: [
+      {
+        path: "docs/intro.md",
+        kind: "text",
+        baseContent: "Base",
+        oursContent: "Ours",
+        theirsContent: "Theirs",
+        oursExists: true,
+        theirsExists: true,
+      },
+    ],
+  };
+  const inspectionId = await repository.enqueueConflictInspection({
+    projectId: fixture.projectId,
+    reviewId: "review",
+    externalReviewId: "1",
+    branch: "main",
+    sourceBranch: "stable",
+    userId: fixture.operatorId,
+  });
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 1 })
+    .where("id", "=", inspectionId)
+    .execute();
+  await repository.saveConflictInspection(inspectionId, 1, snapshot, "repository-identity");
+  await repository.completeJob(inspectionId, 1);
+  return {
+    ...fixture,
+    inspectionId,
+    snapshot,
+    files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Ours }],
+  };
+}
+
+describe("branch conflict resolution reservation", () => {
+  it("exposes numeric download progress and ignores progress from a superseded worker", async () => {
+    const fixture = await projectFixture();
+    const jobId = await repository.enqueueReviewsSync(fixture.projectId);
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 2 })
+      .where("id", "=", jobId)
+      .execute();
+    await repository.updateJobProgress(jobId, 2, "comparing-conflicts", undefined, {
+      receivedBytes: 12_500_000,
+      totalBytes: null,
+    });
+    await repository.updateJobProgress(jobId, 1, "fetching-conflicts", undefined, {
+      receivedBytes: 0,
+      totalBytes: null,
+    });
+    expect(await repository.getProjectJob(fixture.projectId, jobId)).toMatchObject({
+      progress: "comparing-conflicts",
+      progressAttempt: 2,
+      transferProgress: { receivedBytes: 12_500_000, totalBytes: null },
+    });
+  });
+  it.each(["same", "source", "target", "repository", "version"])(
+    "reuses completed inspections only for matching heads and identity: %s",
+    async (changed) => {
+      const fixture = await inspectedConflict();
+      if (changed === "version")
+        await database
+          .updateTable("jobs")
+          .set({
+            payload: {
+              targetKey: "repository-identity",
+              conflictSnapshot: { ...fixture.snapshot, inspectionVersion: 1 },
+              projectId: fixture.projectId,
+              reviewId: "review",
+              branch: "main",
+              sourceBranch: "stable",
+            },
+          })
+          .where("id", "=", fixture.inspectionId)
+          .execute();
+      const id = await repository.enqueueConflictInspection(
+        {
+          projectId: fixture.projectId,
+          reviewId: "review",
+          externalReviewId: "1",
+          branch: "main",
+          sourceBranch: "stable",
+          userId: fixture.operatorId,
+        },
+        {
+          parentSha: changed === "source" ? "new-parent" : "head-1",
+          sourceSha: changed === "target" ? "new-target" : "target",
+          repositoryKey: changed === "repository" ? "other-repository" : "repository-identity",
+        },
+      );
+      if (changed === "same") expect(id).toBe(fixture.inspectionId);
+      else expect(id).not.toBe(fixture.inspectionId);
+    },
+  );
+  it("reuses a running inspection when the same review is opened again", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      reviewId: "review",
+      externalReviewId: "1",
+      branch: "main",
+      sourceBranch: "stable",
+      userId: fixture.operatorId,
+    };
+    expect(await repository.enqueueConflictInspection(input)).toBe(
+      await repository.enqueueConflictInspection(input),
+    );
+  });
+  it("reserves only a clean branch and blocks every draft and upload entry point", async () => {
+    const fixture = await inspectedConflict();
+    const input = {
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      expectedRevision: 0,
+    };
+    const emptyChange = await repository.stageFiles({
+      ...input,
+      files: [{ path: "docs/intro.md", revert: true }],
+    });
+    const jobId = await repository.queueConflictMerge({ ...fixture, userId: fixture.operatorId });
+    expect((await repository.getBranchConflictBlockers(fixture.projectId, "main")).mergeJobId).toBe(
+      jobId,
+    );
+    const writes = [
+      () =>
+        repository.queueChangeSetSubmission({
+          ...input,
+          changeSetId: emptyChange.changeSetId,
+          createReview: false,
+          message: "Submit",
+        }),
+      () =>
+        repository.retryChangeSetSubmission(
+          emptyChange.changeSetId,
+          fixture.projectId,
+          fixture.operatorId,
+        ),
+      () =>
+        repository.stageFiles({ ...input, files: [{ path: "docs/intro.md", content: "Other" }] }),
+      () =>
+        repository.saveDraft({
+          ...input,
+          baseCommitSha: "head-1",
+          path: "docs/intro.md",
+          content: "Other",
+        }),
+      () => repository.createDraftDocument({ ...input, path: "docs/new.md", content: "New" }),
+      () => repository.exchangeDocument({ ...input, path: "docs/intro.md" }),
+      () => repository.beginUpload(input),
+      () =>
+        repository.recordAttachment({
+          ...input,
+          repositoryPath: "static/a.png",
+          originalName: "a.png",
+          mediaType: "image/png",
+          storageKey: "file",
+          sha256: "hash",
+          sizeBytes: 4,
+        }),
+    ];
+    for (const write of writes) await expect(write()).rejects.toThrow("решение конфликтов");
+    await expect(
+      repository.queueConflictMerge({ ...fixture, userId: fixture.operatorId }),
+    ).rejects.toThrow("текущие изменения");
+    expect(
+      (await repository.getProjectJob(fixture.projectId, fixture.inspectionId))?.conflictSnapshot,
+    ).toEqual(fixture.snapshot);
+    expect(await repository.getProjectJob(randomUUID(), fixture.inspectionId)).toBeUndefined();
+  });
+
+  it("rejects dirty or uploading branches without reserving them", async () => {
+    const fixture = await inspectedConflict();
+    await repository.saveDraft({
+      projectId: fixture.projectId,
+      branch: "main",
+      userId: fixture.operatorId,
+      path: "docs/intro.md",
+      content: "Draft",
+      expectedRevision: 0,
+      baseCommitSha: "head-1",
+    });
+    await expect(
+      repository.queueConflictMerge({ ...fixture, userId: fixture.operatorId }),
+    ).rejects.toThrow("текущие изменения");
+    expect(await repository.getActiveConflictMerge(fixture.projectId, "main")).toBeUndefined();
+    expect((await repository.getBranchConflictBlockers(fixture.projectId, "main")).paths).toEqual([
+      "docs/intro.md",
+    ]);
+  });
+
+  it("keeps an uncertain prepared push reserved and retries the same job", async () => {
+    const fixture = await inspectedConflict();
+    const jobId = await repository.queueConflictMerge({ ...fixture, userId: fixture.operatorId });
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 1 })
+      .where("id", "=", jobId)
+      .execute();
+    const prepared = {
+      branch: "main",
+      parentSha: "head-1",
+      sourceSha: "target",
+      sha: "merged",
+      targetKey: "repository-identity",
+    };
+    await repository.savePreparedBranchMerge(jobId, 1, prepared);
+    await repository.failJob(jobId, "Lost acknowledgment", false, 1);
+    expect(
+      (await repository.getBranchConflictBlockers(fixture.projectId, "main")).mergeFailed,
+    ).toBe(true);
+    expect(
+      await repository.retryConflictMerge(
+        fixture.projectId,
+        jobId,
+        fixture.operatorId,
+        "renewed-grant",
+      ),
+    ).toBe(jobId);
+    expect(
+      (
+        await database
+          .selectFrom("jobs")
+          .select("payload")
+          .where("id", "=", jobId)
+          .executeTakeFirstOrThrow()
+      ).payload,
+    ).toMatchObject({
+      preparedMerge: prepared,
+      userId: fixture.operatorId,
+      oauthGrantId: "renewed-grant",
+    });
+    await database
+      .updateTable("jobs")
+      .set({ status: "running", attempts: 2 })
+      .where("id", "=", jobId)
+      .execute();
+    await repository.releaseBranchMergeReservation(jobId, 2);
+    await repository.failJob(jobId, "Definite lease rejection", false, 2);
+    expect(await repository.getActiveConflictMerge(fixture.projectId, "main")).toBeUndefined();
+  });
 });
 
 describe("project and connection administration", () => {
@@ -959,6 +1520,172 @@ describe("connections and projects", () => {
 });
 
 describe("branches and imported documents", () => {
+  it("refreshes menu metadata without changing the imported snapshot or its freshness", async () => {
+    const fixture = await synchronizedProject();
+    const before = (await repository.getBranchState(fixture.projectId, "main")).branch;
+    await repository.ensureBranches(fixture.projectId, [
+      { name: "main", sha: "remote-head", lastCommitAt: "2026-11-15T12:00:00Z" },
+    ]);
+    const after = (await repository.getBranchState(fixture.projectId, "main")).branch;
+    expect(after).toMatchObject({
+      head_commit_sha: before.head_commit_sha,
+      base_commit_sha: before.base_commit_sha,
+      updated_at: before.updated_at,
+      remote_head_sha: "remote-head",
+      last_commit_at: new Date("2026-11-15T12:00:00Z"),
+    });
+    await repository.ensureBranches(fixture.projectId, [{ name: "main", sha: "undated-head" }]);
+    expect((await repository.getBranchState(fixture.projectId, "main")).branch).toMatchObject({
+      remote_head_sha: "undated-head",
+      last_commit_at: null,
+    });
+  });
+
+  it("summarizes local reviews with open priority and numeric review numbers", async () => {
+    const fixture = await projectFixture();
+    await repository.ensureBranches(fixture.projectId, [
+      { name: "merged", sha: "head", lastCommitAt: "2026-11-15T12:00:00Z" },
+      { name: "open", sha: "head" },
+      { name: "closed", sha: "head" },
+      { name: "fork", sha: "head" },
+      { name: "unknown", sha: "head" },
+    ]);
+    const review = {
+      checks: [],
+      externalId: "1",
+      headSha: "head",
+      sourceBranch: "merged",
+      sourceBranchIsLocal: true,
+      state: "merged" as const,
+      targetBranch: "main",
+      title: "Docs",
+      url: "https://gitlab.test/mr/1",
+    };
+    await repository.replaceChangeRequests(fixture.projectId, [
+      review,
+      { ...review, sourceBranch: "open", externalId: "2", state: "open" },
+      { ...review, sourceBranch: "open", externalId: "3", state: "open" },
+      { ...review, sourceBranch: "open", externalId: "4" },
+      { ...review, sourceBranch: "closed", externalId: "9" },
+      { ...review, sourceBranch: "closed", externalId: "10", state: "closed" },
+      { ...review, sourceBranch: "fork", externalId: "11", sourceBranchIsLocal: false },
+      { ...review, sourceBranch: "unknown", externalId: "12", sourceBranchIsLocal: null },
+    ]);
+    const summaries = await repository.listBranchSummaries(fixture.projectId);
+    expect(summaries).toHaveLength(5);
+    expect(summaries[0]).toMatchObject({
+      full_ref: "merged",
+      lastCommitAt: "2026-11-15T12:00:00.000Z",
+      review: { externalId: "1", state: "merged" },
+      isCompleted: true,
+    });
+    expect(summaries.find((branch) => branch.full_ref === "open")).toMatchObject({
+      review: { externalId: "3", state: "open" },
+      isCompleted: false,
+    });
+    expect(summaries.find((branch) => branch.full_ref === "closed")).toMatchObject({
+      review: { externalId: "10", state: "closed" },
+      isCompleted: true,
+    });
+    for (const name of ["fork", "unknown"]) {
+      expect(summaries.find((branch) => branch.full_ref === name)).toMatchObject({
+        review: null,
+        isCompleted: false,
+      });
+    }
+    expect(await repository.listBranchSummaries(randomUUID())).toEqual([]);
+  });
+
+  it("keeps local work and operations visible for merged and closed reviews", async () => {
+    const fixture = await projectFixture();
+    const names = [
+      "clean",
+      "new-head",
+      "draft",
+      "upload",
+      "operation",
+      "empty",
+      "published",
+      "old-import",
+      "closed",
+      "closed-draft",
+      "closed-operation",
+    ];
+    await repository.ensureBranches(
+      fixture.projectId,
+      names.map((name) => ({ name, sha: "merged-head" })),
+    );
+    await repository.replaceChangeRequests(
+      fixture.projectId,
+      names.map((name, index) => ({
+        checks: [],
+        externalId: String(index + 1),
+        headSha: name.startsWith("closed") ? null : "merged-head",
+        sourceBranch: name,
+        sourceBranchIsLocal: true,
+        state: name.startsWith("closed") ? "closed" : "merged",
+        targetBranch: "main",
+        title: name,
+        url: "url",
+      })),
+    );
+    await repository.ensureBranches(fixture.projectId, [{ name: "new-head", sha: "new-head" }]);
+    await repository.enqueueBranchSync(fixture.projectId, "operation");
+    await repository.enqueueBranchSync(fixture.projectId, "closed-operation");
+    for (const name of ["draft", "upload", "empty", "closed-draft"]) {
+      const { branch } = await repository.getBranchState(fixture.projectId, name);
+      const changeSet = await database
+        .insertInto("change_sets")
+        .values({
+          project_id: fixture.projectId,
+          branch_context_id: branch.id,
+          base_commit_sha: "merged-head",
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      if (name === "draft" || name === "closed-draft")
+        await database
+          .insertInto("draft_files")
+          .values({
+            change_set_id: changeSet.id,
+            author_user_id: fixture.operatorId,
+            path: "docs/a.md",
+            operation: "add",
+            content: "New work",
+          })
+          .execute();
+      if (name === "upload")
+        await repository.recordAttachment({
+          projectId: fixture.projectId,
+          branch: name,
+          mediaType: "image/png",
+          originalName: "a.png",
+          repositoryPath: "static/a.png",
+          sha256: "digest",
+          sizeBytes: 100,
+          storageKey: "key",
+        });
+    }
+    const published = (await repository.getBranchState(fixture.projectId, "published")).branch;
+    await database
+      .updateTable("branch_contexts")
+      .set({ head_commit_sha: "locally-published-head", remote_head_sha: "locally-published-head" })
+      .where("id", "=", published.id)
+      .execute();
+    const oldImport = (await repository.getBranchState(fixture.projectId, "old-import")).branch;
+    await database
+      .updateTable("branch_contexts")
+      .set({ head_commit_sha: "older-imported-head" })
+      .where("id", "=", oldImport.id)
+      .execute();
+    const summaries = await repository.listBranchSummaries(fixture.projectId);
+    for (const name of names) {
+      expect(summaries.find((branch) => branch.full_ref === name)?.isCompleted, name).toBe(
+        ["clean", "empty", "old-import", "closed"].includes(name),
+      );
+    }
+  });
+
   it("replaces a branch snapshot and updates an existing branch", async () => {
     const fixture = await synchronizedProject();
     await expect(repository.listBranches(fixture.projectId)).resolves.toEqual([
@@ -1132,6 +1859,74 @@ describe("branches and imported documents", () => {
         .where(sql<string>`payload->>'projectId'`, "=", fixture.projectId)
         .executeTakeFirstOrThrow(),
     ).resolves.toMatchObject({ count: 1 });
+  });
+
+  it.each(["queued", "running"] as const)(
+    "resumes the %s initial branch import",
+    async (status) => {
+      const fixture = await projectFixture();
+      const first = await repository.ensureBranchImport(fixture.projectId, " docs/new ");
+      await database
+        .updateTable("jobs")
+        .set({ status })
+        .where("id", "=", first as string)
+        .execute();
+      expect(await repository.ensureBranchImport(fixture.projectId, "docs/new")).toBe(first);
+      expect(await repository.enqueueBranchSyncIfStale(fixture.projectId, "docs/new")).toBe(first);
+      const other = await repository.ensureBranchImport(fixture.projectId, "docs/other");
+      expect(other).not.toBe(first);
+      const jobs = await database
+        .selectFrom("jobs")
+        .select("payload")
+        .where("kind", "=", "branch.sync")
+        .execute();
+      expect(jobs).toHaveLength(2);
+      expect(jobs[0]?.payload).toEqual({ projectId: fixture.projectId, branch: "docs/new" });
+    },
+  );
+
+  it("does not reimport a completed empty branch when an old loading page reconnects", async () => {
+    const fixture = await projectFixture();
+    const jobId = await repository.ensureBranchImport(fixture.projectId, "docs/empty");
+    await repository.replaceImportedDocuments(fixture.projectId, "docs/empty", "sha", [], []);
+    await repository.completeJob(jobId as string);
+    expect(await repository.ensureBranchImport(fixture.projectId, "docs/empty")).toBeNull();
+    const manual = await repository.enqueueBranchSync(fixture.projectId, "docs/empty");
+    expect(manual).not.toBe(jobId);
+    expect(await repository.ensureBranchImport(fixture.projectId, "docs/empty")).toBe(manual);
+  });
+
+  it("can retry a failed initial import and preserves explicit refresh requests", async () => {
+    const fixture = await projectFixture();
+    const failed = await repository.ensureBranchImport(fixture.projectId, "docs/new");
+    await database
+      .updateTable("jobs")
+      .set({ status: "failed" })
+      .where("id", "=", failed as string)
+      .execute();
+    const retry = await repository.ensureBranchImport(fixture.projectId, "docs/new");
+    expect(retry).not.toBe(failed);
+    const manual = await repository.enqueueBranchSync(fixture.projectId, "docs/new");
+    expect(manual).not.toBe(retry);
+  });
+
+  it("adopts the import performed by an active branch creation", async () => {
+    const fixture = await projectFixture();
+    const jobId = await repository.enqueueBranchCreation({
+      projectId: fixture.projectId,
+      branch: "docs/new",
+      sourceBranch: "main",
+      sourceSha: "sha",
+      userId: fixture.operatorId,
+    });
+    expect(await repository.ensureBranchImport(fixture.projectId, "docs/new")).toBe(jobId);
+    expect(await repository.enqueueBranchSyncIfStale(fixture.projectId, "docs/new")).toBe(jobId);
+    const jobs = await database
+      .selectFrom("jobs")
+      .select("id")
+      .where("kind", "=", "branch.sync")
+      .execute();
+    expect(jobs).toHaveLength(0);
   });
 
   it("detects components and lets administrators replace their definitions", async () => {
@@ -1308,6 +2103,135 @@ describe("drafts and comments", () => {
 });
 
 describe("reviews and checks", () => {
+  it("preserves cached reviews when upgrading a database that requires a head SHA", async () => {
+    const fixture = await projectFixture();
+    const review = {
+      checks: [],
+      externalId: "7",
+      headSha: "old-head",
+      sourceBranch: "docs/old",
+      state: "open" as const,
+      targetBranch: "stable",
+      title: "Old MR",
+      url: "https://gitlab.test/group/docs/-/merge_requests/7",
+    };
+    await repository.replaceChangeRequests(fixture.projectId, [review]);
+    const branch = await repository.ensureBranch(fixture.projectId, "docs/old", "old-head");
+    await sql`alter table branch_contexts drop column last_commit_at, drop column remote_head_sha`.execute(
+      database,
+    );
+    await sql`alter table change_requests drop column source_branch_is_local`.execute(database);
+    await sql`alter table change_requests alter column head_sha set not null`.execute(database);
+    await sql`delete from kysely_migration where name in ('021-nullable-review-head-sha', '022-branch-menu-metadata')`.execute(
+      database,
+    );
+
+    await migrateToLatest(database);
+
+    expect((await repository.getBranchState(fixture.projectId, "docs/old")).branch).toMatchObject({
+      id: branch.id,
+      head_commit_sha: "old-head",
+      remote_head_sha: "old-head",
+      last_commit_at: null,
+    });
+    await repository.ensureBranches(fixture.projectId, [{ name: "main", sha: "main-head" }]);
+    await repository.replaceChangeRequests(fixture.projectId, [
+      { ...review, state: "merged", sourceBranchIsLocal: true },
+    ]);
+    expect(
+      (await repository.listBranchSummaries(fixture.projectId)).find(
+        (summary) => summary.full_ref === "docs/old",
+      ),
+    ).toMatchObject({ isCompleted: true });
+    await repository.replaceChangeRequests(fixture.projectId, [review]);
+    expect(await repository.listChangeRequests(fixture.projectId, "open")).toEqual([
+      expect.objectContaining({ external_id: "7", head_sha: "old-head" }),
+    ]);
+    await repository.replaceChangeRequests(fixture.projectId, [
+      { ...review, headSha: null, state: "closed" },
+    ]);
+    expect(await repository.listChangeRequests(fixture.projectId, "open")).toEqual([]);
+    expect(await repository.listChangeRequests(fixture.projectId, "closed")).toEqual([
+      expect.objectContaining({ external_id: "7", head_sha: null }),
+    ]);
+  });
+
+  it.each(["closed", "merged"] as const)(
+    "updates a cached open review to %s when GitLab no longer returns its SHA",
+    async (state) => {
+      const fixture = await projectFixture();
+      const initial = {
+        checks: [
+          {
+            conclusion: "success" as const,
+            durationMs: 1000,
+            id: "old-preview",
+            name: "preview:deploy",
+            required: false,
+            url: "https://preview.test/7",
+          },
+        ],
+        externalId: "7",
+        headSha: "old-head",
+        sourceBranch: "docs/old",
+        state: "open" as const,
+        targetBranch: "stable",
+        title: "Old MR",
+        url: "https://gitlab.test/group/docs/-/merge_requests/7",
+      };
+      await repository.replaceChangeRequests(fixture.projectId, [initial]);
+      const cached = (await repository.listChangeRequests(fixture.projectId, "open"))[0];
+      const snapshot = [
+        { ...initial, checks: [], headSha: null, state },
+        { ...initial, externalId: "11", checks: [], headSha: null, state },
+        { ...initial, externalId: "20", checks: [], headSha: "current-head" },
+      ];
+
+      await repository.replaceChangeRequests(fixture.projectId, snapshot);
+      await repository.replaceChangeRequests(fixture.projectId, snapshot);
+
+      expect(await repository.listChangeRequests(fixture.projectId, "open")).toEqual([
+        expect.objectContaining({ external_id: "20", head_sha: "current-head" }),
+      ]);
+      expect(await repository.listChangeRequests(fixture.projectId, state)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: cached?.id, external_id: "7", head_sha: null, state }),
+          expect.objectContaining({ external_id: "11", head_sha: null, state }),
+        ]),
+      );
+      expect(await repository.listChangeRequests(fixture.projectId)).toHaveLength(3);
+      expect(await repository.listChecks(cached?.id ?? "")).toEqual([]);
+    },
+  );
+
+  it("clears old checks when an open review loses its head SHA", async () => {
+    const fixture = await projectFixture();
+    const review = {
+      checks: [
+        {
+          conclusion: "success" as const,
+          durationMs: null,
+          id: "old-preview",
+          name: "preview:deploy",
+          required: false,
+          url: null,
+        },
+      ],
+      externalId: "7",
+      headSha: "old-head",
+      sourceBranch: "docs/update",
+      state: "open" as const,
+      targetBranch: "stable",
+      title: "Docs",
+      url: "https://gitlab.test/group/docs/-/merge_requests/7",
+    };
+    await repository.replaceChangeRequests(fixture.projectId, [review]);
+    await repository.replaceChangeRequests(fixture.projectId, [{ ...review, headSha: null }]);
+    const stored = (await repository.listChangeRequests(fixture.projectId, "open"))[0];
+    expect(stored).toMatchObject({ external_id: "7", head_sha: null });
+    expect(await repository.listChecks(stored?.id ?? "")).toEqual([]);
+  });
+
   it("replaces provider reviews and their checks", async () => {
     const fixture = await projectFixture();
     await repository.replaceChangeRequests(fixture.projectId, [
@@ -1638,6 +2562,7 @@ describe("attachments and submissions", () => {
       commitUrl: "url",
     });
     const state = await repository.listWorkingFiles(fixture.projectId, "main");
+    expect(state.branch).toMatchObject({ remote_head_sha: "head-2", last_commit_at: null });
     expect(state.files.find((file) => file.path === "docs/intro.md")).toMatchObject({
       content: "# Published",
       baseContent: "# Published",

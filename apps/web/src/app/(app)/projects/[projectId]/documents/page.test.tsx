@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   context: vi.fn(),
   workingFile: vi.fn(),
   attachments: vi.fn(),
+  review: vi.fn(),
 }));
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
@@ -17,17 +18,20 @@ vi.mock("@/lib/server", () => ({
       defaultBranch: "stable",
       name: "Docs",
       role: "editor",
+      provider: "gitlab",
     }),
     listBranches: mocks.branches,
     hasImportedBranch: mocks.imported,
     listProjectComponents: async () => [],
     listAttachmentsForChangeSet: mocks.attachments,
     getWorkingFile: mocks.workingFile,
+    findOpenChangeRequestByBranch: mocks.review,
   }),
 }));
 vi.mock("@/lib/workbench", () => ({ localWorkbenchIndexContext: mocks.context }));
 vi.mock("@/components/workbench", () => ({ Workbench: () => null }));
 vi.mock("@/components/branch-import", () => ({ BranchImport: () => null }));
+vi.mock("@/components/branch-conflicts", () => ({ DocumentBranchConflicts: () => null }));
 
 import { BranchImport } from "@/components/branch-import";
 import { LivePreviewButton } from "@/components/live-preview-button";
@@ -57,6 +61,7 @@ beforeEach(() => {
     { change_set_id: "draft", repository_path: "static/img/new.png" },
   ]);
   mocks.imported.mockResolvedValue(false);
+  mocks.review.mockResolvedValue(undefined);
 });
 it("starts loading a branch absent from the local catalog", async () => {
   mocks.branches.mockResolvedValue([]);
@@ -72,6 +77,43 @@ it("loads a catalog-only branch instead of opening an empty editor", async () =>
 it("opens a successfully imported empty repository", async () => {
   mocks.imported.mockResolvedValue(true);
   expect((await page()).type).toBe(Workbench);
+});
+
+it.each(["conflict", "dirty", "need_rebase", "behind"])(
+  "keeps %s banners out of the document editor",
+  async (reason) => {
+    mocks.imported.mockResolvedValue(true);
+    mocks.review.mockResolvedValue({
+      id: "review",
+      source_branch: "docs/fix",
+      target_branch: "stable",
+      provider_url: "https://git.example/mr",
+      details: { source: { isFork: false }, readiness: { state: "blocked", reason } },
+    });
+    const view = await page();
+    expect(view.props.branchConflictNotice).toBeUndefined();
+    expect(mocks.review).not.toHaveBeenCalled();
+  },
+);
+
+it("does not add a conflict notice for a mergeable review", async () => {
+  mocks.imported.mockResolvedValue(true);
+  mocks.review.mockResolvedValue({
+    id: "review",
+    details: { readiness: { reason: null } },
+  });
+  expect((await page()).props.branchConflictNotice).toBeUndefined();
+});
+
+it("does not inspect fork conflicts from the document editor", async () => {
+  mocks.imported.mockResolvedValue(true);
+  mocks.review.mockResolvedValue({
+    id: "review",
+    target_branch: "stable",
+    details: { source: { isFork: true }, readiness: { reason: "dirty" } },
+  });
+  expect((await page()).props.branchConflictNotice).toBeUndefined();
+  expect(mocks.review).not.toHaveBeenCalled();
 });
 it("opens existing branch drafts without importing over them", async () => {
   const context = await mocks.context();

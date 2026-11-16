@@ -1,16 +1,17 @@
 "use client";
 
-import { isEditableFile } from "@pushdocs/content/config";
+import { isEditableFile, parseProjectConfig } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import { attachmentSnippet, isMediaFile } from "@pushdocs/content/media";
 import { mediaAssetLocation } from "@pushdocs/content/media-paths";
-import { MediaInsertionMode, type ProjectConfig } from "@pushdocs/contracts";
+import { MediaInsertionMode, type ProjectConfig, projectConfigPaths } from "@pushdocs/contracts";
 import { Select } from "@pushdocs/ui";
 import {
   ArrowRight,
   Bold,
   Check,
   Columns2,
+  FolderOpen,
   Heading2,
   MoreHorizontal,
   Paperclip,
@@ -27,6 +28,7 @@ import {
   startBackgroundBranchSyncAction,
   startGitOperationAction,
 } from "@/app/actions";
+import { defaultFileSearchOptions } from "@/lib/file-search";
 import { AssetVideo } from "./asset-video";
 import { BranchOperations } from "./branch-operations";
 import {
@@ -49,6 +51,7 @@ import {
 import { uploadExplorerFiles } from "./explorer-upload";
 import { FileComments, FileCommentsButton } from "./file-comments";
 import { ExplorerFileIcon, FileExplorer } from "./file-explorer";
+import { useWorkbenchSearch, WorkbenchSidebar } from "./file-search-state";
 import { mergeFileStatuses } from "./file-status";
 import { MediaLibrary } from "./media-library";
 import { MetadataEditor } from "./metadata-editor";
@@ -85,7 +88,6 @@ export interface WorkbenchState {
 }
 type Dialog =
   | "replace"
-  | "search"
   | "folder"
   | "new"
   | "branch"
@@ -106,6 +108,7 @@ export function Workbench({
   initialPath,
   initialPanel,
   headerAction,
+  branchConflictNotice,
   components = [],
   metadataTabEnabled = false,
 }: {
@@ -117,6 +120,7 @@ export function Workbench({
   initialPath?: string;
   initialPanel?: "media" | "branch";
   headerAction?: ReactNode;
+  branchConflictNotice?: ReactNode;
   components?: Array<{ name: string; label: string; snippet: string }>;
   metadataTabEnabled?: boolean;
 }) {
@@ -203,7 +207,31 @@ export function Workbench({
   const [recovery, setRecovery] = useState<LocalDraft>();
   const shared = useRef<CollaborativeDocument | null>(null);
   const [sharedReadyPath, setSharedReadyPath] = useState("");
-  const [searchContent, setSearchContent] = useState(false);
+  const { search, updateSearch } = useWorkbenchSearch(initial.ownerId, projectId, branch);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [focusSearchResult, setFocusSearchResult] = useState(false);
+  useEffect(() => {
+    if (!focusSearchResult) return;
+    textArea.current?.focus();
+    setFocusSearchResult(false);
+  }, [focusSearchResult]);
+  const focusSearch = useCallback(
+    (content?: boolean) => {
+      updateSearch({
+        panel: WorkbenchSidebar.Search,
+        ...(content === undefined ? {} : { content }),
+      });
+      searchInput.current?.focus();
+      searchInput.current?.select();
+    },
+    [updateSearch],
+  );
+  useEffect(() => {
+    if (search.panel === WorkbenchSidebar.Search) {
+      searchInput.current?.focus();
+      searchInput.current?.select();
+    }
+  }, [search.panel]);
   const [jump, setJump] = useState<{ line: number; token: number }>();
   const [closedTabs, setClosedTabs] = useState<string[]>([]);
   const [explorerWidth, setExplorerWidth] = useState(280);
@@ -270,8 +298,10 @@ export function Workbench({
     state.status === "open" &&
     !recovery &&
     !needsMerge;
+  const configWriteDenied = selected === projectConfigPaths.config && state.role !== "admin";
   const readOnly =
     projectReadOnly ||
+    configWriteDenied ||
     !active ||
     !isEditableFile(state.config, selected) ||
     !!recovery ||
@@ -282,14 +312,16 @@ export function Workbench({
     ? "Обновляем ветку из Git. Редактирование станет доступно после завершения операции."
     : state.role === "reader"
       ? "У вас роль читателя. Для редактирования нужна роль редактора."
-      : state.status !== "open"
-        ? "Редактирование станет доступно после завершения отправки или разрешения конфликтов."
-        : saveFailure === "permission"
-          ? "Нет прав на сохранение. Обратитесь к администратору проекта."
-          : (active && !isEditableFile(state.config, selected)) ||
-              (!active && !uploaded && remoteFiles[selected] !== null)
-            ? "Этот файл доступен только для чтения по настройкам проекта."
-            : "";
+      : configWriteDenied
+        ? "Конфигурацию изменяет администратор проекта."
+        : state.status !== "open"
+          ? "Редактирование станет доступно после завершения отправки или разрешения конфликтов."
+          : saveFailure === "permission"
+            ? "Нет прав на сохранение. Обратитесь к администратору проекта."
+            : (active && !isEditableFile(state.config, selected)) ||
+                (!active && !uploaded && remoteFiles[selected] !== null)
+              ? "Этот файл доступен только для чтения по настройкам проекта."
+              : "";
   const explorerPaths = useMemo(
     () => [
       ...new Set([
@@ -618,6 +650,8 @@ export function Workbench({
         expectedRevision: stateRef.current.revision,
         files: [{ path: selected, content: snapshot }],
       });
+      const nextConfig =
+        selected === projectConfigPaths.config ? parseProjectConfig(snapshot) : undefined;
       saved.current = snapshot;
       const currentState = stateRef.current;
       const files = currentState.files.map((file) =>
@@ -633,6 +667,7 @@ export function Workbench({
       );
       const nextState = {
         ...currentState,
+        config: nextConfig ?? currentState.config,
         files,
         revision: typeof result.revision === "number" ? result.revision : currentState.revision + 1,
         changeSetId:
@@ -699,14 +734,13 @@ export function Workbench({
         (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))
       ) {
         event.preventDefault();
-        if (dialog && dialog !== "search") return;
-        setSearchContent(event.key.toLowerCase() === "f");
-        setDialog("search");
+        if (dialog) return;
+        focusSearch(event.key.toLowerCase() === "f");
       }
     };
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
-  }, [dialog]);
+  }, [dialog, focusSearch]);
   useEffect(() => {
     const refresh = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined;
@@ -830,14 +864,7 @@ export function Workbench({
         "button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled)",
       ) ?? []),
     ];
-    if (dialog === "search") {
-      modal.current?.querySelector<HTMLInputElement>('input[aria-label="Поиск файлов"]')?.focus();
-    } else if (
-      dialog === "new" ||
-      dialog === "folder" ||
-      dialog === "rename" ||
-      dialog === "move"
-    ) {
+    if (dialog === "new" || dialog === "folder" || dialog === "rename" || dialog === "move") {
       const input = modal.current?.querySelector<HTMLInputElement>('input[name="path"]');
       input?.focus();
       const value = input?.value ?? "";
@@ -955,7 +982,7 @@ export function Workbench({
     if (state.status !== "open") return "Дождитесь завершения отправки или разрешите конфликты";
     if (fileStatuses.get(path) === "delete") return "Файл уже отмечен для удаления";
     if (action === "replace") return isMediaFile(path) ? "" : "Замена доступна для вложений";
-    if (path === ".pushdocs/config.json" && state.role !== "admin")
+    if (path === projectConfigPaths.config && state.role !== "admin")
       return "Нужна роль администратора";
     return isMediaFile(path) || isEditableFile(state.config, path)
       ? ""
@@ -1065,6 +1092,7 @@ export function Workbench({
   async function refreshSourceBranchForCreation() {
     setNotice(`Обновляем ${branch} перед созданием ветки…`);
     const jobId = await startGitOperationAction({ projectId, branch });
+    if (typeof jobId !== "string") throw new Error(jobId.error);
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline) {
       let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
@@ -1220,7 +1248,8 @@ export function Workbench({
             branch={branch}
             defaultBranch={defaultBranch}
             canMerge={
-              !projectReadOnly &&
+              state.role !== "reader" &&
+              state.status === "open" &&
               !state.branches.find((item) => item.full_ref === branch)?.is_protected
             }
             disabled={busy || mediaBusy || !!recovery || needsMerge}
@@ -1266,75 +1295,96 @@ export function Workbench({
           </Link>
         </div>
       </header>
-      {error ? (
-        <div className="wb-alert" role="alert">
-          {error}
-          {saveFailure !== "permission" ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                try {
-                  if (shared.current) {
-                    await shared.current.sync();
-                    return;
-                  }
-                  const next = await load();
-                  if (needsMerge) {
-                    setMode("diff");
-                    setNotice("Сравните сохранённую версию и ваш текст, затем сохраните итог.");
-                    return;
-                  }
-                  const current = next.files.find((file) => file.path === selected);
-                  if (
-                    saveFailure &&
-                    current &&
-                    current.content !== saved.current &&
-                    current.content !== latest.current
-                  ) {
-                    blocked.current = true;
-                    setNeedsMerge(true);
-                    setMode("diff");
-                    return;
-                  }
-                  setError("");
-                  setSaveFailure(null);
-                  if (current?.content === latest.current) {
-                    saved.current = latest.current;
-                    clearDraft(draftId);
-                  } else if (saveFailure) await save();
-                } catch {
-                  setError(
-                    "Нет связи с сервером. Повторите попытку после восстановления соединения.",
-                  );
-                }
-              }}
-            >
-              {saveFailure ? "Повторить сохранение" : "Перечитать состояние"}
-            </button>
-          ) : null}
-        </div>
+      {branchConflictNotice ? (
+        <div className="wb-branch-conflicts">{branchConflictNotice}</div>
       ) : null}
-      {needsMerge ? (
-        <div className="wb-alert">
-          <p>Автосохранение остановлено, ваш текст сохранён в этом окне.</p>
-          <button
-            type="button"
-            onClick={() => {
-              blocked.current = false;
-              setError("");
-              void save().then((success) => {
-                if (success) {
+      {error || needsMerge ? (
+        <div className="wb-alert wb-save-alert" role="alert">
+          <div className="wb-alert-copy">
+            {needsMerge ? (
+              <>
+                <span>Автосохранение остановлено. Текст остаётся в редакторе.</span>
+                <details className="wb-alert-details">
+                  <summary>Подробнее</summary>
+                  <p>
+                    {error ||
+                      "Сохранённая версия изменилась. Сравните её с вашим текстом перед сохранением итога."}
+                  </p>
+                </details>
+              </>
+            ) : (
+              error
+            )}
+          </div>
+          <div className="wb-alert-actions">
+            {error && saveFailure !== "permission" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
                   try {
-                    sessionStorage.removeItem(`${draftId}:shared`);
-                  } catch {}
-                  setNeedsMerge(false);
-                }
-              });
-            }}
-          >
-            Я объединил версии — сохранить
-          </button>
+                    if (shared.current) {
+                      await shared.current.sync();
+                      return;
+                    }
+                    const next = await load();
+                    if (needsMerge) {
+                      setMode("diff");
+                      setNotice("Сравните сохранённую версию и ваш текст, затем сохраните итог.");
+                      return;
+                    }
+                    const current = next.files.find((file) => file.path === selected);
+                    if (
+                      saveFailure &&
+                      current &&
+                      current.content !== saved.current &&
+                      current.content !== latest.current
+                    ) {
+                      blocked.current = true;
+                      setNeedsMerge(true);
+                      setMode("diff");
+                      return;
+                    }
+                    setError("");
+                    setSaveFailure(null);
+                    if (current?.content === latest.current) {
+                      saved.current = latest.current;
+                      clearDraft(draftId);
+                    } else if (saveFailure) await save();
+                  } catch {
+                    setError(
+                      "Нет связи с сервером. Повторите попытку после восстановления соединения.",
+                    );
+                  }
+                }}
+              >
+                {saveFailure
+                  ? "Повторить сохранение"
+                  : needsMerge
+                    ? "Проверить снова"
+                    : "Перечитать состояние"}
+              </button>
+            ) : null}
+            {needsMerge ? (
+              <button
+                type="button"
+                onClick={() => {
+                  blocked.current = false;
+                  setError("");
+                  void save().then((success) => {
+                    if (success) {
+                      try {
+                        sessionStorage.removeItem(`${draftId}:shared`);
+                      } catch {}
+                      setNeedsMerge(false);
+                    }
+                  });
+                }}
+              >
+                Сохранить итог
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {notice && !(dialog === "branch" && busy) ? (
@@ -1377,109 +1427,160 @@ export function Workbench({
       ) : null}
       <div className="wb-layout">
         <aside className="wb-tree">
-          <button
-            className="wb-quick-open"
-            type="button"
-            onClick={() => {
-              setSearchContent(false);
-              setDialog("search");
-            }}
-          >
-            <Search size={15} /> Найти файл <kbd>⌘/Ctrl P</kbd>
-          </button>
-          <FileExplorer
-            canEdit={(path) =>
-              state.files.some((file) => file.path === path && file.status !== "delete") &&
-              !state.uploads?.some((file) => file.path === path)
-            }
-            actionReason={fileActionReason}
-            onAction={async (action, path) => {
-              if (action === "copy") {
-                try {
-                  await navigator.clipboard.writeText(path);
-                  setNotice("Путь скопирован");
-                } catch {
-                  setNotice(`Путь файла: ${path}`);
-                }
-                return;
-              }
-              if (await openFile(path)) {
-                if (action === "delete") await prepareDelete(path);
-                else if (action === "replace") {
-                  setReplaceAttachment(path);
-                  setMediaMode(MediaInsertionMode.Library);
-                  setDialog("media");
-                } else setDialog(action);
-              }
-            }}
-            storageKey={`pushdocs:folders:${projectId}:${branch}`}
-            paths={explorerPaths}
-            revealDirectory={revealDirectory}
-            selected={selected}
-            statuses={fileStatuses}
-            statusError={statusError}
-            readOnly={projectReadOnly}
-            busy={busy}
-            uploadProgress={uploadProgress}
-            onUpload={async (files, directory) => {
-              /* v8 ignore next -- explorer upload controls are disabled for these guarded states. */
-              if (projectReadOnly || inFlight.current || busy || !(await save())) return;
-              /* v8 ignore next -- protects the microtask-sized race after awaiting save. */
-              if (inFlight.current) return;
-              inFlight.current = true;
-              setBusy(true);
-              try {
-                const result = await uploadExplorerFiles({
-                  files,
-                  directory,
-                  projectId,
-                  branch,
-                  reload: load,
-                  onProgress: setUploadProgress,
-                  onConflict: uploadConflict.ask,
-                });
-                if (result.uploaded.length) {
-                  setRevealDirectory(directory);
-                }
-                setNotice(
-                  result.uploaded.length ? `Загружено файлов: ${result.uploaded.length}` : "",
-                );
-                setError(result.errors.join(". "));
-              } catch (cause) {
-                setNotice(
-                  cause instanceof Error ? cause.message : "Не удалось обновить список файлов",
-                );
-              } finally {
-                inFlight.current = false;
-                setBusy(false);
-                setUploadProgress("");
-              }
-            }}
-            onOpen={(path) => void openFile(path)}
-            onCreate={(kind, directory) => {
-              setCreateDirectory(directory);
-              setDialog(kind);
-            }}
-            onMedia={async () => {
-              if (await save()) {
-                setReplaceAttachment(undefined);
-                setMediaMode(MediaInsertionMode.Library);
-                setDialog("media");
-              }
-            }}
-          />
-          {state.config.templates.length ? (
+          <nav className="wb-sidebar-switch" aria-label="Панель проекта">
             <button
               type="button"
-              disabled={readOnly}
-              onClick={() => {
-                setPlan(null);
-                setDialog("template");
-              }}
+              aria-pressed={search.panel === WorkbenchSidebar.Files}
+              aria-controls="wb-sidebar-files"
+              onClick={() => updateSearch({ panel: WorkbenchSidebar.Files })}
             >
-              Создать по шаблону
+              <FolderOpen aria-hidden size={15} /> Файлы
             </button>
-          ) : null}
+            <button
+              type="button"
+              aria-pressed={search.panel === WorkbenchSidebar.Search}
+              aria-controls="wb-sidebar-search"
+              title="Поиск по проекту (⌘/Ctrl Shift F)"
+              onClick={() => focusSearch()}
+            >
+              <Search aria-hidden size={15} /> Поиск
+            </button>
+          </nav>
+          <div
+            id="wb-sidebar-files"
+            className="wb-sidebar-files"
+            hidden={search.panel !== WorkbenchSidebar.Files}
+          >
+            <FileExplorer
+              canEdit={(path) =>
+                (path !== projectConfigPaths.config || state.role === "admin") &&
+                state.files.some((file) => file.path === path && file.status !== "delete") &&
+                !state.uploads?.some((file) => file.path === path)
+              }
+              actionReason={fileActionReason}
+              onAction={async (action, path) => {
+                if (action === "copy") {
+                  try {
+                    await navigator.clipboard.writeText(path);
+                    setNotice("Путь скопирован");
+                  } catch {
+                    setNotice(`Путь файла: ${path}`);
+                  }
+                  return;
+                }
+                if (await openFile(path)) {
+                  if (action === "delete") await prepareDelete(path);
+                  else if (action === "replace") {
+                    setReplaceAttachment(path);
+                    setMediaMode(MediaInsertionMode.Library);
+                    setDialog("media");
+                  } else setDialog(action);
+                }
+              }}
+              storageKey={`pushdocs:folders:${projectId}:${branch}`}
+              systemDirectories={state.config.fileExplorer.systemDirectories}
+              visibilityStorageKey={`pushdocs:system-directories:${state.ownerId ?? ""}:${projectId}:${branch}`}
+              paths={explorerPaths}
+              revealDirectory={revealDirectory}
+              selected={selected}
+              statuses={fileStatuses}
+              statusError={statusError}
+              readOnly={projectReadOnly}
+              busy={busy}
+              uploadProgress={uploadProgress}
+              onUpload={async (files, directory) => {
+                /* v8 ignore next -- explorer upload controls are disabled for these guarded states. */
+                if (projectReadOnly || inFlight.current || busy || !(await save())) return;
+                /* v8 ignore next -- protects the microtask-sized race after awaiting save. */
+                if (inFlight.current) return;
+                inFlight.current = true;
+                setBusy(true);
+                try {
+                  const result = await uploadExplorerFiles({
+                    files,
+                    directory,
+                    projectId,
+                    branch,
+                    reload: load,
+                    onProgress: setUploadProgress,
+                    onConflict: uploadConflict.ask,
+                  });
+                  if (result.uploaded.length) {
+                    setRevealDirectory(directory);
+                  }
+                  setNotice(
+                    result.uploaded.length ? `Загружено файлов: ${result.uploaded.length}` : "",
+                  );
+                  setError(result.errors.join(". "));
+                } catch (cause) {
+                  setNotice(
+                    cause instanceof Error ? cause.message : "Не удалось обновить список файлов",
+                  );
+                } finally {
+                  inFlight.current = false;
+                  setBusy(false);
+                  setUploadProgress("");
+                }
+              }}
+              onOpen={(path) => void openFile(path)}
+              onCreate={(kind, directory) => {
+                setCreateDirectory(directory);
+                setDialog(kind);
+              }}
+              onMedia={async () => {
+                if (await save()) {
+                  setReplaceAttachment(undefined);
+                  setMediaMode(MediaInsertionMode.Library);
+                  setDialog("media");
+                }
+              }}
+            />
+            {state.config.templates.length ? (
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => {
+                  setPlan(null);
+                  setDialog("template");
+                }}
+              >
+                Создать по шаблону
+              </button>
+            ) : null}
+          </div>
+          <section
+            id="wb-sidebar-search"
+            className="wb-sidebar-search"
+            aria-label="Поиск по проекту"
+            hidden={search.panel !== WorkbenchSidebar.Search}
+          >
+            <QuickOpen
+              key={`${initial.ownerId ?? ""}:${projectId}:${branch}`}
+              paths={explorerPaths}
+              files={state.files}
+              searchState={search}
+              onSearchChange={updateSearch}
+              selectedPath={selected}
+              revision={`${state.sha}:${state.revision}`}
+              active={search.panel === WorkbenchSidebar.Search}
+              inputRef={searchInput}
+              onSearchContent={async (query, signal, options = defaultFileSearchOptions) => {
+                const response = await fetch(
+                  `${endpoint}?${new URLSearchParams({ branch, search: query, matchCase: String(options.matchCase), wholeWord: String(options.wholeWord) })}`,
+                  { signal },
+                );
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error);
+                return result.results ?? [];
+              }}
+              onOpen={async (path, line) => {
+                if (await openFile(path)) {
+                  if (line) setJump({ line, token: Date.now() });
+                  setFocusSearchResult(true);
+                }
+              }}
+            />
+          </section>
         </aside>
         <hr
           className="wb-resizer"
@@ -1975,7 +2076,7 @@ export function Workbench({
       {dialog ? (
         <div className="wb-modal-backdrop">
           <section
-            className={`wb-modal${dialog === "media" ? " wb-media-modal" : dialog === "replace" ? " wb-replacement-modal" : dialog === "search" ? " wb-search-modal" : ""}`}
+            className={`wb-modal${dialog === "media" ? " wb-media-modal" : dialog === "replace" ? " wb-replacement-modal" : ""}`}
             ref={modal}
             role="dialog"
             aria-modal="true"
@@ -1986,7 +2087,6 @@ export function Workbench({
                 {
                   {
                     replace: "Предпросмотр замены",
-                    search: "Поиск файлов",
                     new: "Новый файл",
                     folder: "Новая папка",
                     branch: "Новая ветка",
@@ -2037,30 +2137,6 @@ export function Workbench({
                   editText(after);
                   setMode("source");
                   setDialog(null);
-                }}
-              />
-            ) : dialog === "search" ? (
-              <QuickOpen
-                key={`${projectId}:${branch}:${searchContent}`}
-                paths={explorerPaths}
-                files={state.files.map((file) =>
-                  file.path === selected ? { ...file, content: text } : file,
-                )}
-                initialContent={searchContent}
-                onSearchContent={async (query, signal) => {
-                  const response = await fetch(
-                    `${endpoint}?${new URLSearchParams({ branch, search: query })}`,
-                    { signal },
-                  );
-                  const result = await response.json();
-                  if (!response.ok) throw new Error(result.error);
-                  return result.results ?? [];
-                }}
-                onOpen={async (path, line) => {
-                  if (await openFile(path)) {
-                    setDialog(null);
-                    if (line) setJump({ line, token: Date.now() });
-                  }
                 }}
               />
             ) : dialog === "media" ? (

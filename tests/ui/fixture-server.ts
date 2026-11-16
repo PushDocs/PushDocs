@@ -10,6 +10,11 @@ export async function startFixtureServer() {
     write: false,
     outfile: "fixture.js",
     jsx: "automatic",
+    alias: {
+      "@/app/actions": "./tests/ui/git-operation-actions.ts",
+      "@/app/conflict-actions": "./tests/ui/git-operation-actions.ts",
+      "next/navigation": "./tests/ui/git-operation-navigation.ts",
+    },
     define: { "process.env.NODE_ENV": '"development"', "process.env": "{}" },
   });
   const js = result.outputFiles.find((file) => file.path.endsWith(".js"))?.text ?? "";
@@ -17,6 +22,11 @@ export async function startFixtureServer() {
   const shared = new Y.Doc();
   shared.getText("source").insert(0, "abc");
   const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/events")) {
+      response.setHeader("Content-Type", "text/event-stream");
+      response.write(": connected\n\n");
+      return;
+    }
     if (request.url?.startsWith("/api/projects/project/preview")) {
       response.setHeader("Content-Type", "application/json");
       response.end(

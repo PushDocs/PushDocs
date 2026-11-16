@@ -25,17 +25,19 @@ it("hides installation connections from non-operators while keeping project memb
   expect(screen.getByRole("link", { name: "Участники" })).toBeTruthy();
 });
 
-it.each(["project", "members", "profile", "connections"] as const)(
+it.each(["project", "members", "profile", "editor", "mcp", "connections"] as const)(
   "keeps all tabs in the project context on %s",
   (active) => {
     const html = renderToStaticMarkup(
       <SettingsNavigation projectId="project" active={active} canManageConnections />,
     );
-    for (const suffix of ["", "/members", "/profile", "/connections"]) {
+    for (const suffix of ["", "/members", "/profile", "/editor", "/mcp", "/connections"]) {
       expect(html).toContain(`href="/projects/project/settings${suffix}"`);
     }
     expect(html).toContain("Участники");
     expect(html).not.toContain('href="/settings/profile"');
+    expect(html).not.toContain('href="/settings/editor"');
+    expect(html).not.toContain('href="/settings/mcp"');
   },
 );
 
@@ -46,4 +48,18 @@ it("does not invent a project in global settings", () => {
   expect(html).toContain('href="/settings/profile"');
   expect(html).not.toContain("Участники");
   expect(html).not.toContain("Git-подключения");
+});
+
+it("opens shared editor preferences from project settings and marks the active tab", () => {
+  const view = render(
+    <SettingsNavigation projectId="project" active="project" canManageConnections={false} />,
+  );
+  expect(screen.getByRole("link", { name: "Редактор" }).getAttribute("href")).toBe(
+    "/projects/project/settings/editor",
+  );
+  view.rerender(<SettingsNavigation active="editor" canManageConnections={false} />);
+  expect(screen.getByRole("link", { name: "Редактор" }).getAttribute("href")).toBe(
+    "/settings/editor",
+  );
+  expect(screen.getByRole("link", { name: "Редактор" }).getAttribute("aria-current")).toBe("page");
 });

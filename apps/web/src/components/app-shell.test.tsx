@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { type MouseEventHandler, type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   pathname: "/projects/one/documents",
   push: vi.fn(),
   refresh: vi.fn(),
+  conflictProgress: vi.fn(() => null),
+  importProgress: vi.fn(() => null),
 }));
 
 vi.mock("next/navigation", () => ({ usePathname: () => mocks.pathname, useRouter: () => mocks }));
@@ -82,9 +84,29 @@ vi.mock("next/link", () => ({
 }));
 vi.mock("@/app/actions", () => ({ logoutAction: vi.fn() }));
 vi.mock("./realtime-refresh", () => ({ RealtimeRefresh: () => null }));
+vi.mock("./branch-conflicts", () => ({ ProjectConflictProgress: mocks.conflictProgress }));
+vi.mock("./branch-import", () => ({ ProjectBranchImportProgress: mocks.importProgress }));
 
 import { AppShell } from "./app-shell";
 import { ProjectContext } from "./project-context";
+
+it("indicates attention only on Changes for the current branch and follows branch switches", () => {
+  sessionStorage.setItem("pushdocs:branch:one", "docs/fix");
+  render(
+    <AppShell projects={projects} user={operator} branchAttentionByProject={{ one: ["docs/fix"] }}>
+      Documents without a banner
+    </AppShell>,
+  );
+  const sections = within(screen.getByRole("navigation", { name: "Разделы проекта" }));
+  const dot = sections.getByRole("img", { name: "Ветка требует внимания" });
+  expect(dot.closest("a")?.getAttribute("href")).toBe("/projects/one/changes?branch=docs%2Ffix");
+  expect(sections.getAllByRole("img")).toHaveLength(1);
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:one", "main");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(sections.queryByRole("img", { name: "Ветка требует внимания" })).toBeNull();
+});
 
 const projects = [
   {
@@ -233,6 +255,36 @@ describe("AppShell", () => {
   });
 });
 
+it("leaves conflict progress to the documents page and restores it in other sections", () => {
+  const view = render(
+    <AppShell projects={projects} user={operator}>
+      Documents
+    </AppShell>,
+  );
+  expect(mocks.conflictProgress).toHaveBeenLastCalledWith(
+    expect.objectContaining({ projectId: "one", hidden: true }),
+    undefined,
+  );
+  expect(mocks.importProgress).toHaveBeenLastCalledWith(
+    expect.objectContaining({ projectId: "one", ownerId: "user", hidden: true }),
+    undefined,
+  );
+  mocks.pathname = "/projects/one/reviews";
+  view.rerender(
+    <AppShell projects={projects} user={operator}>
+      Reviews
+    </AppShell>,
+  );
+  expect(mocks.conflictProgress).toHaveBeenLastCalledWith(
+    expect.objectContaining({ projectId: "one", hidden: false }),
+    undefined,
+  );
+  expect(mocks.importProgress).toHaveBeenLastCalledWith(
+    expect.objectContaining({ projectId: "one", ownerId: "user", hidden: false }),
+    undefined,
+  );
+});
+
 it("shows the working branch while browsing a different MR, then updates on an explicit switch", () => {
   sessionStorage.setItem("pushdocs:branch:one", "docs/my-work");
   mocks.pathname = "/projects/one/reviews";
@@ -375,6 +427,8 @@ it("closes the project menu on route navigation", () => {
 it.each([
   "/projects/one/settings/members",
   "/projects/one/settings/connections",
+  "/projects/one/settings/editor",
+  "/projects/one/settings/mcp",
   "/projects/one/members",
 ])("marks Settings active on %s", (pathname) => {
   mocks.pathname = pathname;
@@ -384,6 +438,10 @@ it.each([
     </AppShell>,
   );
   expect(screen.getByRole("link", { name: "Настройки" }).className).toBe("active");
+  expect(screen.getByRole("navigation", { name: "Разделы проекта" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Документы" }).getAttribute("href")).toBe(
+    "/projects/one/documents?branch=main",
+  );
   expect(screen.queryByRole("link", { name: "Пользователи" })).toBeNull();
   expect(screen.queryByRole("link", { name: "Подключения" })).toBeNull();
 });

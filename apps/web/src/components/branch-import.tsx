@@ -1,112 +1,108 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { gitOperationStatusAction, synchronizeBranchAction } from "@/app/actions";
+import { useEffect, useRef } from "react";
+import {
+  BranchImportState,
+  type BranchImportTask,
+  branchImportStore,
+  useBranchImport,
+  useBranchImports,
+} from "./branch-import-store";
+import { GitTransferStatus } from "./git-transfer-status";
 import { ProjectContext } from "./project-context";
-import { SectionSkeleton } from "./section-skeleton";
+
+function ImportProgress({ task }: { task?: BranchImportTask }) {
+  if (task?.state === BranchImportState.Failed)
+    return (
+      <>
+        <p role="alert">{task.error}</p>
+        <button
+          className="pd-button pd-button--primary"
+          type="button"
+          onClick={() => branchImportStore.ensure(task, true)}
+        >
+          Повторить загрузку
+        </button>
+      </>
+    );
+  return (
+    <>
+      <GitTransferStatus
+        label={
+          !task || task.state === BranchImportState.Starting
+            ? "Подготавливаем загрузку…"
+            : task.state === BranchImportState.Queued
+              ? "Ожидаем загрузку…"
+              : task.state === BranchImportState.Done
+                ? "Открываем документы…"
+                : "Получаем файлы…"
+        }
+        transfer={task?.transfer}
+        ariaLabel="Загрузка файлов ветки"
+      />
+      {task?.notice ? <p className="muted">{task.notice}</p> : null}
+    </>
+  );
+}
+
+export function ProjectBranchImportProgress({
+  projectId,
+  ownerId,
+  hidden = false,
+}: {
+  projectId?: string;
+  ownerId: string;
+  hidden?: boolean;
+}) {
+  const tasks = useBranchImports();
+  useEffect(() => branchImportStore.connect(ownerId), [ownerId]);
+  const pending = tasks.filter(
+    (task) => task.projectId === projectId && task.state !== BranchImportState.Done,
+  );
+  if (hidden || !pending.length) return null;
+  return (
+    <aside className="project-import-progress" aria-label="Фоновые загрузки веток">
+      {pending.map((task) => (
+        <section key={task.branch}>
+          <header>
+            <strong>Загрузка ветки · {task.branch}</strong>
+            <Link
+              href={`/projects/${task.projectId}/documents?${new URLSearchParams({ branch: task.branch })}`}
+            >
+              Открыть документы
+            </Link>
+          </header>
+          <ImportProgress task={task} />
+        </section>
+      ))}
+    </aside>
+  );
+}
 
 export function BranchImport({ projectId, branch }: { projectId: string; branch: string }) {
   const router = useRouter();
-  const requestRef = useRef<{ attempt: number; promise: Promise<string> } | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState("");
-  const [stage, setStage] = useState<"starting" | "queued" | "running">("starting");
-
+  const task = useBranchImport(projectId, branch);
+  const refreshed = useRef<BranchImportTask | undefined>(undefined);
   useEffect(() => {
-    let active = true;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = setTimeout(() => {
-      active = false;
-      clearTimeout(pollTimer);
-      setError("Ветка ещё не загрузилась. Попробуйте повторить загрузку.");
-    }, 300_000);
-    const data = new FormData();
-    data.set("projectId", projectId);
-    data.set("branch", branch);
-    if (requestRef.current?.attempt !== attempt) {
-      requestRef.current = { attempt, promise: synchronizeBranchAction(data) };
+    if (task?.state === BranchImportState.Done && refreshed.current !== task) {
+      refreshed.current = task;
+      router.refresh();
     }
-    const request = requestRef.current.promise;
-    void request
-      .then((jobId) => {
-        if (!active) return;
-        setStage("queued");
-        const poll = async () => {
-          try {
-            const job = await gitOperationStatusAction(projectId, jobId);
-            if (!active) return;
-            if (job.status === "done") {
-              active = false;
-              clearTimeout(timeout);
-              router.refresh();
-              return;
-            }
-            if (job.status === "failed") {
-              active = false;
-              clearTimeout(timeout);
-              setError(
-                job.last_error === `Branch ${branch} was not found`
-                  ? `Ветка ${branch} не найдена в подключённом репозитории. Возможно, она удалена или находится в форке. Откройте PR / MR и проверьте исходный репозиторий.`
-                  : "Не удалось загрузить ветку. Проверьте доступ подключения PushDocs к репозиторию и повторите попытку.",
-              );
-              return;
-            }
-            setStage(job.status === "running" ? "running" : "queued");
-            pollTimer = setTimeout(poll, 2000);
-          } catch {
-            if (!active) return;
-            pollTimer = setTimeout(poll, 5000);
-          }
-        };
-        void poll();
-      })
-      .catch(() => {
-        if (!active) return;
-        active = false;
-        clearTimeout(timeout);
-        setError("Не удалось загрузить ветку. Проверьте подключение и повторите попытку.");
-      });
-    return () => {
-      active = false;
-      clearTimeout(pollTimer);
-      clearTimeout(timeout);
-    };
-  }, [projectId, branch, router, attempt]);
-
+  }, [task, router]);
   return (
     <section className="page branch-import">
       <ProjectContext projectId={projectId} branch={branch} />
       <header className="page-header">
         <h1>{branch}</h1>
       </header>
-      {error ? (
-        <>
-          <p role="alert">{error}</p>
-          <button
-            className="pd-button pd-button--primary"
-            type="button"
-            onClick={() => {
-              setError("");
-              setStage("starting");
-              setAttempt((value) => value + 1);
-            }}
-          >
-            Повторить загрузку
-          </button>
-        </>
-      ) : (
-        <div className="branch-import-state">
-          <ol aria-label="Этапы загрузки ветки">
-            <li aria-current={stage === "starting" ? "step" : undefined}>Подготавливаем</li>
-            <li aria-current={stage === "queued" ? "step" : undefined}>В очереди</li>
-            <li aria-current={stage === "running" ? "step" : undefined}>Получаем файлы</li>
-            <li>Открываем документы</li>
-          </ol>
+      <div className="branch-import-state">
+        {task?.state !== BranchImportState.Failed ? (
           <p className="muted">Можно перейти в другой раздел. Загрузка продолжится на сервере.</p>
-          <SectionSkeleton label="Загрузка файлов ветки" />
-        </div>
-      )}
+        ) : null}
+        <ImportProgress task={task} />
+      </div>
     </section>
   );
 }

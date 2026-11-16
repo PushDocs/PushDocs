@@ -11,6 +11,7 @@ const paths = Array.from(
 const initialText = Array.from({ length: 300 }, (_, index) => `Строка ${index + 1}`).join("\n");
 
 export function WorkbenchScrollFixture() {
+  const systemFolders = new URLSearchParams(window.location.search).has("system-folders");
   const files = new URLSearchParams(window.location.search).has("small")
     ? paths.slice(0, 80)
     : paths;
@@ -26,13 +27,34 @@ export function WorkbenchScrollFixture() {
           <header className="wb-header">
             <h1>Документы</h1>
           </header>
-          <div className="wb-layout">
+          <div
+            className="wb-layout"
+            style={systemFolders ? { gridTemplateColumns: "200px 4px minmax(0, 1fr)" } : undefined}
+          >
             <aside className="wb-tree">
               <button className="wb-quick-open" type="button">
                 Найти файл
               </button>
               <FileExplorer
-                paths={files}
+                paths={
+                  systemFolders
+                    ? [
+                        ...files,
+                        ".pushdocs/config.json",
+                        "docs/internal/system.md",
+                        "docs/public/visible.md",
+                        "package.json",
+                        "package.json.backup",
+                      ]
+                    : files
+                }
+                systemDirectories={
+                  systemFolders ? [".pushdocs", "docs/internal", "package.json"] : undefined
+                }
+                visibilityStorageKey={systemFolders ? "fixture:system-visibility" : undefined}
+                onUpload={systemFolders ? () => {} : undefined}
+                onMedia={systemFolders ? () => {} : undefined}
+                statusError={systemFolders ? "Не удалось получить изменения" : undefined}
                 selected={selected}
                 statuses={new Map()}
                 readOnly={false}

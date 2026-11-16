@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -55,8 +55,15 @@ const mocks = vi.hoisted(() => {
     },
   ];
   return {
+    activeUpdate: vi.fn(),
+    inspectConflicts: vi.fn(),
     checks: vi.fn().mockResolvedValue([]),
-    project: vi.fn().mockResolvedValue({ id: "project", provider: "gitlab", role: "editor" }),
+    project: vi.fn().mockResolvedValue({
+      id: "project",
+      provider: "gitlab",
+      role: "editor",
+      defaultBranch: "stable",
+    }),
     reviews,
     listReviews: vi.fn(async (_projectId: string, state?: string) =>
       reviews.filter((review) => !state || review.state === state),
@@ -70,9 +77,16 @@ vi.mock("@/lib/server", () => ({
     getProjectForUser: mocks.project,
     listChangeRequests: mocks.listReviews,
     listChecks: mocks.checks,
+    getActiveReviewBranchUpdate: mocks.activeUpdate,
   }),
 }));
 
+vi.mock("@/app/conflict-actions", () => ({
+  inspectReviewConflictsAction: mocks.inspectConflicts,
+  prepareConflictResolutionAction: vi.fn(),
+  submitConflictResolutionAction: vi.fn(),
+  retryConflictResolutionAction: vi.fn(),
+}));
 vi.mock("@/app/actions", () => ({
   startGitOperationAction: vi.fn(),
   gitOperationStatusAction: vi.fn(),
@@ -85,6 +99,7 @@ afterEach(() => {
   cleanup();
   sessionStorage.clear();
   vi.unstubAllEnvs();
+  mocks.checks.mockReset().mockResolvedValue([]);
 });
 
 it("opens the external preview only after its current deploy check succeeds", async () => {
@@ -114,6 +129,27 @@ it("opens the external preview only after its current deploy check succeeds", as
   expect(pending).toContain("Предпросмотр обновляется");
 });
 
+it("renders a review without a head commit and keeps the preview unavailable", async () => {
+  vi.stubEnv("PUSHDOCS_PREVIEW_URL", "https://pr-{MR_NUMBER}.docs.example.test/");
+  mocks.listReviews.mockResolvedValueOnce([
+    { ...mocks.reviews[0], head_sha: null, details: null },
+  ] as never);
+  mocks.checks.mockResolvedValueOnce([
+    { id: "old-preview", name: "preview:deploy", conclusion: "success", required: false },
+  ]);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+
+  expect(screen.getByText("Коммит недоступен")).toBeTruthy();
+  expect(mocks.checks).not.toHaveBeenCalled();
+  expect(screen.queryByRole("link", { name: "Открыть предпросмотр" })).toBeNull();
+  expect(screen.getByText("Нет данных")).toBeTruthy();
+});
+
 it("opens the selected review source branch, including URL special characters", async () => {
   const html = renderToStaticMarkup(
     await ReviewsPage({
@@ -131,7 +167,8 @@ it("opens the selected review source branch, including URL special characters", 
   expect(html).not.toContain("Обязательные проверки пройдены");
   expect(html.match(/href="https:\/\/git.example\/2"/g)).toHaveLength(1);
   expect(html).not.toContain("Отправить изменения");
-  expect(html).not.toContain("Получить из Git");
+  expect(html).toContain("Обновить данные MR");
+  expect(html).not.toContain("Обновить из Git");
   expect(html).not.toContain("disabled");
 });
 it("provides an explicit branch switch for readers too", async () => {
@@ -144,6 +181,244 @@ it("provides an explicit branch switch for readers too", async () => {
   );
   expect(html).toContain("Переключиться на ветку");
   expect(html).not.toContain("Редактировать ветку");
+});
+
+it.each(["need_rebase", "behind", "conflict", "dirty"])(
+  "links from the selected MR header to changes for its %s blocker",
+  async (reason) => {
+    mocks.listReviews.mockResolvedValueOnce([
+      mocks.reviews[0],
+      {
+        ...mocks.reviews[1],
+        target_branch: "release",
+        details: {
+          ...mocks.reviews[1]?.details,
+          readiness: { state: "blocked", reason },
+        },
+      },
+    ] as never);
+    render(
+      await ReviewsPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ review: "selected" }),
+      }),
+    );
+    const notice = screen.getByRole("region", { name: "Состояние ветки" });
+    expect(notice.closest(".review-heading")).toBeTruthy();
+    expect(notice.textContent).toContain("release");
+    expect(
+      within(notice).getByRole("link", { name: "Перейти к изменениям" }).getAttribute("href"),
+    ).toBe("/projects/project/changes?branch=docs%2Ffix+%231");
+    expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Разрешить конфликты" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Обновить список конфликтов" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Готовность к слиянию" })).toBeNull();
+    expect(mocks.inspectConflicts).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("link", { name: "Открыть MR в GitLab" })).toHaveLength(1);
+    expect(
+      within(screen.getByRole("navigation", { name: "Список MR" })).getByText(
+        reason === "conflict" || reason === "dirty" ? "Разрешить конфликты" : "Обновить ветку",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Обновить данные MR" })).toBeTruthy();
+    expect(screen.queryByText("Нужно обновить ветку относительно основной.")).toBeNull();
+  },
+);
+
+it("keeps an unfinished update reachable from the header after provider readiness changes", async () => {
+  mocks.activeUpdate.mockResolvedValueOnce({ payload: { strategy: "rebase" } });
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected" }),
+    }),
+  );
+  const notice = within(screen.getByRole("region", { name: "Состояние ветки" }));
+  expect(notice.getByText("Обновление ветки не завершено")).toBeTruthy();
+  expect(notice.getByRole("link", { name: "Перейти к изменениям" })).toBeTruthy();
+});
+
+it.each(["reader", "editor"])("keeps the changes link read-only for a %s", async (role) => {
+  mocks.project.mockResolvedValueOnce({
+    id: "project",
+    provider: "gitlab",
+    role,
+    defaultBranch: "stable",
+  });
+  mocks.listReviews.mockResolvedValueOnce([
+    {
+      ...mocks.reviews[1],
+      details: {
+        ...mocks.reviews[1]?.details,
+        readiness: { state: "blocked", reason: "conflict" },
+      },
+    },
+  ] as never);
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.getByRole("link", { name: "Перейти к изменениям" })).toBeTruthy();
+  expect(mocks.inspectConflicts).not.toHaveBeenCalled();
+});
+
+it.each([true, undefined])(
+  "does not open changes for an unavailable source (%s)",
+  async (isFork) => {
+    mocks.listReviews.mockResolvedValueOnce([
+      {
+        ...mocks.reviews[1],
+        details: {
+          ...mocks.reviews[1]?.details,
+          source: isFork ? { isFork, repositoryId: "fork", branchUrl: null } : undefined,
+          readiness: { state: "blocked", reason: "behind" },
+        },
+      },
+    ] as never);
+    render(
+      await ReviewsPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({}),
+      }),
+    );
+    expect(screen.getByRole("region", { name: "Состояние ветки" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Перейти к изменениям" })).toBeNull();
+  },
+);
+
+it("separates the working branch's MR above the list without changing the selection", async () => {
+  sessionStorage.setItem("pushdocs:branch:project", "docs/fix #1");
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected" }),
+    }),
+  );
+  const list = within(screen.getByRole("navigation", { name: "Список MR" }));
+  const current = within(list.getByRole("region", { name: "MR текущей ветки" }));
+  expect(current.getByRole("heading", { name: "Текущая ветка" })).toBeTruthy();
+  expect(current.getByRole("link", { name: /^Selected/ }).getAttribute("href")).toBe(
+    "?review=selected",
+  );
+  expect(list.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+    "?review=selected",
+    "?review=first",
+  ]);
+  expect(current.queryByText("Other")).toBeNull();
+  expect(list.getByRole("heading", { name: "Текущая ветка" }).closest("a")).toBeNull();
+  expect(screen.queryByRole("link", { name: "Переключиться на ветку" })).toBeNull();
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:project", "other");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(
+    within(list.getByRole("region", { name: "MR текущей ветки" }))
+      .getByRole("link", { name: /^Other/ })
+      .getAttribute("href"),
+  ).toBe("?review=first");
+  expect(list.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+    "?review=first",
+    "?review=selected",
+  ]);
+  expect(screen.getByRole("link", { name: "Переключиться на ветку" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Selected" })).toBeTruthy();
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:project", "docs/new");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(list.queryByRole("region", { name: "MR текущей ветки" })).toBeNull();
+  expect(list.getAllByRole("link")).toHaveLength(2);
+});
+
+it.each([
+  { provider: "gitlab", label: "MR" },
+  { provider: "github", label: "PR" },
+])("quietly explains a missing $label for the working branch", async ({ provider, label }) => {
+  mocks.project.mockResolvedValueOnce({
+    id: "project",
+    provider,
+    role: "editor",
+    defaultBranch: "stable",
+  });
+  sessionStorage.setItem("pushdocs:branch:project", "docs/new #1");
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ review: "selected", branch: "docs/fix #1" }),
+    }),
+  );
+  const notice = within(screen.getByRole("note", { name: `${label} текущей ветки` }));
+  expect(notice.getByText("docs/new #1")).toBeTruthy();
+  expect(notice.getByText(new RegExp(`нет открытого ${label}`))).toBeTruthy();
+  expect(notice.getByRole("link", { name: "К изменениям" }).getAttribute("href")).toBe(
+    "/projects/project/changes?branch=docs%2Fnew+%231",
+  );
+  expect(screen.getByRole("heading", { name: "Selected" })).toBeTruthy();
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:project", "other");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(screen.queryByRole("note")).toBeNull();
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:project", "docs/another");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(screen.getByRole("note").textContent).toContain("docs/another");
+  act(() => {
+    sessionStorage.setItem("pushdocs:branch:project", "stable");
+    window.dispatchEvent(new Event("pushdocs:context"));
+  });
+  expect(screen.queryByRole("note")).toBeNull();
+});
+
+it("shows the current branch notice alongside the empty review list", async () => {
+  mocks.listReviews.mockResolvedValueOnce([]);
+  sessionStorage.setItem("pushdocs:branch:project", "docs/new");
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.getByRole("note").textContent).toContain("docs/new");
+  expect(screen.getByRole("heading", { name: "Нет открытых MR" })).toBeTruthy();
+});
+
+it("does not mistake a fork's matching branch name for the working branch's MR", async () => {
+  mocks.listReviews.mockResolvedValueOnce([
+    {
+      ...mocks.reviews[1],
+      details: {
+        ...mocks.reviews[1]?.details,
+        source: { isFork: true, repositoryId: "fork", branchUrl: null },
+      },
+    },
+  ] as never);
+  sessionStorage.setItem("pushdocs:branch:project", "docs/fix #1");
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.getByRole("note").textContent).toContain("docs/fix #1");
+  expect(screen.queryByText("Текущая ветка")).toBeNull();
+  expect(screen.queryByRole("region", { name: "MR текущей ветки" })).toBeNull();
+});
+
+it("waits for source information before declaring a matching MR missing", async () => {
+  mocks.listReviews.mockResolvedValueOnce([{ ...mocks.reviews[1], details: null }] as never);
+  sessionStorage.setItem("pushdocs:branch:project", "docs/fix #1");
+  render(
+    await ReviewsPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({}),
+    }),
+  );
+  expect(screen.queryByRole("note")).toBeNull();
+  expect(screen.queryByRole("region", { name: "MR текущей ветки" })).toBeNull();
 });
 
 it("keeps individual check results visible without a separate merge panel", async () => {

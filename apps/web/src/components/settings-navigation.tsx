@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { type SettingsSection, settingsPath } from "../lib/settings-path";
 
 export function SettingsNavigation({
   projectId,
@@ -6,31 +7,48 @@ export function SettingsNavigation({
   canManageConnections,
 }: {
   projectId?: string;
-  active: "project" | "members" | "connections" | "profile" | "mcp";
+  active: SettingsSection;
   canManageConnections: boolean;
 }) {
-  const base = projectId ? `/projects/${projectId}/settings` : "/settings";
   return (
     <nav className="settings-navigation" aria-label="Разделы настроек">
       {projectId ? (
         <>
-          <Link href={base} aria-current={active === "project" ? "page" : undefined}>
+          <Link
+            href={settingsPath("project", projectId)}
+            aria-current={active === "project" ? "page" : undefined}
+          >
             Проект
           </Link>
-          <Link href={`${base}/members`} aria-current={active === "members" ? "page" : undefined}>
+          <Link
+            href={settingsPath("members", projectId)}
+            aria-current={active === "members" ? "page" : undefined}
+          >
             Участники
           </Link>
         </>
       ) : null}
-      <Link href={`${base}/profile`} aria-current={active === "profile" ? "page" : undefined}>
+      <Link
+        href={settingsPath("profile", projectId)}
+        aria-current={active === "profile" ? "page" : undefined}
+      >
         Мой профиль
       </Link>
-      <Link href="/settings/mcp" aria-current={active === "mcp" ? "page" : undefined}>
+      <Link
+        href={settingsPath("editor", projectId)}
+        aria-current={active === "editor" ? "page" : undefined}
+      >
+        Редактор
+      </Link>
+      <Link
+        href={settingsPath("mcp", projectId)}
+        aria-current={active === "mcp" ? "page" : undefined}
+      >
         MCP
       </Link>
       {canManageConnections ? (
         <Link
-          href={`${base}/connections`}
+          href={settingsPath("connections", projectId)}
           aria-current={active === "connections" ? "page" : undefined}
         >
           Git-подключения

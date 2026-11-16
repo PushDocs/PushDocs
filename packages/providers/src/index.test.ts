@@ -263,6 +263,36 @@ describe("GitLab provider", () => {
     });
   });
 
+  it.each([null, undefined, ""])(
+    "keeps closed and merged GitLab requests whose head SHA is %s",
+    async (sha) => {
+      const request = vi.fn(async (_input: string | URL) =>
+        json(
+          ["closed", "merged"].map((state, index) => ({
+            iid: index + 1,
+            sha,
+            source_branch: `docs/${index + 1}`,
+            state,
+            target_branch: "stable",
+            title: `Docs ${index + 1}`,
+            web_url: `https://gitlab.test/group/docs/-/merge_requests/${index + 1}`,
+          })),
+        ),
+      );
+      const reviews = await new GitLabProvider(
+        "https://gitlab.test",
+        "token",
+        request,
+      ).listChangeRequests("group/docs", "all");
+
+      expect(reviews).toEqual([
+        expect.objectContaining({ id: "1", state: "closed", headSha: null }),
+        expect.objectContaining({ id: "2", state: "merged", headSha: null }),
+      ]);
+      expect(String(request.mock.calls[0]?.[0])).toContain("state=all");
+    },
+  );
+
   it("maps pipeline jobs to checks", async () => {
     const responses = [
       json([{ id: 99 }]),
@@ -868,6 +898,32 @@ describe("read-only review details", () => {
       ).toBe(expected);
     },
   );
+
+  it("retains the rebase requirement when GitLab draft status masks readiness", async () => {
+    const request = async (input: string | URL) =>
+      String(input).includes("/discussions")
+        ? json([])
+        : String(input).includes("/approvals")
+          ? json({ approvals_left: 1, approved_by: [] })
+          : json({
+              sha: "sha",
+              state: "opened",
+              draft: true,
+              detailed_merge_status: "need_rebase",
+              labels: [],
+              source_project_id: 42,
+              target_project_id: 42,
+            });
+    const details = await new GitLabProvider(
+      "https://gitlab.test",
+      "token",
+      request,
+    ).getChangeRequestDetails("42", "7");
+    expect(details).toMatchObject({
+      readiness: { reason: "draft_status" },
+      requiredUpdateStrategy: "rebase",
+    });
+  });
 
   it("keeps unavailable GitLab sections distinct from empty ones and does not infer mergeability", async () => {
     const request = async () => json({}, 403);

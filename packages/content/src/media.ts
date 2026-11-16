@@ -3,6 +3,8 @@ import { mediaComponentBaseUrl } from "./config";
 import { mediaAssetLocation, mediaLocales, mediaRoots, repositoryMediaUrl } from "./media-paths";
 import { mediaUsages } from "./media-references";
 
+export { mediaUsages } from "./media-references";
+
 const encodePath = (value: string) => value.split("/").map(encodeURIComponent).join("/");
 
 function relativeLink(document: string, filePath: string) {

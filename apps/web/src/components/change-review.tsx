@@ -2,6 +2,7 @@
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { ChangeFileKind, changeFileKind, groupChangedFiles } from "./change-file-groups";
 import { ChangeFileList } from "./change-file-list";
 import { DiffViewer } from "./diff-viewer";
 import { RevertFile } from "./revert-file";
@@ -24,12 +25,24 @@ export function ChangeReview({
   files: ReviewFile[];
   revertContext?: { revision: number; ownerId: string; canEditConfig: boolean };
 }) {
-  const [selectedPath, setSelectedPath] = useState(files[0]?.path);
+  const groups = useMemo(() => groupChangedFiles(files), [files]);
+  const [selectedPath, setSelectedPath] = useState(() => groups[0]?.files[0]?.path);
   const [query, setQuery] = useState("");
-  const filteredFiles = useMemo(() => {
+  const filteredGroups = useMemo(() => {
     const search = query.trim().toLocaleLowerCase();
-    return search ? files.filter((file) => file.path.toLocaleLowerCase().includes(search)) : files;
-  }, [files, query]);
+    return search
+      ? groups
+          .map((group) => ({
+            ...group,
+            files: group.files.filter((file) => file.path.toLocaleLowerCase().includes(search)),
+          }))
+          .filter((group) => group.files.length > 0)
+      : groups;
+  }, [groups, query]);
+  const filteredFiles = useMemo(
+    () => filteredGroups.flatMap((group) => group.files),
+    [filteredGroups],
+  );
   const selected = Math.max(
     0,
     filteredFiles.findIndex((file) => file.path === selectedPath),
@@ -62,7 +75,7 @@ export function ChangeReview({
         {filteredFiles.length ? (
           <ChangeFileList
             key={query}
-            files={filteredFiles}
+            groups={filteredGroups}
             selectedPath={file?.path}
             onSelect={setSelectedPath}
           />
@@ -128,7 +141,7 @@ export function ChangeReview({
                       <p>{before ? "Файла не было" : "Файл удалён"}</p>
                     ) : (
                       <>
-                        {/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(file.path) ? (
+                        {changeFileKind(file.path) === ChangeFileKind.Image ? (
                           // biome-ignore lint/performance/noImgElement: authenticated draft and Git versions
                           <img
                             alt={before ? "До изменения" : "После изменения"}

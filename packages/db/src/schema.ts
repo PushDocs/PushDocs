@@ -93,6 +93,8 @@ export interface ProjectConnectionGrantsTable {
 }
 
 export interface BranchContextsTable {
+  last_commit_at: Timestamp | null;
+  remote_head_sha: string | null;
   is_protected: Generated<boolean>;
   repository_paths: ColumnType<string[], string | undefined, string>;
   base_commit_sha: string;
@@ -245,9 +247,10 @@ export interface ProjectComponentsTable {
 }
 
 export interface ChangeRequestsTable {
+  source_branch_is_local: boolean | null;
   details: ColumnType<ChangeRequestDetails | null, string | null | undefined, string | null>;
   external_id: string;
-  head_sha: string;
+  head_sha: string | null;
   id: Generated<string>;
   project_id: string;
   provider_url: string;

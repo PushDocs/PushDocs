@@ -11,6 +11,7 @@ import {
   deleteProjectSchema,
   inviteMemberSchema,
   loginSchema,
+  projectConfigSchema,
   providerKindSchema,
   resolveConflictSchema,
   roleSchema,
@@ -22,6 +23,31 @@ import {
 
 const projectId = "3b63fe90-f569-4e0e-89e9-153948ba5a9e";
 const changeSetId = "3532ba1e-d459-4d52-98af-27c958504046";
+
+describe("file explorer configuration", () => {
+  it.each([undefined, {}])("defaults omitted settings and directories (%j)", (fileExplorer) => {
+    expect(projectConfigSchema.parse({ version: 1, fileExplorer }).fileExplorer).toEqual({
+      systemDirectories: [".pushdocs"],
+    });
+  });
+
+  it.each([{ directories: [] }, { directories: ["src/theme", ".gitlab"] }])(
+    "replaces default directories with $directories",
+    ({ directories }) => {
+      expect(
+        projectConfigSchema.parse({ version: 1, fileExplorer: { systemDirectories: directories } })
+          .fileExplorer.systemDirectories,
+      ).toEqual(directories);
+    },
+  );
+
+  it.each([null, { systemDirectories: "src" }, { systemDirectories: [""] }, { unknown: [] }])(
+    "rejects malformed or unknown settings (%j)",
+    (fileExplorer) => {
+      expect(projectConfigSchema.safeParse({ version: 1, fileExplorer }).success).toBe(false);
+    },
+  );
+});
 
 describe("roles and providers", () => {
   it.each(["admin", "editor", "reader"])("accepts the %s project role", (role) => {
@@ -245,6 +271,21 @@ describe("review and membership commands", () => {
       }).createReview,
     ).toBe(true);
   });
+
+  it.each([undefined, "", "  Тикет: https://tracker.test/DOC-123\nКомментарий  "])(
+    "accepts an optional review description %j",
+    (description) => {
+      const parsed = submitChangeSetSchema.parse({
+        branch: "docs/update",
+        changeSetId,
+        createReview: true,
+        message: "Update documentation",
+        projectId,
+        description,
+      });
+      expect(parsed.description).toBe(description?.trim());
+    },
+  );
 
   it.each(["ours", "theirs", "manual"])("accepts the %s conflict resolution", (resolution) => {
     expect(

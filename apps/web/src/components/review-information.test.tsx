@@ -5,6 +5,28 @@ import { afterEach, expect, it } from "vitest";
 import { ReviewInformation, ReviewReadiness } from "./review-information";
 
 afterEach(cleanup);
+
+it.each([
+  ["need_rebase", "Обновить ветку"],
+  ["behind", "Обновить ветку"],
+  ["conflict", "Разрешить конфликты"],
+  ["dirty", "Разрешить конфликты"],
+  ["not_approved", "Нужны одобрения"],
+  ["requested_changes", "Внести правки"],
+  ["discussions_not_resolved", "Закрыть обсуждения"],
+  ["ci_still_running", "Дождаться проверок"],
+  ["ci_must_pass", "Проверить ошибки CI"],
+  ["unknown-provider-reason", "Проверить условия слияния"],
+])("explains the next action for a cached %s readiness without fetching", (reason, label) => {
+  render(
+    <ReviewReadiness
+      details={{ ...details, readiness: { state: "blocked", reason } }}
+      showAction
+    />,
+  );
+  expect(screen.getByText(label)).toBeTruthy();
+  expect(screen.queryByText("Не готов к слиянию")).toBeNull();
+});
 const details: ChangeRequestDetails = {
   headSha: "sha",
   readiness: { state: "blocked", reason: "not_approved" },
@@ -112,6 +134,17 @@ it("distinguishes unavailable details from known empty labels, approvals and com
   expect(screen.getByText("Нет лейблов.")).toBeTruthy();
   expect(screen.getByText("Пока нет одобрений.")).toBeTruthy();
   expect(screen.queryByText(/Требуется:/)).toBeNull();
+});
+
+it("keeps an unfinished update available after readiness becomes ready", () => {
+  render(
+    <ReviewInformation
+      details={{ ...details, readiness: { state: "ready", reason: null } }}
+      readinessNotice={<p>Продолжить обновление ветки</p>}
+    />,
+  );
+  expect(screen.getByText("Продолжить обновление ветки")).toBeTruthy();
+  expect(screen.getByText("Готов к слиянию")).toBeTruthy();
 });
 
 it("shows accessible comments with an incomplete notice and translates unknown blockers without exposing technical codes", () => {

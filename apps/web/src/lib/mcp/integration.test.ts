@@ -9,6 +9,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { chromium } from "@playwright/test";
 import {
+  type BranchConflictSnapshot,
+  branchConflictCache,
+  branchConflictRepositoryKey,
+} from "@pushdocs/contracts";
+import {
   appendEvent,
   closeDatabase,
   createDatabase,
@@ -1096,6 +1101,391 @@ suite("MCP with real PostgreSQL and HTTP SDK client", () => {
       await c.close();
     }
   });
+  it("lists live open reviews and queues one idempotent OAuth-bound update through the HTTP SDK", async () => {
+    const reviews = [
+      {
+        id: "mcp-1",
+        sourceBranch: "docs/mcp-update",
+        targetBranch: "stable",
+        state: "open",
+        headSha: "mcp-head",
+        title: "MCP review",
+        url: "https://provider.invalid/review/1",
+      },
+      {
+        id: "mcp-merged",
+        sourceBranch: "docs/old",
+        targetBranch: "stable",
+        state: "merged",
+        headSha: "old",
+        title: "Old",
+        url: "old",
+      },
+      {
+        id: "mcp-other",
+        sourceBranch: "docs/other-target",
+        targetBranch: "release",
+        state: "open",
+        headSha: "other",
+        title: "Other",
+        url: "other",
+      },
+    ];
+    const provider = {
+      listChangeRequests: vi.fn().mockResolvedValue(reviews),
+      listBranches: vi.fn().mockResolvedValue([
+        { name: "docs/mcp-update", sha: "mcp-head" },
+        { name: "stable", sha: "stable-head" },
+      ]),
+      getChangeRequestDetails: vi.fn().mockResolvedValue({
+        source: { isFork: false },
+        headSha: "mcp-head",
+        readiness: { state: "ready", reason: null },
+      }),
+      readBinary: vi.fn(),
+    };
+    vi.mocked(providerForConnection).mockResolvedValue(provider as never);
+    const access = await grant();
+    const c = await client(access.access_token);
+    const readAccess = await grant(["pushdocs:read"]);
+    const reader = await client(readAccess.access_token);
+    try {
+      const tools = await c.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining([
+          "list_open_reviews",
+          "update_review_branch",
+          "inspect_review_conflicts",
+          "get_conflict_report",
+          "get_conflict_file",
+          "resolve_review_conflicts",
+        ]),
+      );
+      const list = await c.callTool({
+        name: "list_open_reviews",
+        arguments: { projectId, targetBranch: "stable" },
+      });
+      expect(list.structuredContent).toMatchObject({
+        total: 1,
+        items: [{ reviewId: "mcp-1", branch: "docs/mcp-update" }],
+      });
+      const args = {
+        projectId,
+        reviewId: "mcp-1",
+        targetBranch: "stable",
+        expectedHeadSha: "mcp-head",
+        idempotencyKey: "mcp-review-update",
+      };
+      await expect(
+        reader.callTool({ name: "update_review_branch", arguments: args }),
+      ).rejects.toThrow("insufficient_scope");
+      const first = await c.callTool({ name: "update_review_branch", arguments: args });
+      expect(first.isError).not.toBe(true);
+      expect(await c.callTool({ name: "update_review_branch", arguments: args })).toEqual(first);
+      const operationId = (first.structuredContent as { operationId: string }).operationId;
+      const job = await getDatabase()
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", operationId)
+        .executeTakeFirstOrThrow();
+      expect(job.payload).toMatchObject({
+        oauthGrantId: access.principal.grantId,
+        sourceBranch: "stable",
+        refreshFromTarget: true,
+        strategy: "merge",
+      });
+      expect(provider.readBinary).not.toHaveBeenCalled();
+      provider.listChangeRequests.mockResolvedValue([]);
+      expect(
+        (
+          await c.callTool({
+            name: "update_review_branch",
+            arguments: { ...args, idempotencyKey: "closed-update" },
+          })
+        ).structuredContent,
+      ).toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+    } finally {
+      await Promise.all([c.close(), reader.close()]);
+    }
+  });
+
+  it("returns actionable blocked-branch advice and preserves saved drafts through the HTTP SDK", async () => {
+    const branch = "docs/mcp-blocked";
+    await repo.replaceImportedDocuments(projectId, branch, "blocked-head", [
+      {
+        path: "docs/advice.md",
+        content: "# Original",
+        contentHash: "original",
+        title: "Advice",
+        locale: "default",
+        version: "current",
+      },
+    ]);
+    await repo.saveDraft({
+      projectId,
+      branch,
+      path: "docs/advice.md",
+      content: "# Saved draft",
+      userId,
+      expectedRevision: 0,
+      baseCommitSha: "blocked-head",
+    });
+    vi.mocked(providerForConnection).mockResolvedValue({
+      listChangeRequests: vi.fn().mockResolvedValue([
+        {
+          id: "blocked-review",
+          sourceBranch: branch,
+          targetBranch: "stable",
+          state: "open",
+          headSha: "blocked-head",
+          title: "Blocked",
+          url: "https://provider.invalid/review/blocked",
+        },
+      ]),
+      listBranches: vi.fn().mockResolvedValue([
+        { name: branch, sha: "blocked-head" },
+        { name: "stable", sha: "stable-head" },
+      ]),
+      getChangeRequestDetails: vi.fn().mockResolvedValue({
+        source: { isFork: false },
+        headSha: "blocked-head",
+        readiness: { state: "ready", reason: null },
+      }),
+    } as never);
+    const access = await grant();
+    const c = await client(access.access_token);
+    try {
+      const args = {
+        projectId,
+        reviewId: "blocked-review",
+        targetBranch: "stable",
+        expectedHeadSha: "blocked-head",
+        idempotencyKey: "explain-blocked-branch",
+      };
+      const result = await c.callTool({ name: "update_review_branch", arguments: args });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        status: "blocked",
+        reason: "unsubmitted_changes",
+        paths: ["docs/advice.md"],
+        editorUrl: expect.stringContaining("https://pushdocs.test/projects/"),
+        nextSteps: expect.arrayContaining([expect.stringContaining("explicitly requests")]),
+      });
+      expect(result.structuredContent).not.toHaveProperty("operationId");
+      expect(await c.callTool({ name: "update_review_branch", arguments: args })).toEqual(result);
+      expect((await repo.getWorkingFile(projectId, branch, "docs/advice.md"))?.content).toBe(
+        "# Saved draft",
+      );
+      const jobs = await getDatabase()
+        .selectFrom("jobs")
+        .select("id")
+        .where("kind", "=", "branch.update")
+        .where(sql<string>`payload->>'branch'`, "=", branch)
+        .execute();
+      expect(jobs).toEqual([]);
+    } finally {
+      await c.close();
+    }
+  });
+
+  it("inspects, reads both report modes, and queues a fragment resolution without downloading media", async () => {
+    const review = {
+      id: "mcp-conflict",
+      sourceBranch: "docs/mcp-conflict",
+      targetBranch: "stable",
+      state: "open",
+      headSha: "conflict-head",
+      title: "Conflict",
+      url: "https://provider.invalid/review/conflict",
+    };
+    const provider = {
+      listChangeRequests: vi.fn().mockResolvedValue([review]),
+      listBranches: vi.fn().mockResolvedValue([
+        { name: review.sourceBranch, sha: review.headSha },
+        { name: "stable", sha: "stable-head" },
+      ]),
+      getChangeRequestDetails: vi.fn().mockResolvedValue({
+        source: { isFork: false },
+        headSha: review.headSha,
+        readiness: { state: "blocked", reason: "conflict" },
+      }),
+      getRepository: vi.fn().mockResolvedValue({ webUrl: "https://provider.invalid/test/docs" }),
+      readBinary: vi.fn(),
+    };
+    vi.mocked(providerForConnection).mockResolvedValue(provider as never);
+    const access = await grant();
+    const c = await client(access.access_token);
+    try {
+      const queued = await c.callTool({
+        name: "inspect_review_conflicts",
+        arguments: { projectId, reviewId: review.id, idempotencyKey: "inspect-mcp-conflict" },
+      });
+      expect(queued.isError).not.toBe(true);
+      const inspectionId = (queued.structuredContent as { inspectionId: string }).inspectionId;
+      const job = await getDatabase()
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", inspectionId)
+        .executeTakeFirstOrThrow();
+      expect(job.payload).toMatchObject({ oauthGrantId: access.principal.grantId });
+      const snapshot: BranchConflictSnapshot = {
+        inspectionVersion: branchConflictCache.version,
+        branch: review.sourceBranch,
+        sourceBranch: "stable",
+        parentSha: review.headSha,
+        sourceSha: "stable-head",
+        history: {
+          base: { sha: "base-head", committedAt: "2026-11-01T12:00:00+03:00" },
+          branch: { sha: review.headSha, committedAt: "2026-11-14T12:00:00+03:00" },
+          target: { sha: "stable-head", committedAt: "2026-11-12T12:00:00+03:00" },
+        },
+        files: [
+          {
+            path: "docs/conflict.md",
+            kind: "text",
+            oursExists: true,
+            theirsExists: true,
+            baseContent: "# Title\nBase\n",
+            oursContent: "# Title\nBranch\n",
+            theirsContent: "# Title\nTarget\n",
+            sections: [
+              { kind: "text", content: "# Title\n" },
+              { kind: "conflict", base: "Base\n", ours: "Branch\n", theirs: "Target\n" },
+              { kind: "text", content: "Clean changes from both branches.\n" },
+            ],
+          },
+        ],
+      };
+      const syncTarget = await repo.getProjectSyncTarget(projectId);
+      if (!syncTarget) throw new Error("Missing target");
+      await getDatabase()
+        .updateTable("jobs")
+        .set({
+          status: "done",
+          payload: {
+            ...(job.payload as object),
+            conflictSnapshot: snapshot,
+            targetKey: branchConflictRepositoryKey(syncTarget),
+          },
+        })
+        .where("id", "=", inspectionId)
+        .execute();
+      for (const mode of [undefined, "detailed"]) {
+        const report = await c.callTool({
+          name: "get_conflict_report",
+          arguments: { projectId, inspectionId, ...(mode ? { mode } : {}) },
+        });
+        expect(report.isError).not.toBe(true);
+        expect(report.structuredContent).toMatchObject({
+          mode: mode ?? "editorial",
+          stale: false,
+          versions: { base: { committedAt: expect.stringContaining("2026-11-01") } },
+          items: [
+            {
+              title: "Title",
+              editorUrl: expect.stringContaining("https://pushdocs.test/projects/"),
+            },
+          ],
+        });
+      }
+      const args = {
+        projectId,
+        inspectionId,
+        files: [
+          {
+            path: "docs/conflict.md",
+            choice: "combine",
+            fragments: [{ index: 0, choice: "manual", content: "Combined\n" }],
+          },
+        ],
+        idempotencyKey: "resolve-mcp-conflict",
+      };
+      const resolved = await c.callTool({ name: "resolve_review_conflicts", arguments: args });
+      expect(resolved.isError).not.toBe(true);
+      expect(await c.callTool({ name: "resolve_review_conflicts", arguments: args })).toEqual(
+        resolved,
+      );
+      const merge = await getDatabase()
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", (resolved.structuredContent as { operationId: string }).operationId)
+        .executeTakeFirstOrThrow();
+      expect(merge.payload).toMatchObject({
+        oauthGrantId: access.principal.grantId,
+        resolutionFiles: [{ content: "# Title\nCombined\nClean changes from both branches.\n" }],
+      });
+      const preparedMerge = {
+        branch: review.sourceBranch,
+        parentSha: review.headSha,
+        sourceSha: "stable-head",
+        sha: "prepared-merge",
+        targetKey: branchConflictRepositoryKey(syncTarget),
+      };
+      await getDatabase()
+        .updateTable("jobs")
+        .set({ status: "failed", payload: { ...(merge.payload as object), preparedMerge } })
+        .where("id", "=", merge.id)
+        .execute();
+      const failed = await c.callTool({
+        name: "get_operation_status",
+        arguments: { projectId, operationId: merge.id },
+      });
+      expect(failed.structuredContent).toMatchObject({
+        status: "failed",
+        result: { canResumeConflictResolution: true },
+      });
+      const renewed = await grant();
+      const renewedClient = await client(renewed.access_token);
+      try {
+        const resumed = await renewedClient.callTool({
+          name: "resume_conflict_resolution",
+          arguments: {
+            projectId,
+            operationId: merge.id,
+            idempotencyKey: "resume-prepared-resolution",
+          },
+        });
+        expect(resumed.isError).not.toBe(true);
+        expect(resumed.structuredContent).toMatchObject({
+          operationId: merge.id,
+          branch: review.sourceBranch,
+        });
+        const saved = await getDatabase()
+          .selectFrom("jobs")
+          .selectAll()
+          .where("id", "=", merge.id)
+          .executeTakeFirstOrThrow();
+        expect(saved).toMatchObject({
+          status: "queued",
+          payload: { oauthGrantId: renewed.principal.grantId, userId, preparedMerge },
+        });
+        const audit = await sql<{
+          branch: string;
+        }>`select branch from mcp_audit where grant_id=${renewed.principal.grantId} and tool='resume_conflict_resolution'`.execute(
+          getDatabase(),
+        );
+        expect(audit.rows).toEqual([{ branch: review.sourceBranch }]);
+      } finally {
+        await renewedClient.close();
+      }
+      provider.listBranches.mockResolvedValue([
+        { name: review.sourceBranch, sha: review.headSha },
+        { name: "stable", sha: "new-stable" },
+      ]);
+      expect(
+        (
+          await c.callTool({
+            name: "resolve_review_conflicts",
+            arguments: { ...args, idempotencyKey: "stale-resolution" },
+          })
+        ).structuredContent,
+      ).toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+      expect(provider.readBinary).not.toHaveBeenCalled();
+    } finally {
+      await c.close();
+    }
+  });
+
   it("isolates agent and browser preview leases and expires revoked access", async () => {
     const access = await grant(),
       clientId = `mcp:${access.principal.grantId}`;

@@ -567,6 +567,38 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
                 .execute();
             },
           },
+          "021-nullable-review-head-sha": {
+            async up(database) {
+              await sql`alter table change_requests alter column head_sha drop not null`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table change_requests alter column head_sha set not null`.execute(
+                database,
+              );
+            },
+          },
+          "022-branch-menu-metadata": {
+            async up(database) {
+              await sql`alter table branch_contexts
+                add column last_commit_at timestamptz,
+                add column remote_head_sha text`.execute(database);
+              await sql`update branch_contexts set remote_head_sha = head_commit_sha
+                where remote_head_sha is null`.execute(database);
+              await sql`alter table change_requests add column source_branch_is_local boolean`.execute(
+                database,
+              );
+            },
+            async down(database) {
+              await sql`alter table change_requests drop column source_branch_is_local`.execute(
+                database,
+              );
+              await sql`alter table branch_contexts
+                drop column last_commit_at,
+                drop column remote_head_sha`.execute(database);
+            },
+          },
           "005-preview-builds": {
             async up(database) {
               await sql`create table preview_builds (

@@ -3,6 +3,55 @@ import { GitHubProvider, GitLabProvider } from "./index";
 
 const json = (value: unknown) => new Response(JSON.stringify(value));
 afterEach(() => vi.unstubAllGlobals());
+
+it("reads the GitLab commit date from the existing paginated branch response", async () => {
+  const fetcher = vi.fn(async () =>
+    json([
+      { name: "docs", commit: { id: "head", committed_date: "2026-11-15T12:00:00Z" } },
+      { name: "undated", commit: { id: "other" } },
+    ]),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  expect(await new GitLabProvider("https://gitlab.test", "token").listBranches("42")).toEqual([
+    { name: "docs", sha: "head", lastCommitAt: "2026-11-15T12:00:00Z" },
+    { name: "undated", sha: "other" },
+  ]);
+  expect(fetcher).toHaveBeenCalledOnce();
+});
+
+it.each(["gitlab", "github"])(
+  "identifies local, fork and unknown review sources for %s",
+  async (kind) => {
+    const rows = [42, 99, null].map((sourceId, index) =>
+      kind === "gitlab"
+        ? {
+            iid: index + 1,
+            source_project_id: sourceId,
+            target_project_id: 42,
+            source_branch: "docs",
+            target_branch: "main",
+            state: "merged",
+          }
+        : {
+            number: index + 1,
+            head: { ref: "docs", sha: "head", repo: sourceId ? { id: sourceId } : null },
+            base: { ref: "main", repo: { id: 42 } },
+            state: "closed",
+            merged_at: "2026-11-15T12:00:00Z",
+          },
+    );
+    const fetcher = vi.fn(async () => json(rows));
+    vi.stubGlobal("fetch", fetcher);
+    const provider =
+      kind === "gitlab"
+        ? new GitLabProvider("https://gitlab.test", "token")
+        : new GitHubProvider("https://github.com", "token");
+    const reviews = await provider.listChangeRequests("42", "all");
+    expect(reviews.map((review) => review.sourceBranchIsLocal)).toEqual([true, false, undefined]);
+    expect(reviews.map((review) => review.state)).toEqual(["merged", "merged", "merged"]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  },
+);
 it.each(["gitlab", "github"])("exposes branch protection for %s", async (kind) => {
   vi.stubGlobal(
     "fetch",

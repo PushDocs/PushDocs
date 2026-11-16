@@ -3,12 +3,27 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   analyzeDocusaurusFiles,
+  assertProjectFileEditable,
   isEditableFile,
   isMdxComponentsPath,
   isMediaFile,
   parseProjectConfig,
   registeredMdxComponents,
 } from "@pushdocs/content";
+import {
+  type BranchConflictSnapshot,
+  BranchUpdateStrategy,
+  branchConflictCache,
+  branchConflictLimits,
+  branchConflictRepositoryKey,
+  branchConflictResolutionSchema,
+  branchUpdateJobKind,
+  branchUpdateStrategy,
+  ConflictInspectionStage,
+  isConflictMediaFile,
+  type PreparedBranchUpdate,
+  projectConfigPaths,
+} from "@pushdocs/contracts";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { createProvider, type GitProvider, type ProviderFileChange } from "@pushdocs/providers";
 import { prepareVpnAccess, type VpnAccess, type VpnConnection } from "@pushdocs/vpn";
@@ -51,6 +66,11 @@ export type WorkerRepository = Pick<
   | "requireProjectAccess"
   | "requireMcpGrant"
   | "savePreparedBranchMerge"
+  | "savePreparedBranchUpdate"
+  | "getActiveConflictMerge"
+  | "saveConflictInspection"
+  | "findConflictInspection"
+  | "releaseBranchMergeReservation"
   | "savePreparedCommit"
   | "withGitRefLock"
   | "discardRejectedCommit"
@@ -64,6 +84,12 @@ interface ProviderInput {
 }
 
 export interface WorkerServiceOptions {
+  createUpdateTransport?: (
+    input: GitTransportOptions,
+  ) => Pick<GitTransport, "prepareUpdate" | "publish" | "isPublished">;
+  createConflictTransport?: (
+    input: GitTransportOptions,
+  ) => Pick<GitTransport, "inspectConflicts" | "prepareMerge" | "publish" | "isPublished">;
   createMergeTransport?: (
     input: GitTransportOptions,
   ) => Pick<GitTransport, "prepareMerge" | "publish">;
@@ -188,16 +214,18 @@ export function createWorkerService(options: WorkerServiceOptions) {
               request.state === "open"
                 ? await provider.getChangeRequestDetails(providerRepositoryId, request.id)
                 : null;
-            const headSha = details?.headSha ?? request.headSha;
+            const headSha = details?.headSha || request.headSha || null;
             return {
               details,
               checks:
-                request.state === "open"
+                request.state === "open" && headSha
                   ? await provider.listChecks(providerRepositoryId, headSha)
                   : [],
               externalId: request.id,
               headSha,
               sourceBranch: request.sourceBranch,
+              sourceBranchIsLocal:
+                request.sourceBranchIsLocal ?? (details?.source ? !details.source.isFork : null),
               state: request.state,
               targetBranch: request.targetBranch,
               title: request.title,
@@ -214,7 +242,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     projectId: string,
     branchName: string,
     provider?: GitProvider,
-    onDocumentsLoaded?: (completed: number, total: number) => Promise<void>,
+    onDocumentsLoaded?: (completed: number, total: number, receivedBytes: number) => Promise<void>,
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
@@ -228,8 +256,9 @@ export function createWorkerService(options: WorkerServiceOptions) {
     projectId: string,
     branchName: string,
     provider?: GitProvider,
-    onDocumentsLoaded?: (completed: number, total: number) => Promise<void>,
+    onDocumentsLoaded?: (completed: number, total: number, receivedBytes: number) => Promise<void>,
   ): Promise<void> {
+    await onDocumentsLoaded?.(0, 0, 0);
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     const client = provider ?? (await providerFor(target));
@@ -239,11 +268,11 @@ export function createWorkerService(options: WorkerServiceOptions) {
     if (!branch) throw new BranchNotFoundError(branchName);
     const allPaths = await client.listFiles(target.provider_repository_id, branch.sha);
     const configPath = repositoryPath(target.root_path, ".pushdocs/config.json");
-    const config = parseProjectConfig(
-      allPaths.includes(configPath)
-        ? await client.readFile(target.provider_repository_id, branch.sha, configPath)
-        : null,
-    );
+    const configContent = allPaths.includes(configPath)
+      ? await client.readFile(target.provider_repository_id, branch.sha, configPath)
+      : null;
+    const config = parseProjectConfig(configContent);
+    let receivedBytes = Buffer.byteLength(configContent ?? "", "utf8");
     const prefix = target.root_path === "." ? "" : `${target.root_path.replace(/\/$/, "")}/`;
     const paths = allPaths.filter(
       (filePath) =>
@@ -251,7 +280,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
         (isEditableFile(config, filePath.slice(prefix.length)) ||
           isMdxComponentsPath(filePath.slice(prefix.length))),
     );
-    await onDocumentsLoaded?.(0, paths.length);
+    await onDocumentsLoaded?.(0, paths.length, receivedBytes);
     const contents = new Map<string, string>();
     for (let offset = 0; offset < paths.length; offset += 12) {
       const batch = paths.slice(offset, offset + 12);
@@ -264,8 +293,11 @@ export function createWorkerService(options: WorkerServiceOptions) {
             ] as const,
         ),
       );
-      for (const [filePath, content] of loaded) contents.set(filePath, content);
-      await onDocumentsLoaded?.(contents.size, paths.length);
+      for (const [filePath, content] of loaded) {
+        contents.set(filePath, content);
+        receivedBytes += Buffer.byteLength(content, "utf8");
+      }
+      await onDocumentsLoaded?.(contents.size, paths.length, receivedBytes);
     }
     const profile = analyzeDocusaurusFiles(contents, target.root_path);
     const existing = new Set(profile.documents.map((document) => document.path));
@@ -401,6 +433,289 @@ export function createWorkerService(options: WorkerServiceOptions) {
     ]);
   }
 
+  async function requireConflictReview(
+    payload: unknown,
+    provider: GitProvider,
+    repositoryId: string,
+  ) {
+    const reviewId = stringFromPayload(payload, "externalReviewId");
+    const review = (await provider.listChangeRequests(repositoryId)).find(
+      (item) => item.id === reviewId,
+    );
+    if (
+      review?.state !== "open" ||
+      review.sourceBranch !== stringFromPayload(payload, "branch") ||
+      review.targetBranch !== stringFromPayload(payload, "sourceBranch")
+    )
+      throw new BranchMergeConflictError(
+        "PR / MR закрыт или его ветки изменились. Обновите данные из Git.",
+      );
+    const details = await provider.getChangeRequestDetails(repositoryId, reviewId);
+    if (details?.source?.isFork !== false)
+      throw new BranchMergeConflictError("Разрешение конфликтов веток из форков недоступно.");
+    return { ...review, details };
+  }
+
+  async function inspectBranchConflicts(payload: unknown, jobId: string, attempt: number) {
+    await checkMcpAuthorization(payload, "pushdocs:read");
+    const projectId = projectIdFromPayload(payload);
+    await repository.updateJobProgress(
+      jobId,
+      attempt,
+      ConflictInspectionStage.Preparing,
+      undefined,
+      { receivedBytes: 0, totalBytes: null },
+    );
+    await repository.requireProjectAccess(
+      stringFromPayload(payload, "userId"),
+      projectId,
+      "project:read",
+    );
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    const { provider, access } = await providerAccessFor(target);
+    const review = await requireConflictReview(payload, provider, target.provider_repository_id);
+    const branches = await provider.listBranches(target.provider_repository_id);
+    const parentSha = branches.find((item) => item.name === review.sourceBranch)?.sha;
+    const sourceSha = branches.find((item) => item.name === review.targetBranch)?.sha;
+    if (!parentSha || !sourceSha)
+      throw new BranchNotFoundError(!parentSha ? review.sourceBranch : review.targetBranch);
+    const repositoryKey = branchConflictRepositoryKey(target);
+    const cached = !booleanFromPayload(payload, "refresh")
+      ? await repository.findConflictInspection({
+          projectId,
+          reviewId: stringFromPayload(payload, "reviewId"),
+          branch: review.sourceBranch,
+          sourceBranch: review.targetBranch,
+          parentSha,
+          sourceSha,
+          repositoryKey,
+        })
+      : undefined;
+    if (cached) {
+      await repository.saveConflictInspection(jobId, attempt, cached.snapshot, repositoryKey);
+      return;
+    }
+    const cacheIdentity = JSON.stringify([
+      repositoryKey,
+      parentSha,
+      sourceSha,
+      branchConflictCache.version,
+    ]);
+    await repository.withGitRefLock(`inspection:${cacheIdentity}`, async () => {
+      let progressWrites = Promise.resolve();
+      let lastWrite = 0;
+      let previousStage: ConflictInspectionStage | undefined;
+      let latest: Parameters<NonNullable<GitTransportOptions["onProgress"]>>[0] | undefined;
+      const writeProgress = (progress: NonNullable<typeof latest>) => {
+        progressWrites = progressWrites
+          .then(() =>
+            repository.updateJobProgress(
+              jobId,
+              attempt,
+              progress.stage,
+              progress.counts,
+              progress.transfer,
+            ),
+          )
+          .catch(() => undefined);
+      };
+      const onProgress: NonNullable<GitTransportOptions["onProgress"]> = (progress) => {
+        latest = progress;
+        if (
+          progress.stage !== previousStage ||
+          Date.now() - lastWrite >= branchConflictLimits.progressMs
+        ) {
+          previousStage = progress.stage;
+          lastWrite = Date.now();
+          writeProgress(progress);
+        }
+      };
+      const transport = (options.createConflictTransport ?? ((input) => new GitTransport(input)))({
+        ...gitTransportOptions(target, `inspection:${cacheIdentity}`, access),
+        onProgress,
+      });
+      let snapshot: BranchConflictSnapshot;
+      try {
+        snapshot = await transport.inspectConflicts({
+          branch: review.sourceBranch,
+          sourceBranch: review.targetBranch,
+          ...(target.root_path === "." ? {} : { rootPath: target.root_path }),
+        });
+      } finally {
+        if (latest) writeProgress(latest);
+        await progressWrites;
+      }
+      await repository.updateJobProgress(
+        jobId,
+        attempt,
+        ConflictInspectionStage.Finalizing,
+        undefined,
+        latest?.transfer,
+      );
+      const root = target.root_path === "." ? "" : `${target.root_path.replace(/^\/+|\/+$/g, "")}/`;
+      const config = parseProjectConfig(
+        await loadTextOrNull(
+          provider,
+          target.provider_repository_id,
+          snapshot.parentSha,
+          repositoryPath(target.root_path, projectConfigPaths.config),
+        ),
+      );
+      for (const file of snapshot.files) {
+        if (
+          !file.path.startsWith(root) ||
+          (!isEditableFile(config, file.path.slice(root.length)) && !isConflictMediaFile(file.path))
+        ) {
+          file.kind = "unsupported";
+          file.baseContent = file.oursContent = file.theirsContent = null;
+          file.sections = undefined;
+          file.mediaReferences = undefined;
+          snapshot.unsupportedReason =
+            "Часть конфликтов находится вне редактируемых файлов проекта. Разрешите их в Git-провайдере.";
+        }
+      }
+      await repository.ensureBranches(projectId, branches);
+      await repository.saveConflictInspection(jobId, attempt, snapshot, repositoryKey);
+    });
+  }
+
+  async function requireMergeResolutionReview(
+    payload: unknown,
+    provider: GitProvider,
+    repositoryId: string,
+  ) {
+    const review = await requireConflictReview(payload, provider, repositoryId);
+    if (
+      optionalPayloadString(payload, "oauthGrantId") &&
+      branchUpdateStrategy(review.details) === BranchUpdateStrategy.Rebase
+    )
+      throw new BranchMergeConflictError(
+        "Требуемый rebase нельзя заменить решением конфликта слияния.",
+      );
+    return review;
+  }
+
+  async function resolveBranchConflicts(
+    payload: Record<string, unknown>,
+    jobId: string,
+    createdAt: string,
+    attempt: number,
+  ) {
+    await checkMcpAuthorization(payload, "pushdocs:submit");
+    const projectId = projectIdFromPayload(payload);
+    const userId = stringFromPayload(payload, "userId");
+    const accessRole = await repository.requireProjectAccess(userId, projectId, "branch:push");
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    if (payload.targetKey !== branchConflictRepositoryKey(target))
+      throw new (payload.preparedMerge ? Error : BranchMergeConflictError)(
+        "Подключение проекта изменилось. Заново получите список конфликтов.",
+      );
+    const snapshot = payload.resolutionSnapshot as BranchConflictSnapshot;
+    const files = branchConflictResolutionSchema.parse(payload.resolutionFiles);
+    const { provider, access } = await providerAccessFor(target);
+    await repository.withGitRefLock(
+      `${target.base_url}:${target.provider_repository_id}:${snapshot.branch}`,
+      async () => {
+        const transport = (options.createConflictTransport ?? ((input) => new GitTransport(input)))(
+          gitTransportOptions(target, jobId, access),
+        );
+        const saved = payload.preparedMerge as Parameters<
+          GitTransport["prepareMerge"]
+        >[0]["prepared"];
+        if (saved && (await transport.isPublished(saved))) {
+          await synchronizeBranchLocked(projectId, snapshot.branch, provider);
+          await repository.enqueueReviewsSync(projectId);
+          return;
+        }
+        const prepared = saved
+          ? await transport.prepareMerge({
+              branch: snapshot.branch,
+              sourceBranch: snapshot.sourceBranch,
+              createdAt,
+              prepared: saved,
+              resolution: { snapshot, files },
+            })
+          : undefined;
+        if (prepared && prepared.sha !== saved?.sha)
+          throw new Error(
+            "Не удалось восстановить исходный коммит слияния. Отправка остаётся приостановленной до проверки результата.",
+          );
+        {
+          await requireMergeResolutionReview(payload, provider, target.provider_repository_id);
+          const branches = await provider.listBranches(target.provider_repository_id);
+          const branch = branches.find((item) => item.name === snapshot.branch);
+          if (!branch || branch.protected || snapshot.branch === target.default_branch)
+            throw new BranchMergeConflictError("Исходная ветка недоступна для записи.");
+          if (
+            branch.sha !== snapshot.parentSha ||
+            branches.find((item) => item.name === snapshot.sourceBranch)?.sha !== snapshot.sourceSha
+          )
+            throw new BranchMergeConflictError(
+              "Целевая ветка обновилась. Заново получите список конфликтов.",
+            );
+          const config = parseProjectConfig(
+            await loadTextOrNull(
+              provider,
+              target.provider_repository_id,
+              snapshot.parentSha,
+              repositoryPath(target.root_path, projectConfigPaths.config),
+            ),
+          );
+          const root =
+            target.root_path === "." ? "" : `${target.root_path.replace(/^\/+|\/+$/g, "")}/`;
+          for (const file of files) {
+            if (!file.path.startsWith(root))
+              throw new BranchMergeConflictError("Файл находится вне проекта");
+            const relative = file.path.slice(root.length);
+            if (!isConflictMediaFile(relative))
+              assertProjectFileEditable(config, relative, accessRole.role);
+          }
+          const commit =
+            prepared ??
+            (await transport.prepareMerge({
+              branch: snapshot.branch,
+              sourceBranch: snapshot.sourceBranch,
+              createdAt,
+              resolution: { snapshot, files },
+            }));
+          await repository.savePreparedBranchMerge(jobId, attempt, {
+            ...commit,
+            targetKey: branchConflictRepositoryKey(target),
+          });
+          await repository.requireProjectAccess(userId, projectId, "branch:push");
+          const currentTarget = await repository.getProjectSyncTarget(projectId);
+          if (
+            !currentTarget ||
+            branchConflictRepositoryKey(currentTarget) !== branchConflictRepositoryKey(target)
+          )
+            throw new BranchMergeConflictError(
+              "Подключение проекта изменилось. Отправка остановлена.",
+            );
+          await requireMergeResolutionReview(payload, provider, target.provider_repository_id);
+          const currentBranches = await provider.listBranches(target.provider_repository_id);
+          const currentBranch = currentBranches.find((item) => item.name === snapshot.branch);
+          if (
+            !currentBranch ||
+            currentBranch.protected ||
+            currentBranch.sha !== snapshot.parentSha ||
+            snapshot.branch === currentTarget.default_branch ||
+            currentBranches.find((item) => item.name === snapshot.sourceBranch)?.sha !==
+              snapshot.sourceSha
+          )
+            throw new BranchMergeConflictError(
+              "Ветки изменились перед отправкой. Заново получите список конфликтов.",
+            );
+          await checkMcpAuthorization(payload, "pushdocs:submit");
+          await transport.publish(commit);
+        }
+        await synchronizeBranchLocked(projectId, snapshot.branch, provider);
+        await repository.enqueueReviewsSync(projectId);
+      },
+    );
+  }
+
   async function mergeBranch(
     payload: unknown,
     operationId: string,
@@ -412,6 +727,9 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const sourceBranch = stringFromPayload(payload, "sourceBranch");
     const userId = stringFromPayload(payload, "userId");
     await repository.requireProjectAccess(userId, projectId, "branch:push");
+    const activeUpdate = await repository.getActiveConflictMerge(projectId, branch);
+    if (activeUpdate && activeUpdate.id !== operationId)
+      throw new BranchMergeConflictError("Ветка уже обновляется. Дождитесь завершения операции.");
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Подключение проекта недоступно");
     if (sourceBranch !== target.default_branch || branch === target.default_branch)
@@ -479,6 +797,121 @@ export function createWorkerService(options: WorkerServiceOptions) {
     );
   }
 
+  async function updateReviewBranch(
+    payload: Record<string, unknown>,
+    jobId: string,
+    createdAt: string,
+    attempt: number,
+  ) {
+    await checkMcpAuthorization(payload, "pushdocs:submit");
+    const projectId = projectIdFromPayload(payload);
+    const userId = stringFromPayload(payload, "userId");
+    const branch = stringFromPayload(payload, "branch");
+    const sourceBranch = stringFromPayload(payload, "sourceBranch");
+    const strategy = stringFromPayload(payload, "strategy");
+    if (strategy !== BranchUpdateStrategy.Rebase && strategy !== BranchUpdateStrategy.Merge)
+      throw new BranchMergeConflictError("Неизвестный способ обновления ветки.");
+    await repository.requireProjectAccess(userId, projectId, "branch:push");
+    const target = await repository.getProjectSyncTarget(projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    const targetKey = mergeTargetKey(target);
+    const saved = payload.preparedUpdate as
+      | (PreparedBranchUpdate & { targetKey: string })
+      | undefined;
+    if (saved && saved.targetKey !== targetKey)
+      throw new BranchMergeConflictError("Репозиторий изменился после подготовки обновления.");
+    const { provider, access } = await providerAccessFor(target);
+    await repository.withGitRefLock(
+      `${target.base_url}:${target.provider_repository_id}:${branch}`,
+      async () => {
+        const transport = (options.createUpdateTransport ?? ((input) => new GitTransport(input)))(
+          gitTransportOptions(target, jobId, access),
+        );
+        const synchronize = async () => {
+          await synchronizeBranchLocked(projectId, branch, provider);
+          await synchronizeReviews(projectId, provider, target.provider_repository_id);
+        };
+        // An acknowledged push is never recalculated against newer branch heads.
+        if (saved && (await transport.isPublished(saved))) {
+          await synchronize();
+          return;
+        }
+        const review = await requireConflictReview(
+          payload,
+          provider,
+          target.provider_repository_id,
+        );
+        const branches = await provider.listBranches(target.provider_repository_id);
+        const destination = branches.find((item) => item.name === branch);
+        const incoming = branches.find((item) => item.name === sourceBranch);
+        if (!destination || !incoming || destination.protected || branch === target.default_branch)
+          throw new BranchMergeConflictError(
+            "Исходная ветка недоступна для обновления из PushDocs.",
+          );
+        if (
+          !saved &&
+          (destination.sha !== payload.expectedHeadSha ||
+            review.headSha !== destination.sha ||
+            (branchUpdateStrategy(review.details) ??
+              (payload.refreshFromTarget ? BranchUpdateStrategy.Merge : null)) !== strategy)
+        )
+          throw new BranchMergeConflictError(
+            "Состояние PR / MR изменилось. Обновите данные из Git.",
+          );
+        const prepared = await transport.prepareUpdate({
+          branch,
+          sourceBranch,
+          strategy,
+          createdAt,
+          ...(saved ? { prepared: saved } : {}),
+        });
+        if (
+          prepared.parentSha !== (saved?.parentSha ?? destination.sha) ||
+          prepared.sourceSha !== (saved?.sourceSha ?? incoming.sha) ||
+          (saved && prepared.sha !== saved.sha)
+        )
+          throw new BranchMergeConflictError(
+            "Ветки изменились во время подготовки. Обновите данные из Git.",
+          );
+        await repository.savePreparedBranchUpdate(jobId, attempt, { ...prepared, targetKey });
+        await repository.requireProjectAccess(userId, projectId, "branch:push");
+        const currentTarget = await repository.getProjectSyncTarget(projectId);
+        if (
+          !currentTarget ||
+          mergeTargetKey(currentTarget) !== targetKey ||
+          branch === currentTarget.default_branch
+        )
+          throw new BranchMergeConflictError("Подключение или основная ветка проекта изменились.");
+        const finalReview = await requireConflictReview(
+          payload,
+          provider,
+          target.provider_repository_id,
+        );
+        if (
+          strategy === BranchUpdateStrategy.Merge &&
+          branchUpdateStrategy(finalReview.details) === BranchUpdateStrategy.Rebase
+        )
+          throw new BranchMergeConflictError(
+            "Требуемый rebase нельзя заменить подготовленным слиянием.",
+          );
+        const current = await provider.listBranches(target.provider_repository_id);
+        const currentBranch = current.find((item) => item.name === branch);
+        if (
+          !currentBranch ||
+          currentBranch.protected ||
+          currentBranch.sha !== prepared.parentSha ||
+          current.find((item) => item.name === sourceBranch)?.sha !== prepared.sourceSha
+        )
+          throw new BranchMergeConflictError(
+            "Ветки обновились перед отправкой. Повторите обновление с актуальными данными.",
+          );
+        await checkMcpAuthorization(payload, "pushdocs:submit");
+        if (prepared.sha !== prepared.parentSha) await transport.publish(prepared);
+        await synchronize();
+      },
+    );
+  }
+
   async function submitChangeSet(payload: unknown): Promise<void> {
     const target = await repository.getChangeSetSubmission(
       stringFromPayload(payload, "changeSetId"),
@@ -513,6 +946,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const needsReview = createReview && target.branch !== reviewTarget;
     const retryReview = async () => {
       if (
+        description !== undefined ||
         optionalPayloadString(payload, "targetBranch") ||
         optionalPayloadString(payload, "oauthGrantId")
       )
@@ -772,14 +1206,41 @@ export function createWorkerService(options: WorkerServiceOptions) {
         await synchronizeBranch(
           projectIdFromPayload(job.payload),
           stringFromPayload(job.payload, "branch"),
+          undefined,
+          (completed, total, receivedBytes) =>
+            repository.updateJobProgress(
+              job.id,
+              job.attempts,
+              "importing-documents",
+              { completed, total },
+              { receivedBytes, totalBytes: null },
+            ),
         );
       } else if (job.kind === "branch.merge") {
-        await mergeBranch(
-          job.payload,
+        if ((job.payload as Record<string, unknown>).inspectionId) {
+          await resolveBranchConflicts(
+            job.payload as Record<string, unknown>,
+            job.id,
+            new Date(job.created_at).toISOString(),
+            job.attempts,
+          );
+        } else {
+          await mergeBranch(
+            job.payload,
+            job.id,
+            new Date(job.created_at).toISOString(),
+            job.attempts,
+          );
+        }
+      } else if (job.kind === branchUpdateJobKind) {
+        await updateReviewBranch(
+          job.payload as Record<string, unknown>,
           job.id,
           new Date(job.created_at).toISOString(),
           job.attempts,
         );
+      } else if (job.kind === "branch.conflicts") {
+        await inspectBranchConflicts(job.payload, job.id, job.attempts);
       } else if (job.kind === "branch.create") {
         await createBranch(job.payload, (progress, counts) =>
           counts
@@ -833,17 +1294,35 @@ export function createWorkerService(options: WorkerServiceOptions) {
       await repository.completeJob(job.id, job.attempts);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (
+        ((job.kind === "branch.merge" && (job.payload as Record<string, unknown>).inspectionId) ||
+          job.kind === branchUpdateJobKind) &&
+        (error instanceof BranchMergeConflictError ||
+          (typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            ["PROVIDER_CONFLICT", "ACCESS_DENIED"].includes(String(error.code))))
+      )
+        await repository.releaseBranchMergeReservation(job.id, job.attempts);
       const projectId = projectIdFromPayload(job.payload);
       const permanentSubmissionFailure =
         job.kind === "change-set.submit" && error instanceof CloneOriginMismatchError;
+      const mcpAuthorizationFailure =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "PERMISSION_DENIED";
       const permanentBranchFailure =
+        mcpAuthorizationFailure ||
         error instanceof BranchNotFoundError ||
         error instanceof BranchMergeConflictError ||
-        (job.kind === "branch.merge" &&
+        (["branch.merge", branchUpdateJobKind].includes(job.kind) &&
           typeof error === "object" &&
           error !== null &&
           "code" in error &&
-          ["ACCESS_DENIED", "PROVIDER_CONFLICT"].includes(String(error.code))) ||
+          ["ACCESS_DENIED", "PROVIDER_CONFLICT", "PERMISSION_DENIED"].includes(
+            String(error.code),
+          )) ||
         (job.kind === "branch.create" &&
           (/^(Исходная ветка обновилась|Ветка .+ уже существует)/.test(message) ||
             (typeof error === "object" &&

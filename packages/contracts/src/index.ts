@@ -2,6 +2,33 @@ import { z } from "zod";
 import { mediaConfigSchema } from "./media-config";
 
 export {
+  BranchConflictChoice,
+  type BranchConflictFile,
+  type BranchConflictResolution,
+  type BranchConflictSection,
+  type BranchConflictSnapshot,
+  branchConflictCache,
+  branchConflictLimits,
+  branchConflictRepositoryKey,
+  branchConflictResolutionSchema,
+  ConflictInspectionStage,
+  ConflictReportMode,
+  conflictReportLimits,
+  type GitTransferProgress,
+  hasBranchConflicts,
+  isConflictMediaFile,
+} from "./branch-conflicts";
+export type { BranchReviewSummary, BranchSummary } from "./branch-summary";
+export {
+  BranchUpdateStrategy,
+  branchUpdateJobKind,
+  branchUpdateLimits,
+  branchUpdateStrategy,
+  needsBranchUpdate,
+  type PreparedBranchUpdate,
+} from "./branch-update";
+
+export {
   defaultMediaLocations,
   type MediaComponentConfig,
   MediaInsertionMode,
@@ -17,6 +44,15 @@ export const metadataFieldSchema = z.object({
 });
 export type MetadataField = z.infer<typeof metadataFieldSchema>;
 
+export const projectConfigPaths = {
+  directory: ".pushdocs",
+  config: ".pushdocs/config.json",
+} as const;
+
+export const defaultFileExplorerConfig = {
+  systemDirectories: [projectConfigPaths.directory],
+} as const;
+
 export const projectConfigSchema = z
   .object({
     version: z.literal(1),
@@ -27,7 +63,15 @@ export const projectConfigSchema = z
     documentRoots: z.array(z.string().min(1)).min(1).default(["docs", "versioned_docs", "i18n"]),
     editableFiles: z
       .array(z.string())
-      .default(["sidebars.js", "sidebars.ts", ".pushdocs/config.json"]),
+      .default(["sidebars.js", "sidebars.ts", projectConfigPaths.config]),
+    fileExplorer: z
+      .object({
+        systemDirectories: z
+          .array(z.string().min(1))
+          .default([...defaultFileExplorerConfig.systemDirectories]),
+      })
+      .strict()
+      .default(() => ({ systemDirectories: [...defaultFileExplorerConfig.systemDirectories] })),
     metadata: z
       .array(metadataFieldSchema)
       .max(50)
@@ -185,11 +229,14 @@ export const inviteMemberSchema = z.object({
   role: roleSchema,
 });
 
+export const reviewDescriptionMaxLength = 30_000;
+
 export const submitChangeSetSchema = z.object({
   newBranch: z.string().trim().min(1).max(255).optional(),
   branch: z.string().trim().min(1).max(255),
   changeSetId: z.uuid(),
   createReview: z.boolean(),
+  description: z.string().trim().max(reviewDescriptionMaxLength).optional(),
   message: z.string().trim().min(3).max(5000),
   projectId: z.uuid(),
 });
@@ -262,6 +309,8 @@ export interface CheckRunSummary {
 
 /** Read-only snapshot of the Git provider's review information. Null means unavailable. */
 export interface ChangeRequestDetails {
+  /** Retained even when draft/approval status masks the provider's update requirement. */
+  requiredUpdateStrategy?: "rebase";
   source?: {
     repositoryId: string | null;
     isFork: boolean;

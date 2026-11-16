@@ -1,10 +1,13 @@
 "use client";
 
+import { defaultFileExplorerConfig } from "@pushdocs/contracts";
 import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   CircleAlert,
+  Eye,
+  EyeOff,
   File,
   FileCode2,
   FileImage,
@@ -20,13 +23,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { changedDirectories, fileStatusLabel } from "./file-status";
 
 type Node = { path: string; name: string; directory: boolean; children: Map<string, Node> };
-function isInternalPath(path: string) {
-  return path === ".pushdocs" || path.startsWith(".pushdocs/");
-}
+const defaultSystemDirectoriesVisible = false;
+
 export function buildFileTree(paths: string[]): Node[] {
   const root = new Map<string, Node>();
   for (const path of paths) {
-    if (isInternalPath(path)) continue;
     const parts = path.split("/");
     let children = root;
     parts.forEach((name, index) => {
@@ -63,6 +64,8 @@ export function ExplorerFileIcon({ path }: { path: string }) {
 export function FileExplorer({
   paths,
   storageKey,
+  systemDirectories = defaultFileExplorerConfig.systemDirectories,
+  visibilityStorageKey,
   onAction,
   canEdit,
   actionReason,
@@ -80,6 +83,8 @@ export function FileExplorer({
 }: {
   paths: string[];
   storageKey?: string;
+  systemDirectories?: readonly string[];
+  visibilityStorageKey?: string;
   onAction?: (action: "rename" | "move" | "copy" | "replace" | "delete", path: string) => void;
   canEdit?: (path: string) => boolean;
   actionReason?: (action: "replace" | "delete", path: string) => string;
@@ -95,8 +100,39 @@ export function FileExplorer({
   onUpload?: (files: File[], directory: string) => void;
   uploadProgress?: string;
 }) {
+  const [visibility, setVisibility] = useState({
+    key: visibilityStorageKey,
+    show: defaultSystemDirectoriesVisible,
+  });
+  const showSystemDirectories = visibility.key === visibilityStorageKey && visibility.show;
+  useEffect(() => {
+    let show = defaultSystemDirectoriesVisible;
+    try {
+      if (visibilityStorageKey) show = sessionStorage.getItem(visibilityStorageKey) === "true";
+    } catch {}
+    setVisibility({ key: visibilityStorageKey, show });
+  }, [visibilityStorageKey]);
+  function changeVisibility(show: boolean) {
+    setVisibility({ key: visibilityStorageKey, show });
+    setMenu(undefined);
+    setDropDirectory(undefined);
+    try {
+      if (visibilityStorageKey) sessionStorage.setItem(visibilityStorageKey, String(show));
+    } catch {}
+  }
   const directories = useMemo(() => changedDirectories(statuses), [statuses]);
-  const tree = useMemo(() => buildFileTree(paths), [paths]);
+  const visiblePaths = useMemo(
+    () =>
+      showSystemDirectories
+        ? paths
+        : paths.filter((path) =>
+            systemDirectories.every(
+              (systemPath) => path !== systemPath && !path.startsWith(`${systemPath}/`),
+            ),
+          ),
+    [paths, systemDirectories, showSystemDirectories],
+  );
+  const tree = useMemo(() => buildFileTree(visiblePaths), [visiblePaths]);
   const [expanded, setExpanded] = useState(() => new Set(parents(selected)));
   const [menu, setMenu] = useState<{ path: string; directory: boolean; x: number; y: number }>();
   const [dropDirectory, setDropDirectory] = useState<string>();
@@ -170,54 +206,75 @@ export function FileExplorer({
     setFocused(selected);
   }, [selected]);
   useEffect(() => {
+    if (showSystemDirectories) {
+      setExpanded((current) => new Set([...current, ...parents(selected)]));
+      setFocused(selected);
+    }
+  }, [showSystemDirectories, selected]);
+  useEffect(() => {
     if (!revealDirectory) return;
     setExpanded((current) => new Set([...current, ...parents(revealDirectory), revealDirectory]));
     setFocused(revealDirectory);
   }, [revealDirectory]);
-  const rows: Array<Node & { depth: number }> = [];
-  function flatten(nodes: Node[], depth: number) {
-    for (const node of nodes) {
-      rows.push({ ...node, depth });
-      if (expanded.has(node.path)) flatten(sortNodes(node.children), depth + 1);
+  const rows = useMemo(() => {
+    const result: Array<Node & { depth: number }> = [];
+    function flatten(nodes: Node[], depth: number) {
+      for (const node of nodes) {
+        result.push({ ...node, depth });
+        if (expanded.has(node.path)) flatten(sortNodes(node.children), depth + 1);
+      }
     }
-  }
-  flatten(tree, 1);
+    flatten(tree, 1);
+    return result;
+  }, [tree, expanded]);
   const rowHeight = 27;
   const virtual = rows.length > 200;
   const viewportHeight = viewport.height || 600;
+  const maxScrollTop = Math.max(0, (rows.length + 1) * rowHeight - viewportHeight);
   const visibleStart = virtual
-    ? Math.max(0, Math.floor(Math.max(0, viewport.top - rowHeight) / rowHeight) - 8)
+    ? Math.max(
+        0,
+        Math.floor(Math.max(0, Math.min(viewport.top, maxScrollTop) - rowHeight) / rowHeight) - 8,
+      )
     : 0;
   const visibleEnd = virtual
     ? Math.min(rows.length, visibleStart + Math.ceil(viewportHeight / rowHeight) + 16)
     : rows.length;
   const visibleRows = rows.slice(visibleStart, visibleEnd);
-  const focusNode = rows.find((node) => node.path === focused);
+  const visibleFocused =
+    rows.find((node) => node.path === focused)?.path ??
+    parents(focused)
+      .reverse()
+      .find((path) => rows.some((node) => node.path === path)) ??
+    "";
+  const focusNode = rows.find((node) => node.path === visibleFocused);
+  useEffect(() => {
+    if (focused !== visibleFocused) setFocused(visibleFocused);
+    if (menu && !rows.some((node) => node.path === menu.path)) setMenu(undefined);
+  }, [focused, visibleFocused, menu, rows]);
   const selectedIndex = rows.findIndex((node) => node.path === selected);
   useLayoutEffect(() => {
     const element = container.current;
     /* v8 ignore next -- the layout effect follows attachment of the rendered tree ref. */
     if (!element) return;
     const height = element.clientHeight || 600;
-    let top = element.scrollTop;
+    let top = Math.min(element.scrollTop, maxScrollTop);
     if (rows.length > 200) {
       const selectedTop = selectedIndex * rowHeight;
       if (selectedIndex >= 0 && (selectedTop < top || selectedTop + rowHeight > top + height)) {
         top = Math.max(0, selectedTop - height / 2);
-        element.scrollTop = top;
       }
     }
+    if (element.scrollTop !== top) element.scrollTop = top;
     setViewport((current) =>
       current.top === top && current.height === height ? current : { top, height },
     );
-  }, [rows.length, selectedIndex]);
-  const directory = isInternalPath(focused)
-    ? ""
-    : focusNode?.directory
-      ? focusNode.path
-      : focused.includes("/")
-        ? focused.slice(0, focused.lastIndexOf("/"))
-        : "";
+  }, [rows.length, selectedIndex, maxScrollTop]);
+  const directory = focusNode?.directory
+    ? focusNode.path
+    : visibleFocused.includes("/")
+      ? visibleFocused.slice(0, visibleFocused.lastIndexOf("/"))
+      : "";
   function toggle(path: string, open: boolean) {
     setExpanded((current) => {
       const next = new Set(current);
@@ -254,6 +311,21 @@ export function FileExplorer({
           </span>
         ) : null}
         <div role="toolbar" aria-label="Действия с файлами">
+          {systemDirectories.length ? (
+            <button
+              type="button"
+              aria-label="Показывать системные файлы и папки"
+              aria-pressed={showSystemDirectories}
+              title={
+                showSystemDirectories
+                  ? "Скрыть системные файлы и папки"
+                  : "Показать системные файлы и папки"
+              }
+              onClick={() => changeVisibility(!showSystemDirectories)}
+            >
+              {showSystemDirectories ? <Eye size={16} /> : <EyeOff size={16} />}
+            </button>
+          ) : null}
           {onUpload ? (
             <button
               type="button"
@@ -493,9 +565,9 @@ export function FileExplorer({
               aria-posinset={index + 1}
               aria-setsize={rows.length}
               aria-expanded={node.directory ? expanded.has(node.path) : undefined}
-              aria-selected={node.path === focused}
-              tabIndex={node.path === focused || (!focusNode && index === 0) ? 0 : -1}
-              className={`wb-explorer-row${node.path === selected && !node.directory ? " active" : ""}${node.path === focused ? " focused" : ""}${statuses.get(node.path) === "delete" ? " deleted" : ""}`}
+              aria-selected={node.path === visibleFocused}
+              tabIndex={node.path === visibleFocused || (!focusNode && index === 0) ? 0 : -1}
+              className={`wb-explorer-row${node.path === selected && !node.directory ? " active" : ""}${node.path === visibleFocused ? " focused" : ""}${statuses.get(node.path) === "delete" ? " deleted" : ""}`}
               style={{ paddingLeft: 8 + (node.depth - 1) * 16 }}
               title={`${node.path}${node.directory && directories.has(node.path) ? " · Есть изменения внутри" : fileStatusLabel[statuses.get(node.path) ?? ""] ? ` · ${fileStatusLabel[statuses.get(node.path) ?? ""]}` : ""}`}
               onContextMenu={(event) => {
@@ -571,7 +643,20 @@ export function FileExplorer({
             style={{ height: (rows.length - visibleEnd) * rowHeight }}
           />
         ) : null}
-        {!tree.length ? <p className="wb-empty">Нет файлов</p> : null}
+        {!tree.length ? (
+          <div className="wb-empty">
+            {paths.length && !showSystemDirectories ? (
+              <>
+                <p>Системные файлы и папки скрыты</p>
+                <button type="button" onClick={() => changeVisibility(true)}>
+                  Показать
+                </button>
+              </>
+            ) : (
+              <p>Нет файлов</p>
+            )}
+          </div>
+        ) : null}
       </div>
       {dropDirectory !== undefined || uploadProgress || dropMessage ? (
         <div className="wb-explorer-upload-status" role="status">

@@ -1,7 +1,8 @@
 "use client";
 import { Send } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
+import { ReviewDescription } from "./review-description";
 import { SettingsModal, useSettingsModal } from "./settings-modal";
 
 export function SubmitChanges({
@@ -30,8 +31,10 @@ export function SubmitChanges({
   children?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const messageId = useId();
   const needsBranch = branch === defaultBranch;
   const newBranch = needsBranch ? `docs/update-${changeSetId.slice(0, 8)}` : undefined;
+  const MessageField = reviewTitle ? "textarea" : "input";
   return (
     <>
       <button
@@ -51,9 +54,10 @@ export function SubmitChanges({
             <input name="branch" type="hidden" value={branch} />
             <input name="createReview" type="hidden" value="on" />
             {newBranch ? <input name="newBranch" type="hidden" value={newBranch} /> : null}
-            <label>
+            <label htmlFor={messageId}>
               {!reviewTitle ? `Название ${reviewLabel} и сообщение коммита` : "Сообщение коммита"}
-              <textarea
+              <MessageField
+                id={messageId}
                 name="message"
                 placeholder="Что изменилось?"
                 minLength={3}
@@ -62,6 +66,9 @@ export function SubmitChanges({
                 disabled={submitting}
               />
             </label>
+            {!reviewTitle ? (
+              <ReviewDescription reviewLabel={reviewLabel} disabled={submitting} />
+            ) : null}
             <SendButton
               disabled={disabled}
               label={

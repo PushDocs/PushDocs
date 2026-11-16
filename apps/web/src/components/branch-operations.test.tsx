@@ -9,6 +9,7 @@ vi.mock("@/app/actions", () => ({
 }));
 
 import { BranchOperations } from "./branch-operations";
+import { gitOperationStore } from "./git-operation-store";
 
 function mount(overrides: Partial<Parameters<typeof BranchOperations>[0]> = {}) {
   const props = {
@@ -25,6 +26,7 @@ function mount(overrides: Partial<Parameters<typeof BranchOperations>[0]> = {}) 
 }
 afterEach(() => {
   cleanup();
+  gitOperationStore.clear();
   vi.useRealTimers();
   vi.resetAllMocks();
 });
@@ -104,4 +106,75 @@ it("retries status reads after connection loss and reports document reload failu
     await vi.advanceTimersByTimeAsync(5000);
   });
   expect(screen.getByRole("alert").textContent).toContain("Операция в Git завершена");
+});
+
+it("restores an operation when navigating away before the start request returns", async () => {
+  let started: ((id: string) => void) | undefined;
+  mocks.start.mockReturnValue(new Promise<string>((resolve) => (started = resolve)));
+  mocks.status.mockResolvedValue({ status: "running" });
+  const first = mount({ branch: "stable" });
+  fireEvent.click(screen.getByRole("button", { name: "Обновить из Git" }));
+  await act(async () => {});
+  first.unmount();
+
+  const onBusyChange = vi.fn();
+  const next = mount({ branch: "stable", onBusyChange });
+  expect(screen.getByRole("button", { name: "Обновляем ветку…" }).hasAttribute("disabled")).toBe(
+    true,
+  );
+  expect(onBusyChange).toHaveBeenLastCalledWith(true);
+  await act(async () => started?.("original-job"));
+  expect(mocks.start).toHaveBeenCalledOnce();
+  expect(mocks.status).toHaveBeenCalledWith("project", "original-job");
+  expect(first.props.onComplete).not.toHaveBeenCalled();
+  expect(next.props.onComplete).not.toHaveBeenCalled();
+});
+
+it("reloads documents after a merge finishes while away and keeps editing locked until reload", async () => {
+  let finish: ((job: { status: string }) => void) | undefined;
+  let reload: (() => void) | undefined;
+  mocks.start.mockResolvedValue("merge-job");
+  mocks.status.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+  const first = mount();
+  fireEvent.click(screen.getByText("Влить stable…"));
+  fireEvent.click(screen.getByRole("button", { name: "Влить в docs/task" }));
+  await act(async () => {});
+  first.unmount();
+  await act(async () => finish?.({ status: "done" }));
+  expect(first.props.onComplete).not.toHaveBeenCalled();
+
+  const onBusyChange = vi.fn();
+  const next = mount({
+    onBusyChange,
+    onComplete: vi.fn(() => new Promise<void>((resolve) => (reload = resolve))),
+  });
+  await act(async () => {});
+  expect(next.props.onComplete).toHaveBeenCalledOnce();
+  expect(onBusyChange).toHaveBeenLastCalledWith(true);
+  expect(screen.getByRole("button", { name: "Обновляем ветку…" }).hasAttribute("disabled")).toBe(
+    true,
+  );
+  await act(async () => reload?.());
+  expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  expect(screen.getByRole("status").textContent).toContain("stable влита в docs/task");
+  expect(mocks.start).toHaveBeenCalledOnce();
+});
+
+it("keeps operations scoped to their project and branch", async () => {
+  mocks.start.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({ status: "running" });
+  const first = mount({ branch: "stable" });
+  fireEvent.click(screen.getByRole("button", { name: "Обновить из Git" }));
+  await act(async () => {});
+  first.unmount();
+  const otherBranch = mount({ branch: "other", canMerge: false });
+  expect(screen.getByRole("button", { name: "Обновить из Git" }).hasAttribute("disabled")).toBe(
+    false,
+  );
+  otherBranch.unmount();
+  mount({ projectId: "other-project", branch: "stable" });
+  expect(screen.getByRole("button", { name: "Обновить из Git" }).hasAttribute("disabled")).toBe(
+    false,
+  );
+  expect(mocks.start).toHaveBeenCalledOnce();
 });

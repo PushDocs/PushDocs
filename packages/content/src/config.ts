@@ -2,6 +2,7 @@ import {
   defaultMediaLocations,
   type MediaComponentConfig,
   type ProjectConfig,
+  projectConfigPaths,
   projectConfigSchema,
 } from "@pushdocs/contracts";
 import { applyEditorInput } from "./editing";
@@ -24,6 +25,7 @@ export function safePath(value: string): string {
 export function parseProjectConfig(source?: string | null): ProjectConfig {
   const config = projectConfigSchema.parse(source ? JSON.parse(source) : { version: 1 });
   for (const root of [...config.documentRoots, ...config.editableFiles]) safePath(root);
+  for (const directory of config.fileExplorer.systemDirectories) safePath(directory);
   if (config.preview) safePath(config.preview.output);
   for (const location of [config.media.images, config.media.video]) {
     if (!location) continue;
@@ -177,7 +179,7 @@ export function attachmentUploadDirectory(
 export function isEditableFile(config: ProjectConfig, filePath: string): boolean {
   safePath(filePath);
   return (
-    filePath === ".pushdocs/config.json" ||
+    filePath === projectConfigPaths.config ||
     filePath.endsWith("/.gitkeep") ||
     config.editableFiles.includes(filePath) ||
     /\.(mdx?|json)$/i.test(filePath)
@@ -191,6 +193,6 @@ export function assertProjectFileEditable(
 ): void {
   safePath(filePath);
   if (!isEditableFile(config, filePath)) throw new Error("Файл не разрешён настройками проекта");
-  if (filePath === ".pushdocs/config.json" && role !== "admin")
+  if (filePath === projectConfigPaths.config && role !== "admin")
     throw new Error("Конфигурацию изменяет администратор");
 }

@@ -1,10 +1,22 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type {
+  BranchConflictResolution,
+  BranchSummary,
   ChangeRequestDetails,
   DocumentSummary,
+  GitTransferProgress,
   ProjectRole,
   ProjectSummary,
   ProviderKind,
+} from "@pushdocs/contracts";
+import {
+  type BranchConflictSnapshot,
+  BranchUpdateStrategy,
+  branchConflictCache,
+  branchUpdateJobKind,
+  branchUpdateStrategy,
+  hasBranchConflicts,
+  type PreparedBranchUpdate,
 } from "@pushdocs/contracts";
 import {
   assertCan,
@@ -13,7 +25,7 @@ import {
   type ProjectAction,
   previewLifecycle,
 } from "@pushdocs/domain";
-import { sql } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import * as Y from "yjs";
 import {
   type DocumentExchange,
@@ -24,7 +36,7 @@ import {
 } from "./collaboration";
 import { appendEvent } from "./events";
 import { McpRepository } from "./mcp";
-import type { PreparedGitCommit } from "./schema";
+import type { Database, PreparedGitCommit } from "./schema";
 import { SecurityRepository } from "./security";
 
 export class RevisionConflictError extends Error {
@@ -748,6 +760,7 @@ export class PushDocsRepository extends SecurityRepository {
     attempt: number,
     progress: string,
     counts?: { completed: number; total: number },
+    transfer?: GitTransferProgress,
   ): Promise<void> {
     await this.transaction(async (transaction) => {
       const job = await transaction
@@ -766,6 +779,7 @@ export class PushDocsRepository extends SecurityRepository {
             ...(job.payload as Record<string, unknown>),
             progress,
             progressCounts: counts ?? null,
+            ...(transfer ? { transferProgress: transfer } : {}),
           },
           updated_at: new Date(),
         })
@@ -836,7 +850,12 @@ export class PushDocsRepository extends SecurityRepository {
 
   async ensureBranches(
     projectId: string,
-    branches: Array<{ name: string; sha: string; protected?: boolean }>,
+    branches: Array<{
+      name: string;
+      sha: string;
+      protected?: boolean;
+      lastCommitAt?: string | null;
+    }>,
   ): Promise<void> {
     if (branches.length === 0) return;
     await this.database
@@ -847,13 +866,17 @@ export class PushDocsRepository extends SecurityRepository {
           base_commit_sha: branch.sha,
           full_ref: normalizeBranchRef(branch.name),
           head_commit_sha: branch.sha,
+          remote_head_sha: branch.sha,
+          last_commit_at: branch.lastCommitAt ?? null,
           project_id: projectId,
         })),
       )
       .onConflict((conflict) =>
-        conflict
-          .columns(["project_id", "full_ref", "generation"])
-          .doUpdateSet({ is_protected: sql<boolean>`excluded.is_protected` }),
+        conflict.columns(["project_id", "full_ref", "generation"]).doUpdateSet({
+          is_protected: sql<boolean>`excluded.is_protected`,
+          remote_head_sha: sql<string>`excluded.remote_head_sha`,
+          last_commit_at: sql<Date | null>`excluded.last_commit_at`,
+        }),
       )
       .execute();
   }
@@ -876,6 +899,42 @@ export class PushDocsRepository extends SecurityRepository {
     return job.id;
   }
 
+  private async getActiveBranchImport(projectId: string, branch: string) {
+    return this.database
+      .selectFrom("jobs")
+      .select("id")
+      .where("kind", "in", ["branch.sync", "branch.create"])
+      .where("status", "in", ["queued", "running"])
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .where(sql<string>`payload->>'branch'`, "=", branch)
+      .orderBy("created_at", "desc")
+      .executeTakeFirst();
+  }
+
+  async ensureBranchImport(projectId: string, branch: string): Promise<string | null> {
+    const fullRef = normalizeBranchRef(branch);
+    return this.transaction(async (tx) => {
+      await tx
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", projectId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const store = new PushDocsRepository(tx);
+      const active = await store.getActiveBranchImport(projectId, fullRef);
+      if (active) return active.id;
+      const context = await tx
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("project_id", "=", projectId)
+        .where("full_ref", "=", fullRef)
+        .orderBy("generation", "desc")
+        .executeTakeFirst();
+      if (context && (await store.hasImportedBranch(context.id))) return null;
+      return store.enqueueBranchSync(projectId, fullRef);
+    });
+  }
+
   async enqueueBranchMerge(input: {
     projectId: string;
     branch: string;
@@ -895,6 +954,508 @@ export class PushDocsRepository extends SecurityRepository {
       .returning("id")
       .executeTakeFirstOrThrow();
     return job.id;
+  }
+
+  async getActiveConflictMerge(projectId: string, branch: string) {
+    const jobs = await this.database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("kind", "in", ["branch.merge", branchUpdateJobKind])
+      .where("status", "in", ["queued", "running", "failed"])
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .where(sql<string>`payload->>'branch'`, "=", normalizeBranchRef(branch))
+      .orderBy("created_at", "desc")
+      .execute();
+    return jobs.find((job) => {
+      const payload = job.payload as Record<string, unknown>;
+      return (
+        (payload.inspectionId || job.kind === branchUpdateJobKind) &&
+        !payload.reservationReleased &&
+        (job.status !== "failed" || payload.preparedMerge || payload.preparedUpdate)
+      );
+    });
+  }
+
+  async getActiveReviewBranchUpdate(projectId: string, branch: string) {
+    const job = await this.getActiveConflictMerge(projectId, branch);
+    return job?.kind === branchUpdateJobKind ? job : undefined;
+  }
+
+  async queueReviewBranchUpdate(input: {
+    projectId: string;
+    reviewId: string;
+    expectedHeadSha: string;
+    userId: string;
+    oauthGrantId?: string;
+    refreshFromTarget?: boolean;
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
+    return this.transaction(async (tx) => {
+      const store = new PushDocsRepository(tx);
+      const review = await tx
+        .selectFrom("change_requests")
+        .selectAll()
+        .where("id", "=", input.reviewId)
+        .where("project_id", "=", input.projectId)
+        .executeTakeFirst();
+      if (!review)
+        throw new RevisionConflictError("Исходная ветка PR / MR недоступна для обновления.");
+      if (review.state === "open" && review.head_sha && review.details?.source?.isFork === false)
+        await tx
+          .insertInto("branch_contexts")
+          .values({
+            project_id: input.projectId,
+            full_ref: review.source_branch,
+            head_commit_sha: review.head_sha,
+            base_commit_sha: review.head_sha,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["project_id", "full_ref", "generation"]).doNothing(),
+          )
+          .execute();
+      const branch = await tx
+        .selectFrom("branch_contexts")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", review.source_branch)
+        .forUpdate()
+        .executeTakeFirst();
+      const active = await store.getActiveReviewBranchUpdate(input.projectId, review.source_branch);
+      if (active && (active.payload as Record<string, unknown>).reviewId === review.id) {
+        if (active.status === "failed")
+          await tx
+            .updateTable("jobs")
+            .set({
+              status: "queued",
+              available_at: new Date(),
+              last_error: null,
+              payload: {
+                ...(active.payload as object),
+                userId: input.userId,
+                oauthGrantId: input.oauthGrantId,
+              },
+            })
+            .where("id", "=", active.id)
+            .execute();
+        return active.id;
+      }
+      if (
+        !branch ||
+        review.state !== "open" ||
+        !review.head_sha ||
+        review.details?.source?.isFork !== false
+      )
+        throw new RevisionConflictError("Исходная ветка PR / MR недоступна для обновления.");
+      const project = await tx
+        .selectFrom("projects")
+        .select("default_branch")
+        .where("id", "=", input.projectId)
+        .executeTakeFirstOrThrow();
+      const strategy =
+        branchUpdateStrategy(review.details) ??
+        (input.refreshFromTarget ? BranchUpdateStrategy.Merge : null);
+      if (!strategy || review.head_sha !== input.expectedHeadSha)
+        throw new RevisionConflictError("Состояние PR / MR изменилось. Обновите данные из Git.");
+      if (branch.is_protected || branch.full_ref === project.default_branch)
+        throw new RevisionConflictError("Защищённую ветку нельзя обновить из PushDocs.");
+      const blockers = await store.getBranchConflictBlockers(input.projectId, branch.full_ref);
+      const queuedMerge = await tx
+        .selectFrom("jobs")
+        .select("id")
+        .where("kind", "=", "branch.merge")
+        .where("status", "in", ["queued", "running"])
+        .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+        .where(sql<string>`payload->>'branch'`, "=", branch.full_ref)
+        .executeTakeFirst();
+      if (blockers.paths.length || blockers.busy || queuedMerge)
+        throw new RevisionConflictError("Сначала завершите текущие изменения в исходной ветке.");
+      const job = await tx
+        .insertInto("jobs")
+        .values({
+          kind: branchUpdateJobKind,
+          payload: {
+            projectId: input.projectId,
+            userId: input.userId,
+            reviewId: review.id,
+            externalReviewId: review.external_id,
+            branch: review.source_branch,
+            sourceBranch: review.target_branch,
+            expectedHeadSha: input.expectedHeadSha,
+            strategy,
+            oauthGrantId: input.oauthGrantId,
+            refreshFromTarget: input.refreshFromTarget,
+          },
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      return job.id;
+    });
+  }
+
+  async savePreparedBranchUpdate(
+    jobId: string,
+    attempt: number,
+    preparedUpdate: PreparedBranchUpdate & { targetKey: string },
+  ) {
+    await this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("kind", "=", branchUpdateJobKind)
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!job) throw new RevisionConflictError("Обновление уже передано другому обработчику.");
+      const payload = job.payload as Record<string, unknown>;
+      const existing = payload.preparedUpdate as typeof preparedUpdate | undefined;
+      if (
+        existing &&
+        (existing.version !== preparedUpdate.version ||
+          existing.strategy !== preparedUpdate.strategy ||
+          existing.branch !== preparedUpdate.branch ||
+          existing.sourceBranch !== preparedUpdate.sourceBranch ||
+          existing.parentSha !== preparedUpdate.parentSha ||
+          existing.sourceSha !== preparedUpdate.sourceSha ||
+          existing.sha !== preparedUpdate.sha ||
+          existing.targetKey !== preparedUpdate.targetKey ||
+          JSON.stringify(existing.commits) !== JSON.stringify(preparedUpdate.commits))
+      )
+        throw new RevisionConflictError("Результат обновления уже сохранён.");
+      await tx
+        .updateTable("jobs")
+        .set({ payload: { ...payload, preparedUpdate }, updated_at: new Date() })
+        .where("id", "=", jobId)
+        .execute();
+    });
+  }
+
+  async listBranchesNeedingAttention(projectId: string) {
+    const [reviews, updates] = await Promise.all([
+      this.database
+        .selectFrom("change_requests")
+        .select(["source_branch", "details"])
+        .where("project_id", "=", projectId)
+        .where("state", "=", "open")
+        .execute(),
+      this.database
+        .selectFrom("jobs")
+        .select(["payload", "status"])
+        .where("kind", "=", branchUpdateJobKind)
+        .where("status", "in", ["queued", "running", "failed"])
+        .where(sql<string>`payload->>'projectId'`, "=", projectId)
+        .execute(),
+    ]);
+    return [
+      ...new Set([
+        ...reviews
+          .filter(
+            ({ details }) =>
+              details?.source?.isFork === false &&
+              (branchUpdateStrategy(details) || hasBranchConflicts(details.readiness.reason)),
+          )
+          .map((review) => review.source_branch),
+        ...updates.flatMap((job) => {
+          const payload = job.payload as Record<string, unknown>;
+          return !payload.reservationReleased &&
+            (job.status !== "failed" || payload.preparedUpdate) &&
+            typeof payload.branch === "string"
+            ? [payload.branch]
+            : [];
+        }),
+      ]),
+    ];
+  }
+
+  private async assertBranchNotResolving(
+    tx: Kysely<Database> | Transaction<Database>,
+    projectId: string,
+    branch: string,
+  ) {
+    if (await new PushDocsRepository(tx).getActiveConflictMerge(projectId, branch))
+      throw new RevisionConflictError(
+        "Ветка обновляется или в неё отправляется решение конфликтов. Дождитесь завершения или повторите остановленную отправку.",
+      );
+  }
+
+  async getBranchConflictBlockers(projectId: string, branch: string) {
+    const [drafts, attachments, merge, context] = await Promise.all([
+      this.listDraftFiles(projectId, branch),
+      this.listAttachmentsForBranch(projectId, branch),
+      this.getActiveConflictMerge(projectId, branch),
+      this.database
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("project_id", "=", projectId)
+        .where("full_ref", "=", normalizeBranchRef(branch))
+        .executeTakeFirst(),
+    ]);
+    const changes = context
+      ? await this.database
+          .selectFrom("change_sets")
+          .select("status")
+          .where("branch_context_id", "=", context.id)
+          .where("status", "in", ["submitting", "conflicted"])
+          .execute()
+      : [];
+    const upload = context
+      ? await this.database
+          .selectFrom("upload_leases")
+          .select("id")
+          .where("branch_context_id", "=", context.id)
+          .where("expires_at", ">", new Date())
+          .executeTakeFirst()
+      : undefined;
+    return {
+      branch,
+      paths: [
+        ...new Set([
+          ...drafts.map((file) => file.path),
+          ...attachments.map((file) => file.repository_path),
+        ]),
+      ],
+      busy: Boolean(changes.length || upload || merge),
+      mergeJobId: merge?.id,
+      mergeFailed: merge?.status === "failed",
+    };
+  }
+
+  async enqueueConflictInspection(
+    input: {
+      projectId: string;
+      reviewId: string;
+      externalReviewId: string;
+      branch: string;
+      sourceBranch: string;
+      userId: string;
+      refresh?: boolean;
+      oauthGrantId?: string;
+    },
+    cache?: { parentSha: string; sourceSha: string; repositoryKey: string },
+  ) {
+    return this.transaction(async (tx) => {
+      await tx
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", input.projectId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      if (cache) {
+        const completed = await new PushDocsRepository(tx).findConflictInspection({
+          ...input,
+          ...cache,
+        });
+        if (completed) return completed.id;
+      }
+      const active = await tx
+        .selectFrom("jobs")
+        .select("id")
+        .where("kind", "=", "branch.conflicts")
+        .where("status", "in", ["queued", "running"])
+        .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+        .where(sql<string>`payload->>'reviewId'`, "=", input.reviewId)
+        .where(sql<string>`payload->>'branch'`, "=", input.branch)
+        .where(sql<string>`payload->>'sourceBranch'`, "=", input.sourceBranch)
+        .executeTakeFirst();
+      if (active) return active.id;
+      const job = await tx
+        .insertInto("jobs")
+        .values({ kind: "branch.conflicts", payload: input })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      return job.id;
+    });
+  }
+
+  async findConflictInspection(input: {
+    projectId: string;
+    reviewId: string;
+    branch: string;
+    sourceBranch: string;
+    parentSha: string;
+    sourceSha: string;
+    repositoryKey: string;
+  }) {
+    const jobs = await this.database
+      .selectFrom("jobs")
+      .select(["id", "payload"])
+      .where("kind", "=", "branch.conflicts")
+      .where("status", "=", "done")
+      .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+      .where(sql<string>`payload->>'reviewId'`, "=", input.reviewId)
+      .where(sql<string>`payload->>'branch'`, "=", input.branch)
+      .where(sql<string>`payload->>'sourceBranch'`, "=", input.sourceBranch)
+      .orderBy("updated_at", "desc")
+      .limit(branchConflictCache.entries)
+      .execute();
+    for (const job of jobs) {
+      const payload = job.payload as {
+        targetKey?: string;
+        conflictSnapshot?: BranchConflictSnapshot;
+      };
+      const snapshot = payload.conflictSnapshot;
+      if (
+        payload.targetKey === input.repositoryKey &&
+        snapshot?.inspectionVersion === branchConflictCache.version &&
+        snapshot.parentSha === input.parentSha &&
+        snapshot.sourceSha === input.sourceSha
+      )
+        return { id: job.id, snapshot };
+    }
+    return undefined;
+  }
+
+  async saveConflictInspection(
+    jobId: string,
+    attempt: number,
+    snapshot: BranchConflictSnapshot,
+    targetKey: string,
+  ) {
+    await this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("kind", "=", "branch.conflicts")
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .updateTable("jobs")
+        .set({
+          payload: { ...(job.payload as object), conflictSnapshot: snapshot, targetKey },
+          updated_at: new Date(),
+        })
+        .where("id", "=", jobId)
+        .execute();
+    });
+  }
+
+  async queueConflictMerge(input: {
+    projectId: string;
+    inspectionId: string;
+    files: BranchConflictResolution;
+    userId: string;
+    oauthGrantId?: string;
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
+    return this.transaction(async (tx) => {
+      const inspection = await tx
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", input.inspectionId)
+        .where("kind", "=", "branch.conflicts")
+        .where("status", "=", "done")
+        .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+        .executeTakeFirstOrThrow();
+      const payload = inspection.payload as {
+        conflictSnapshot: BranchConflictSnapshot;
+        reviewId: string;
+        externalReviewId: string;
+        targetKey: string;
+      };
+      const snapshot = payload.conflictSnapshot;
+      if (
+        !snapshot?.files.length ||
+        snapshot.unsupportedReason ||
+        snapshot.files.some((file) => file.kind === "unsupported")
+      )
+        throw new RevisionConflictError("Этот конфликт нужно разрешить в Git-провайдере.");
+      if (
+        input.files.length !== snapshot.files.length ||
+        new Set(input.files.map((file) => file.path)).size !== input.files.length ||
+        input.files.some((file) => !snapshot.files.some((item) => item.path === file.path))
+      )
+        throw new RevisionConflictError("Выберите решение для каждого файла.");
+      await tx
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", snapshot.branch)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const blockers = await new PushDocsRepository(tx).getBranchConflictBlockers(
+        input.projectId,
+        snapshot.branch,
+      );
+      if (blockers.busy || blockers.paths.length)
+        throw new RevisionConflictError("Сначала завершите текущие изменения в исходной ветке.");
+      const job = await tx
+        .insertInto("jobs")
+        .values({
+          kind: "branch.merge",
+          payload: {
+            projectId: input.projectId,
+            userId: input.userId,
+            inspectionId: input.inspectionId,
+            reviewId: payload.reviewId,
+            externalReviewId: payload.externalReviewId,
+            targetKey: payload.targetKey,
+            branch: snapshot.branch,
+            sourceBranch: snapshot.sourceBranch,
+            resolutionSnapshot: snapshot,
+            resolutionFiles: input.files,
+            oauthGrantId: input.oauthGrantId,
+          },
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      return job.id;
+    });
+  }
+
+  async releaseBranchMergeReservation(jobId: string, attempt: number) {
+    await this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      await tx
+        .updateTable("jobs")
+        .set({ payload: { ...(job.payload as object), reservationReleased: true } })
+        .where("id", "=", jobId)
+        .execute();
+    });
+  }
+
+  async retryConflictMerge(
+    projectId: string,
+    jobId: string,
+    userId: string,
+    oauthGrantId?: string,
+  ) {
+    await this.requireProjectAccess(userId, projectId, "branch:push");
+    await this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", jobId)
+        .where("kind", "=", "branch.merge")
+        .where("status", "=", "failed")
+        .where(sql<string>`payload->>'projectId'`, "=", projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const payload = job.payload as Record<string, unknown>;
+      if (!payload.inspectionId || !payload.preparedMerge || payload.reservationReleased)
+        throw new RevisionConflictError("Заново получите список конфликтов.");
+      await tx
+        .updateTable("jobs")
+        .set({
+          status: "queued",
+          available_at: new Date(),
+          last_error: null,
+          payload: { ...payload, userId, oauthGrantId },
+        })
+        .where("id", "=", jobId)
+        .execute();
+    });
+    return jobId;
   }
 
   async savePreparedBranchMerge(
@@ -948,24 +1509,26 @@ export class PushDocsRepository extends SecurityRepository {
     maxAgeMs = 120_000,
   ): Promise<string | null> {
     const fullRef = normalizeBranchRef(branch);
-    const cached = await this.database
-      .selectFrom("branch_contexts")
-      .select("updated_at")
-      .where("project_id", "=", projectId)
-      .where("full_ref", "=", fullRef)
-      .orderBy("generation", "desc")
-      .executeTakeFirst();
-    if (cached && new Date(cached.updated_at).getTime() >= Date.now() - maxAgeMs) return null;
-    const active = await this.database
-      .selectFrom("jobs")
-      .select("id")
-      .where("kind", "=", "branch.sync")
-      .where("status", "in", ["queued", "running"])
-      .where(sql<string>`payload->>'projectId'`, "=", projectId)
-      .where(sql<string>`payload->>'branch'`, "=", fullRef)
-      .orderBy("created_at", "desc")
-      .executeTakeFirst();
-    return active?.id ?? this.enqueueBranchSync(projectId, fullRef);
+    return this.transaction(async (tx) => {
+      await tx
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", projectId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const store = new PushDocsRepository(tx);
+      const active = await store.getActiveBranchImport(projectId, fullRef);
+      if (active) return active.id;
+      const cached = await tx
+        .selectFrom("branch_contexts")
+        .select("updated_at")
+        .where("project_id", "=", projectId)
+        .where("full_ref", "=", fullRef)
+        .orderBy("generation", "desc")
+        .executeTakeFirst();
+      if (cached && new Date(cached.updated_at).getTime() >= Date.now() - maxAgeMs) return null;
+      return store.enqueueBranchSync(projectId, fullRef);
+    });
   }
 
   async enqueueBranchCreation(input: {
@@ -1016,10 +1579,60 @@ export class PushDocsRepository extends SecurityRepository {
     await new McpRepository(this.database).requireGrant(grantId, userId, projectId, scope);
   }
 
+  /** Refresh one live review without closing unrelated reviews or clearing their checks. */
+  async upsertOpenReview(input: {
+    projectId: string;
+    externalId: string;
+    headSha: string;
+    sourceBranch: string;
+    targetBranch: string;
+    title: string;
+    url: string;
+    details: ChangeRequestDetails;
+  }) {
+    const values = {
+      project_id: input.projectId,
+      external_id: input.externalId,
+      head_sha: input.headSha,
+      source_branch: input.sourceBranch,
+      source_branch_is_local: input.details.source ? !input.details.source.isFork : null,
+      target_branch: input.targetBranch,
+      title: input.title,
+      provider_url: input.url,
+      details: JSON.stringify(input.details),
+      state: "open" as const,
+      updated_at: new Date(),
+    };
+    return this.database
+      .insertInto("change_requests")
+      .values(values)
+      .onConflict((conflict) => conflict.columns(["project_id", "external_id"]).doUpdateSet(values))
+      .returning("id")
+      .executeTakeFirstOrThrow();
+  }
+
+  async getMcpConflictInspection(projectId: string, inspectionId: string) {
+    const job = await this.database
+      .selectFrom("jobs")
+      .select(["payload", "status"])
+      .where("id", "=", inspectionId)
+      .where("kind", "=", "branch.conflicts")
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .executeTakeFirst();
+    if (!job) return undefined;
+    const payload = job.payload as Record<string, unknown>;
+    return {
+      status: job.status,
+      externalReviewId: String(payload.externalReviewId),
+      targetKey: payload.targetKey,
+      snapshot: payload.conflictSnapshot as BranchConflictSnapshot | undefined,
+    };
+  }
+
   async getMcpOperation(projectId: string, operationId: string) {
     const job = await this.database
       .selectFrom("jobs")
-      .select(["status", "last_error", "payload"])
+      .select(["status", "last_error", "payload", "kind"])
       .where("id", "=", operationId)
       .where(sql<string>`payload->>'projectId'`, "=", projectId)
       .executeTakeFirst();
@@ -1064,6 +1677,25 @@ export class PushDocsRepository extends SecurityRepository {
         : null,
       result: {
         branch,
+        canResumeConflictResolution:
+          job.kind === "branch.merge" &&
+          job.status === "failed" &&
+          !!payload.inspectionId &&
+          !!payload.preparedMerge &&
+          !payload.reservationReleased,
+        ...(job.status === "done" && payload.preparedUpdate
+          ? {
+              updateOutcome:
+                (payload.preparedUpdate as PreparedBranchUpdate).sha ===
+                (payload.preparedUpdate as PreparedBranchUpdate).parentSha
+                  ? "already_current"
+                  : "updated",
+              strategy: (payload.preparedUpdate as PreparedBranchUpdate).strategy,
+            }
+          : {}),
+        ...(job.last_error && /[Кк]онфликт|[Cc]onflict|Rebase остановлен/.test(job.last_error)
+          ? { needsConflictAnalysis: true }
+          : {}),
         commitSha: commit?.commitSha ?? (payload.changeSetId ? undefined : state?.head_commit_sha),
         commitUrl: commit?.commitUrl,
         currentBranchSha: state?.head_commit_sha,
@@ -1082,13 +1714,29 @@ export class PushDocsRepository extends SecurityRepository {
   async getProjectJob(projectId: string, jobId: string) {
     const job = await this.database
       .selectFrom("jobs")
-      .select(["status", "last_error", "payload"])
+      .select(["status", "last_error", "payload", "attempts"])
       .where("id", "=", jobId)
       .where(sql<string>`payload->>'projectId'`, "=", projectId)
       .executeTakeFirst();
     if (!job) return undefined;
     const payload = job.payload as Record<string, unknown>;
     const progress = payload.progress;
+    const transfer = payload.transferProgress as Partial<GitTransferProgress> | undefined;
+    const transferProgress =
+      transfer &&
+      typeof transfer.receivedBytes === "number" &&
+      Number.isFinite(transfer.receivedBytes) &&
+      transfer.receivedBytes >= 0
+        ? {
+            receivedBytes: transfer.receivedBytes,
+            totalBytes:
+              typeof transfer.totalBytes === "number" &&
+              Number.isFinite(transfer.totalBytes) &&
+              transfer.totalBytes >= transfer.receivedBytes
+                ? transfer.totalBytes
+                : null,
+          }
+        : undefined;
     const counts = payload.progressCounts as
       | { completed?: unknown; total?: unknown }
       | null
@@ -1100,8 +1748,12 @@ export class PushDocsRepository extends SecurityRepository {
     return {
       status: job.status,
       last_error: job.last_error,
+      ...(payload.conflictSnapshot
+        ? { conflictSnapshot: payload.conflictSnapshot as BranchConflictSnapshot }
+        : {}),
       progress: typeof progress === "string" ? progress : null,
       progressCounts,
+      ...(transferProgress ? { transferProgress, progressAttempt: job.attempts } : {}),
     };
   }
 
@@ -1778,6 +2430,95 @@ export class PushDocsRepository extends SecurityRepository {
       .execute();
   }
 
+  async listBranchSummaries(projectId: string): Promise<BranchSummary[]> {
+    const localWork = this.database
+      .selectFrom("change_sets")
+      .leftJoin("draft_files", "draft_files.change_set_id", "change_sets.id")
+      .leftJoin("attachments", "attachments.change_set_id", "change_sets.id")
+      .select("change_sets.branch_context_id")
+      .distinct()
+      .where("change_sets.project_id", "=", projectId)
+      .where("change_sets.status", "!=", "submitted")
+      .where(({ or, eb }) =>
+        or([
+          eb("change_sets.status", "!=", "open"),
+          eb("draft_files.path", "is not", null),
+          eb("attachments.status", "in", ["pending", "ready"]),
+        ]),
+      );
+    const activeJobs = this.database
+      .selectFrom("jobs")
+      .select(sql<string>`payload->>'branch'`.as("branch"))
+      .distinct()
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .where("status", "in", ["queued", "running"]);
+    const rows = await this.database
+      .selectFrom("branch_contexts")
+      .leftJoin("change_requests", (join) =>
+        join
+          .onRef("change_requests.project_id", "=", "branch_contexts.project_id")
+          .onRef("change_requests.source_branch", "=", "branch_contexts.full_ref")
+          .on("change_requests.source_branch_is_local", "=", true),
+      )
+      .leftJoin(localWork.as("local_work"), "local_work.branch_context_id", "branch_contexts.id")
+      .leftJoin(activeJobs.as("active_jobs"), "active_jobs.branch", "branch_contexts.full_ref")
+      .select([
+        "branch_contexts.id",
+        "branch_contexts.full_ref",
+        "branch_contexts.is_protected",
+        "branch_contexts.remote_head_sha",
+        "branch_contexts.last_commit_at",
+        "local_work.branch_context_id as local_work_id",
+        "active_jobs.branch as active_job_branch",
+        "change_requests.external_id as review_external_id",
+        "change_requests.state as review_state",
+        "change_requests.head_sha as review_head_sha",
+        "change_requests.target_branch as review_target_branch",
+      ])
+      .where("branch_contexts.project_id", "=", projectId)
+      .orderBy("branch_contexts.updated_at", "desc")
+      .execute();
+    const branches = new Map<string, BranchSummary>();
+    for (const row of rows) {
+      const summary = branches.get(row.id) ?? {
+        full_ref: row.full_ref,
+        is_protected: row.is_protected,
+        lastCommitAt: row.last_commit_at ? new Date(row.last_commit_at).toISOString() : null,
+        review: null,
+        isCompleted: false,
+      };
+      const previous = summary.review;
+      const preferReview =
+        !previous ||
+        (row.review_state === "open" && previous.state !== "open") ||
+        ((row.review_state === "open") === (previous.state === "open") &&
+          (row.review_external_id ?? "").localeCompare(previous.externalId, undefined, {
+            numeric: true,
+          }) > 0);
+      if (row.review_state && row.review_external_id && row.review_target_branch && preferReview) {
+        summary.review = {
+          externalId: row.review_external_id,
+          state: row.review_state,
+          targetBranch: row.review_target_branch,
+        };
+        summary.isCompleted = Boolean(
+          (row.review_state === "closed" ||
+            (row.review_state === "merged" &&
+              row.review_head_sha &&
+              row.review_head_sha === row.remote_head_sha)) &&
+            !row.local_work_id &&
+            !row.active_job_branch,
+        );
+      }
+      branches.set(row.id, summary);
+    }
+    return [...branches.values()].sort(
+      (a, b) =>
+        (Date.parse(b.lastCommitAt ?? "") || 0) - (Date.parse(a.lastCommitAt ?? "") || 0) ||
+        a.full_ref.localeCompare(b.full_ref),
+    );
+  }
+
   async hasImportedBranch(branchId: string): Promise<boolean> {
     const event = await this.database
       .selectFrom("domain_events")
@@ -2006,6 +2747,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.assertBranchNotResolving(transaction, input.projectId, input.branch);
       if (input.expectedHeadSha && branch.head_commit_sha !== input.expectedHeadSha)
         throw new RevisionConflictError(
           "The imported branch snapshot changed. Reload before editing.",
@@ -2156,6 +2898,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.assertBranchNotResolving(transaction, input.projectId, input.branch);
       let changeSet = await transaction
         .selectFrom("change_sets")
         .selectAll()
@@ -2486,8 +3229,10 @@ export class PushDocsRepository extends SecurityRepository {
         .where("project_id", "=", input.projectId)
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .orderBy("generation", "desc")
+        .forUpdate()
         .executeTakeFirst();
       if (!branch) throw new NotFoundError("Branch not found");
+      await this.assertBranchNotResolving(transaction, input.projectId, input.branch);
       const existing = await transaction
         .selectFrom("imported_documents")
         .select("path")
@@ -2551,8 +3296,10 @@ export class PushDocsRepository extends SecurityRepository {
         .where("project_id", "=", input.projectId)
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .orderBy("generation", "desc")
+        .forUpdate()
         .executeTakeFirst();
       if (!branch) throw new NotFoundError("Branch not found");
+      await this.assertBranchNotResolving(transaction, input.projectId, input.branch);
       let changeSet = await transaction
         .selectFrom("change_sets")
         .selectAll()
@@ -2800,8 +3547,9 @@ export class PushDocsRepository extends SecurityRepository {
         url: string | null;
       }>;
       externalId: string;
-      headSha: string;
+      headSha: string | null;
       sourceBranch: string;
+      sourceBranchIsLocal?: boolean | null;
       state: "open" | "merged" | "closed";
       targetBranch: string;
       title: string;
@@ -2825,6 +3573,9 @@ export class PushDocsRepository extends SecurityRepository {
             project_id: projectId,
             provider_url: request.url,
             source_branch: request.sourceBranch,
+            source_branch_is_local:
+              request.sourceBranchIsLocal ??
+              (request.details?.source ? !request.details.source.isFork : null),
             state: request.state,
             target_branch: request.targetBranch,
             title: request.title,
@@ -2835,6 +3586,9 @@ export class PushDocsRepository extends SecurityRepository {
               head_sha: request.headSha,
               provider_url: request.url,
               source_branch: request.sourceBranch,
+              source_branch_is_local:
+                request.sourceBranchIsLocal ??
+                (request.details?.source ? !request.details.source.isFork : null),
               state: request.state,
               target_branch: request.targetBranch,
               title: request.title,
@@ -2847,7 +3601,7 @@ export class PushDocsRepository extends SecurityRepository {
           .deleteFrom("check_runs")
           .where("change_request_id", "=", stored.id)
           .execute();
-        if (request.checks.length > 0) {
+        if (request.headSha && request.checks.length > 0) {
           await transaction
             .insertInto("check_runs")
             .values(
@@ -3017,6 +3771,7 @@ export class PushDocsRepository extends SecurityRepository {
         .forUpdate()
         .executeTakeFirst();
       if (!branch) throw new NotFoundError("Branch not found");
+      await this.assertBranchNotResolving(transaction, input.projectId, input.branch);
       if (input.expectedHeadSha && input.expectedHeadSha !== branch.head_commit_sha)
         throw new RevisionConflictError("Branch snapshot changed during optimization.");
       let changeSet = await transaction
@@ -3145,6 +3900,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("id", "=", target.branch_context_id)
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.assertBranchNotResolving(transaction, input.projectId, sourceBranch.full_ref);
       const uploading = await transaction
         .selectFrom("upload_leases")
         .select("id")
@@ -3582,6 +4338,8 @@ export class PushDocsRepository extends SecurityRepository {
         .updateTable("branch_contexts")
         .set({
           head_commit_sha: input.commitSha,
+          remote_head_sha: input.commitSha,
+          last_commit_at: null,
           repository_paths: JSON.stringify([...paths]),
           updated_at: new Date(),
         })
@@ -3654,12 +4412,13 @@ export class PushDocsRepository extends SecurityRepository {
         .where("id", "=", changeSetId)
         .where("project_id", "=", projectId)
         .executeTakeFirstOrThrow();
-      await tx
+      const branch = await tx
         .selectFrom("branch_contexts")
-        .select("id")
+        .select(["id", "full_ref"])
         .where("id", "=", context.branch_context_id)
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.assertBranchNotResolving(tx, projectId, branch.full_ref);
       const upload = await tx
         .selectFrom("upload_leases")
         .select("id")
@@ -3745,6 +4504,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where("full_ref", "=", normalizeBranchRef(input.branch))
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.assertBranchNotResolving(tx, input.projectId, input.branch);
       const change = await tx
         .selectFrom("change_sets")
         .select(["status", "revision"])
