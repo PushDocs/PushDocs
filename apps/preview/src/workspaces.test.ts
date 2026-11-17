@@ -1,7 +1,18 @@
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { run } from "./service";
 import { createWorkspaceManager, workspaceKey } from "./workspaces";
 
@@ -10,10 +21,7 @@ afterEach(async () => {
   for (const root of temporary.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(
-  quiesce?: (uid: number) => Promise<void>,
-  hasRuntimeProcesses?: (uid: number) => Promise<boolean>,
-) {
+async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "pushdocs-worktrees-"));
   temporary.push(root);
   const source = path.join(root, "source");
@@ -29,10 +37,8 @@ async function fixture(
   await git(["commit", "--quiet", "-m", "first"]);
   const first = (await git(["rev-parse", "HEAD"])).trim();
   const commands: string[][] = [];
-  const manager = createWorkspaceManager({
+  const rawManager = createWorkspaceManager({
     root: path.join(root, "preview"),
-    quiesce,
-    hasRuntimeProcesses,
     access: async () => ({ remote: source, env: process.env }),
     fetch: (operation) => operation(),
     run: (command, options) => {
@@ -43,7 +49,14 @@ async function fixture(
     },
   });
   await mkdir(path.join(root, "preview"));
-  return { root, source, git, first, commands, manager };
+  const manager = {
+    ...rawManager,
+    ensure: async (...args: Parameters<typeof rawManager.ensure>) => {
+      await rawManager.ensure(...args);
+      return rawManager.publish(args[0]);
+    },
+  };
+  return { root, source, git, first, commands, manager, rawManager };
 }
 
 it("pins the imported SHA and shares Git objects between isolated branch worktrees", async () => {
@@ -113,8 +126,7 @@ it("keeps different projects separate and prunes only inactive worktrees", async
 });
 
 it("migrates a prepared legacy checkout without losing its installed dependencies or drafts", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { root, source, first, manager } = await fixture(quiesce, async () => false);
+  const { root, source, first, manager } = await fixture();
   await manager.initialize();
   await writeFile(
     path.join(root, "preview/metadata/runtime-11000.json"),
@@ -155,10 +167,10 @@ it("migrates a prepared legacy checkout without losing its installed dependencie
   expect(await readFile(path.join(prepared.workspace, "node_modules/installed"), "utf8")).toBe(
     "dependencies",
   );
-  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("draft");
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(legacy, "docs/page.md"), "utf8")).toBe("draft");
   expect(prepared.cache.installed).toBe(true);
-  expect(quiesce).not.toHaveBeenCalled();
-  expect(prepared.cache.appliedPaths).toEqual(["docs/page.md"]);
+  expect(prepared.cache.appliedPaths).toEqual([]);
   expect(
     await run(["git", "rev-parse", "HEAD"], { cwd: prepared.workspace, timeoutMs: 10_000 }),
   ).toContain(first);
@@ -314,83 +326,60 @@ it("ignores a runtime-replaced Git pointer when restoring a draft", async () => 
   expect(await readFile(path.join(source, "docs/page.md"), "utf8")).toBe("outside runtime");
 });
 
-it("does not stop a reused UID now assigned to another workspace", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { root, first, manager } = await fixture(quiesce);
+it("prepares a new private tree without touching an old writer or reused UID", async () => {
+  const { root, first, manager, rawManager } = await fixture();
   const a = { projectId: "a", branch: "main", headSha: first };
   const b = { ...a, projectId: "b" };
   const one = await manager.ensure(a, new AbortController().signal);
   const two = await manager.ensure(b, new AbortController().signal);
-  await manager.saveCache(a, { ...one.cache, uid: 11000 });
-  // A stopped. B now owns the same port/UID; grantReadAccess revoked A's access.
+  await manager.saveCache(a, { ...one.cache, uid: 11000, exposed: true });
   await writeFile(
     path.join(root, "preview/metadata/runtime-11000.json"),
     JSON.stringify({ workspace: two.workspace }),
   );
-  await manager.ensure(a, new AbortController().signal);
-  expect(quiesce).not.toHaveBeenCalled();
+  await writeFile(path.join(one.workspace, "docs/page.md"), "old writer");
+  const prepared = await rawManager.ensure(a, new AbortController().signal);
+  expect(prepared.workspace).not.toBe(one.workspace);
+  expect(path.dirname(prepared.workspace)).toBe(path.join(root, "preview/preparing"));
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(one.workspace, "docs/page.md"), "utf8")).toBe("old writer");
+  expect(await readFile(path.join(two.workspace, "docs/page.md"), "utf8")).toBe("first");
+  await rawManager.discard(a);
 });
 
-it("stops an orphan UID only when its trusted assignment still names this workspace", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { root, first, manager } = await fixture(quiesce, async () => true);
+it("does not copy cache hardlinks or follow cache symlinks outside the old tree", async () => {
+  const { root, first, manager, rawManager } = await fixture();
   const branch = { projectId: "a", branch: "main", headSha: first };
-  const prepared = await manager.ensure(branch, new AbortController().signal);
-  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
-  await writeFile(
-    path.join(root, "preview/metadata/runtime-11000.json"),
-    JSON.stringify({ workspace: prepared.workspace }),
-  );
-  await manager.ensure(branch, new AbortController().signal);
-  expect(quiesce).toHaveBeenCalledExactlyOnceWith(11000);
+  const one = await manager.ensure(branch, new AbortController().signal);
+  const { link, readlink } = await import("node:fs/promises");
+  const outside = path.join(root, "outside");
+  await writeFile(outside, "controller data");
+  await mkdir(path.join(one.workspace, "node_modules"));
+  await link(outside, path.join(one.workspace, "node_modules/hardlink"));
+  await symlink(outside, path.join(one.workspace, "node_modules/symlink"));
+  await manager.saveCache(branch, { ...one.cache, installed: true });
+  const prepared = await rawManager.ensure(branch, new AbortController().signal);
+  await expect(readFile(path.join(prepared.workspace, "node_modules/hardlink"))).rejects.toThrow();
+  expect(await readlink(path.join(prepared.workspace, "node_modules/symlink"))).toBe(outside);
+  expect(prepared.cache.installed).toBe(false);
+  expect(await readFile(outside, "utf8")).toBe("controller data");
+  await rawManager.discard(branch);
 });
-it("permits preparation after restart with a repository-only assignment and no UID processes", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { root, first, manager } = await fixture(quiesce, async () => false);
+
+it("cleans a private preparation and Git registration abandoned by a previous controller", async () => {
+  const { root, first, rawManager } = await fixture();
   const branch = { projectId: "a", branch: "main", headSha: first };
-  const prepared = await manager.ensure(branch, new AbortController().signal);
-  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
-  await writeFile(
-    path.join(root, "preview/metadata/runtime-11000.json"),
-    JSON.stringify({ repository: "legacy" }),
-  );
-  await expect(manager.ensure(branch, new AbortController().signal)).resolves.toMatchObject({
-    workspace: prepared.workspace,
+  const abandoned = await rawManager.ensure(branch, new AbortController().signal);
+  const restarted = createWorkspaceManager({
+    root: path.join(root, "preview"),
+    run,
+    access: async () => {
+      throw new Error("no fetch needed for orphan cleanup");
+    },
+    fetch: (operation) => operation(),
   });
-  expect(quiesce).not.toHaveBeenCalled();
-});
-it("does not kill an unknown live owner or modify its workspace", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { first, manager } = await fixture(quiesce, async () => true);
-  const branch = { projectId: "a", branch: "main", headSha: first };
-  const prepared = await manager.ensure(branch, new AbortController().signal);
-  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
-  await writeFile(path.join(prepared.workspace, "docs/page.md"), "live writer");
-  await expect(manager.ensure(branch, new AbortController().signal)).rejects.toThrow("подтвердить");
-  expect(quiesce).not.toHaveBeenCalled();
-  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("live writer");
-});
-
-it("keeps a legacy tree untouched when its old UID belongs to a live different site", async () => {
-  const quiesce = vi.fn(async () => {});
-  const { root, first, manager } = await fixture(quiesce, async () => true);
-  const other = { projectId: "b", branch: "main", headSha: first };
-  const b = await manager.ensure(other, new AbortController().signal);
-  const id = "00000000-0000-4000-8000-000000000003";
-  const legacy = path.join(root, "preview", id);
-  await mkdir(path.join(legacy, "docs"), { recursive: true, mode: 0o700 });
-  await writeFile(path.join(legacy, "docs/page.md"), "legacy draft");
-  await writeFile(
-    path.join(root, "preview", `${id}.json`),
-    JSON.stringify({ headSha: first, uid: 11000, appliedPaths: ["docs/page.md"], installed: true }),
-  );
-  await writeFile(
-    path.join(root, "preview/metadata/runtime-11000.json"),
-    JSON.stringify({ workspace: b.workspace }),
-  );
-  const a = await manager.ensure({ ...other, projectId: "a" }, new AbortController().signal, id);
-  expect(quiesce).not.toHaveBeenCalled();
-  expect(await readFile(path.join(legacy, "docs/page.md"), "utf8")).toBe("legacy draft");
-  expect(await readFile(path.join(a.workspace, "docs/page.md"), "utf8")).toBe("first");
-  expect(a.cache.installed).toBe(false);
+  await restarted.prune(new Set(), Date.now() + 1000);
+  await expect(stat(abandoned.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(path.join(root, "preview/preparing"))).toEqual([]);
+  expect(await readdir(path.join(root, "preview/repositories"))).toEqual([]);
 });

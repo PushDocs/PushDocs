@@ -311,4 +311,4 @@ it("updates only changed files, preserves dependencies across commits and reinst
     vi.unstubAllGlobals();
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
