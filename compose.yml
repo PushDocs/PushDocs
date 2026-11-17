@@ -23,7 +23,7 @@ services:
   postgres:
     sysctls:
       net.mptcp.enabled: "0"
-    image: postgres:17.11-alpine3.23
+    image: postgres:17.12-alpine3.23
     ports:
       - "127.0.0.1:${PUSHDOCS_POSTGRES_PORT:-5432}:5432"
     environment:

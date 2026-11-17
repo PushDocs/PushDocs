@@ -78,6 +78,13 @@ try {
       timeoutMs: 10_000,
     }),
   );
+  const originalPointer = await readFile(path.join(one.workspace, ".git"), "utf8");
+  await writeFile(path.join(one.workspace, ".git"), `gitdir: ${path.join(source, ".git")}\n`);
+  await writeFile(path.join(one.workspace, "page.md"), "runtime draft");
+  await manager.restore(one.workspace, "page.md", headSha);
+  assert.equal(await readFile(path.join(one.workspace, "page.md"), "utf8"), "page");
+  // Restore the legitimate read-only pointer so ordinary site Git plugins keep working.
+  await writeFile(path.join(one.workspace, ".git"), originalPointer);
   const shared = (
     await run(["git", "rev-parse", "--git-common-dir"], { cwd: one.workspace, timeoutMs: 10_000 })
   ).trim();

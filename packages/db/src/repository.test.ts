@@ -3510,3 +3510,81 @@ it("stops all preview leases without deleting files and detects changes to the a
     disk_bytes: 1_200_000_000,
   });
 });
+
+describe("invitation authority", () => {
+  it.each(["reader", null] as const)(
+    "revokes invitations when an administrator becomes %s",
+    async (role) => {
+      const fixture = await projectFixture();
+      const inviter = await repository.createUser({
+        displayName: "Inviter",
+        email: "inviter@example.test",
+        passwordHash: "hash",
+      });
+      const invited = await repository.createUser({
+        displayName: "Invited",
+        email: "invited@example.test",
+        passwordHash: "hash",
+      });
+      await database
+        .insertInto("project_memberships")
+        .values({ project_id: fixture.projectId, user_id: inviter.id, role: "admin" })
+        .execute();
+      await repository.createInvitation({
+        email: "invited@example.test",
+        invitedByUserId: inviter.id,
+        projectId: fixture.projectId,
+        role: "admin",
+        tokenHash: "revoked-inviter",
+      });
+      await repository.manageMember({
+        actorId: fixture.operatorId,
+        projectId: fixture.projectId,
+        userId: inviter.id,
+        role,
+      });
+      await expect(
+        repository.acceptInvitation("revoked-inviter", invited.id),
+      ).rejects.toBeInstanceOf(NotFoundError);
+      expect(
+        (await repository.listMembers(fixture.projectId)).some(
+          (member) => member.id === invited.id,
+        ),
+      ).toBe(false);
+    },
+  );
+});
+
+it("rejects a legacy invitation whose sender no longer manages members", async () => {
+  const fixture = await projectFixture();
+  const inviter = await repository.createUser({
+    displayName: "Old admin",
+    email: "old-admin@example.test",
+    passwordHash: "hash",
+  });
+  const invited = await repository.createUser({
+    displayName: "Invited",
+    email: "legacy-invited@example.test",
+    passwordHash: "hash",
+  });
+  await database
+    .insertInto("project_memberships")
+    .values({ project_id: fixture.projectId, user_id: inviter.id, role: "admin" })
+    .execute();
+  await repository.createInvitation({
+    email: "legacy-invited@example.test",
+    invitedByUserId: inviter.id,
+    projectId: fixture.projectId,
+    role: "admin",
+    tokenHash: "legacy-invitation",
+  });
+  await database
+    .updateTable("project_memberships")
+    .set({ role: "reader" })
+    .where("user_id", "=", inviter.id)
+    .execute();
+  await expect(repository.acceptInvitation("legacy-invitation", invited.id)).rejects.toThrow();
+  expect(
+    (await repository.listMembers(fixture.projectId)).some((member) => member.id === invited.id),
+  ).toBe(false);
+});

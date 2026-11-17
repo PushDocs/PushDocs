@@ -3828,6 +3828,19 @@ export class PushDocsRepository extends SecurityRepository {
 
   async acceptInvitation(tokenHash: string, userId: string): Promise<{ projectId: string }> {
     return this.transaction(async (transaction) => {
+      const target = await transaction
+        .selectFrom("project_invitations")
+        .select("project_id")
+        .where("token_hash", "=", tokenHash)
+        .executeTakeFirst();
+      if (!target) throw new NotFoundError("Invitation is invalid or expired");
+      // Use the same project lock as membership changes before checking the inviter.
+      await transaction
+        .selectFrom("projects")
+        .select("id")
+        .where("id", "=", target.project_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
       const invitation = await transaction
         .selectFrom("project_invitations")
         .innerJoin("users", "users.email", "project_invitations.email")
@@ -3835,6 +3848,7 @@ export class PushDocsRepository extends SecurityRepository {
           "project_invitations.id",
           "project_invitations.project_id",
           "project_invitations.role",
+          "project_invitations.invited_by_user_id",
           "users.id as invited_user_id",
         ])
         .where("project_invitations.token_hash", "=", tokenHash)
@@ -3845,6 +3859,14 @@ export class PushDocsRepository extends SecurityRepository {
       if (!invitation || invitation.invited_user_id !== userId) {
         throw new NotFoundError("Invitation is invalid or expired");
       }
+      const inviter = await transaction
+        .selectFrom("project_memberships")
+        .select("role")
+        .where("project_id", "=", invitation.project_id)
+        .where("user_id", "=", invitation.invited_by_user_id)
+        .executeTakeFirst();
+      if (!inviter) throw new NotFoundError("Invitation is invalid or expired");
+      assertCan(inviter.role, "member:manage");
       await transaction
         .insertInto("project_memberships")
         .values({
@@ -3901,6 +3923,14 @@ export class PushDocsRepository extends SecurityRepository {
         members.filter((member) => member.role === "admin").length === 1
       )
         throw new Error("Нельзя удалить или понизить роль последнего администратора");
+      if (input.role !== "admin") {
+        await trx
+          .deleteFrom("project_invitations")
+          .where("project_id", "=", input.projectId)
+          .where("invited_by_user_id", "=", input.userId)
+          .where("accepted_at", "is", null)
+          .execute();
+      }
       if (input.role)
         await trx
           .updateTable("project_memberships")

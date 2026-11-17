@@ -66,6 +66,7 @@ export function createWorkspaceManager(options: {
   access: (projectId: string) => Promise<GitAccess>;
   fetch: (operation: () => Promise<string>) => Promise<string>;
   isActive?: (key: string) => boolean;
+  quiesce?: (uid: number) => Promise<void>;
 }) {
   const repositories = path.join(options.root, "repositories");
   const worktrees = path.join(options.root, "worktrees");
@@ -75,6 +76,13 @@ export function createWorkspaceManager(options: {
   const repositoryPath = (projectId: string) => path.join(repositories, `${digest(projectId)}.git`);
   const workspacePath = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
     path.join(worktrees, workspaceKey(branch));
+  const worktreeGitDir = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
+    path.join(repositoryPath(branch.projectId), "worktrees", workspaceKey(branch));
+  function gitLocation(branch: Pick<WorkspaceBranch, "projectId" | "branch">, cwd: string) {
+    return cwd === workspacePath(branch)
+      ? [`--git-dir=${worktreeGitDir(branch)}`, `--work-tree=${cwd}`]
+      : [`--git-dir=${repositoryPath(branch.projectId)}`];
+  }
   const cachePath = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
     path.join(metadata, `${workspaceKey(branch)}.json`);
 
@@ -178,148 +186,24 @@ export function createWorkspaceManager(options: {
           ? path.join(options.root, legacySessionId)
           : undefined;
       let cache = await readCache(branch);
-      let migrated = false;
-      let legacyHead: string | undefined;
-      if (legacyWorkspace && (await exists(path.join(legacyWorkspace, ".git")))) {
-        try {
-          legacyHead = (
-            await options.run(["git", "-C", legacyWorkspace, "rev-parse", "--verify", "HEAD"], {
-              cwd: options.root,
-              signal,
-              timeoutMs: 30_000,
-            })
-          ).trim();
-        } catch {
-          signal.throwIfAborted();
-          // A failed download may leave an initialized repository with no checked-out commit.
-          legacyHead = undefined;
-        }
-      }
-      // Preserve existing node_modules and build caches on upgrades from session-based checkouts.
-      if (!(await exists(workspace)) && legacyWorkspace && legacyHead) {
-        if (process.platform === "linux" && process.getuid?.() === 0)
-          // upload-pack deliberately strips caller Git configuration. Own the source Git metadata
-          // as controller state before copying it; leave installed dependencies untouched.
-          await options.run(["chown", "-R", "0:0", path.join(legacyWorkspace, ".git")], {
-            cwd: options.root,
-            signal,
-            timeoutMs: 120_000,
-          });
-        if (!(await exists(repository))) {
-          await options.run(
-            [
-              "git",
-              "-c",
-              `safe.directory=${legacyWorkspace}`,
-              "-c",
-              `safe.directory=${path.join(legacyWorkspace, ".git")}`,
-              "clone",
-              "--bare",
-              "--no-hardlinks",
-              "--quiet",
-              legacyWorkspace,
-              repository,
-            ],
-            {
-              cwd: options.root,
-              signal,
-              timeoutMs: 120_000,
-            },
-          );
-          await chmod(repository, 0o700);
-        } else {
-          await options.run(
-            [
-              "git",
-              "-c",
-              `safe.directory=${legacyWorkspace}`,
-              "-c",
-              `safe.directory=${path.join(legacyWorkspace, ".git")}`,
-              "-C",
-              repository,
-              "fetch",
-              "--quiet",
-              "--update-shallow",
-              legacyWorkspace,
-              "HEAD",
-            ],
-            {
-              cwd: options.root,
-              signal,
-              timeoutMs: 120_000,
-            },
-          );
-        }
-        try {
-          cache = JSON.parse(
-            await readFile(path.join(options.root, `${legacySessionId}.json`), "utf8"),
-          ) as WorkspaceCache;
-        } catch {
-          cache = null;
-        }
-        await options.run(
-          [
-            "git",
-            "-C",
-            repository,
-            "worktree",
-            "add",
-            "--detach",
-            "--no-checkout",
-            workspace,
-            legacyHead,
-          ],
-          {
-            cwd: options.root,
-            signal,
-            timeoutMs: 30_000,
-          },
-        );
-        // The new worktree contains only its Git pointer. Move it into the prepared legacy folder.
-        await rm(path.join(legacyWorkspace, ".git"), { recursive: true, force: true });
-        await rename(path.join(workspace, ".git"), path.join(legacyWorkspace, ".git"));
-        await rm(workspace, { recursive: true });
-        await rename(legacyWorkspace, workspace);
-        await chmod(workspace, 0o700);
-        await options.run(["git", "-C", repository, "worktree", "repair", workspace], {
-          cwd: options.root,
-          signal,
-          timeoutMs: 30_000,
-        });
-        // Populate the per-worktree index without rewriting the working files.
-        await options.run(["git", "-C", workspace, "read-tree", legacyHead], {
-          cwd: options.root,
-          signal,
-          timeoutMs: 30_000,
-        });
-        cache = {
-          ...cache,
-          appliedPaths: cache?.appliedPaths ?? [],
-          installed: cache?.installed ?? false,
-          headSha: legacyHead,
-          legacyWorkspace,
-          lastUsedAt: Date.now(),
-        };
-        await saveCache(branch, cache);
-        await rm(path.join(options.root, `${legacySessionId}.json`), { force: true });
-        migrated = true;
-      }
-      if (
-        !migrated &&
-        cache?.headSha === branch.headSha &&
-        (await exists(path.join(workspace, ".git")))
-      )
+      if (cache?.uid !== undefined) await options.quiesce?.(cache.uid);
+      // Legacy Git metadata is untrusted. A controller-owned receipt may preserve a
+      // same-base legacy file tree, but all Git objects and metadata come from the remote.
+      if (cache?.headSha === branch.headSha && (await exists(worktreeGitDir(branch))))
         return { workspace, cache };
 
       const { remote, env } = await options.access(branch.projectId);
       const git = (args: string[], cwd = repository, maxOutput?: number) =>
-        options.run(["git", "-c", "core.hooksPath=/dev/null", ...args], {
-          cwd,
-          env,
-          signal,
-          timeoutMs: 10 * 60_000,
-          maxOutput,
-        });
+        options.run(
+          ["git", ...gitLocation(branch, cwd), "-c", "core.hooksPath=/dev/null", ...args],
+          {
+            cwd,
+            env,
+            signal,
+            timeoutMs: 10 * 60_000,
+            maxOutput,
+          },
+        );
       if (!(await exists(repository))) {
         await mkdir(repository, { mode: 0o700 });
         await git(["init", "--bare", "--quiet"]);
@@ -331,10 +215,6 @@ export function createWorkspaceManager(options: {
       await git(["config", "remote.origin.url", remote]);
       await git(["config", "remote.origin.promisor", "true"]);
       await git(["config", "remote.origin.partialclonefilter", "blob:none"]);
-      if (migrated && cache) {
-        await git(["update-ref", `refs/pushdocs/commits/${cache.headSha}`, cache.headSha]);
-        if (cache.headSha === branch.headSha) return { workspace, cache };
-      }
       try {
         await git(["show-ref", "--verify", "--quiet", `refs/pushdocs/commits/${branch.headSha}`]);
       } catch {
@@ -351,9 +231,36 @@ export function createWorkspaceManager(options: {
           ]),
         );
       }
-      if (!(await exists(path.join(workspace, ".git")))) {
+      if (!(await exists(worktreeGitDir(branch)))) {
         await git(["worktree", "add", "--detach", "--no-checkout", workspace, branch.headSha]);
         await chmod(workspace, 0o700);
+        let legacyCache: WorkspaceCache | undefined;
+        if (legacyWorkspace && (await exists(legacyWorkspace))) {
+          try {
+            legacyCache = JSON.parse(
+              await readFile(path.join(options.root, `${legacySessionId}.json`), "utf8"),
+            ) as WorkspaceCache;
+          } catch {
+            /* No complete controller receipt: rebuild from the imported commit. */
+          }
+        }
+        if (
+          legacyWorkspace &&
+          legacyCache?.headSha === branch.headSha &&
+          Array.isArray(legacyCache.appliedPaths) &&
+          legacyCache.appliedPaths.every((filename) => typeof filename === "string")
+        ) {
+          if (legacyCache.uid !== undefined) await options.quiesce?.(legacyCache.uid);
+          await rm(path.join(legacyWorkspace, ".git"), { recursive: true, force: true });
+          await rename(path.join(workspace, ".git"), path.join(legacyWorkspace, ".git"));
+          await rm(workspace, { recursive: true });
+          await rename(legacyWorkspace, workspace);
+          await chmod(workspace, 0o700);
+          await git(["read-tree", branch.headSha], workspace);
+          cache = { ...legacyCache, legacyWorkspace, lastUsedAt: Date.now() };
+          await saveCache(branch, cache);
+          return { workspace, cache };
+        }
         await git(["sparse-checkout", "set", "--cone", "--no-sparse-index"], workspace);
         await options.fetch(() =>
           git(["checkout", "--quiet", "--detach", branch.headSha], workspace),
@@ -377,6 +284,19 @@ export function createWorkspaceManager(options: {
         );
         await options.fetch(() => git(["sparse-checkout", "disable"], workspace));
       }
+      // Without a matching receipt, keep dependency caches but rebuild tracked files
+      // from the imported commit. Drafts will be reapplied from PostgreSQL by the service.
+      if (legacyWorkspace) {
+        for (const name of ["node_modules", ".package-cache", ".docusaurus", ".next"]) {
+          const from = path.join(legacyWorkspace, name);
+          const info = await lstat(from).catch((error) => {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+            throw error;
+          });
+          if (info?.isDirectory() && !(await exists(path.join(workspace, name))))
+            await rename(from, path.join(workspace, name));
+        }
+      }
       cache = {
         ...cache,
         headSha: branch.headSha,
@@ -395,10 +315,19 @@ export function createWorkspaceManager(options: {
   async function restore(workspace: string, filename: string, headSha?: string) {
     const { safePath } = await import("@pushdocs/content");
     const safe = safePath(filename);
+    if (path.dirname(workspace) !== worktrees || !/^[a-f0-9]{64}$/.test(path.basename(workspace)))
+      throw new Error("Неизвестная рабочая папка предпросмотра");
+    const cache = JSON.parse(
+      await readFile(path.join(metadata, `${path.basename(workspace)}.json`), "utf8"),
+    ) as WorkspaceBranch;
+    if (workspacePath(cache) !== workspace)
+      throw new Error("Рабочая папка не совпадает с метаданными");
+    const location = gitLocation(cache, workspace);
     try {
       await options.run(
         [
           "git",
+          ...location,
           "-c",
           "core.hooksPath=/dev/null",
           "restore",
@@ -416,7 +345,7 @@ export function createWorkspaceManager(options: {
     } catch (error) {
       // Only remove paths that are absent from the base; other Git failures must remain visible.
       try {
-        await options.run(["git", "cat-file", "-e", `${headSha ?? "HEAD"}:${safe}`], {
+        await options.run(["git", ...location, "cat-file", "-e", `${headSha ?? "HEAD"}:${safe}`], {
           cwd: workspace,
           timeoutMs: 30_000,
         });
