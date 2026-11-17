@@ -403,31 +403,41 @@ describe("review branch updates", () => {
     expect((await repository.getProjectJob(f.projectId, f.id))?.status).toBe("needs_resolution");
   });
 
-  it("cancels only the current paused commit and releases its reservation without deleting the journal", async () => {
-    const f = await pausedRebase();
-    await expect(
-      repository.cancelRebaseUpdate(f.projectId, f.id, "stale", f.operatorId),
-    ).rejects.toThrow("ожидания");
-    await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
-    await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
-    expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toBeUndefined();
-    expect(await repository.getBranchConflictBlockers(f.projectId, "docs/task")).toMatchObject({
-      busy: false,
-    });
-    await expect(repository.continueRebaseUpdate(f.continuation)).rejects.toThrow("изменился");
-    await expect(
-      repository.retryReviewBranchUpdate(f.projectId, f.id, f.operatorId),
-    ).rejects.toThrow("недоступно");
-    const job = await database
-      .selectFrom("jobs")
-      .selectAll()
-      .where("id", "=", f.id)
-      .executeTakeFirstOrThrow();
-    expect(job).toMatchObject({
-      status: "failed",
-      payload: { reservationReleased: true, rebaseProgress: f.progress },
-    });
-  });
+  it.each(["open", "closed", "merged"] as const)(
+    "cancels only the current paused commit and releases its reservation for a %s MR without deleting the journal",
+    async (state) => {
+      const f = await pausedRebase();
+      await database
+        .updateTable("change_requests")
+        .set({ state, ...(state !== "open" ? { head_sha: null, details: null } : {}) })
+        .where("id", "=", f.review.id)
+        .execute();
+      await expect(
+        repository.cancelRebaseUpdate(f.projectId, f.id, "stale", f.operatorId),
+      ).rejects.toThrow("ожидания");
+      await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
+      await repository.cancelRebaseUpdate(f.projectId, f.id, "conflict-one", f.operatorId);
+      expect(
+        await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task"),
+      ).toBeUndefined();
+      expect(await repository.getBranchConflictBlockers(f.projectId, "docs/task")).toMatchObject({
+        busy: false,
+      });
+      await expect(repository.continueRebaseUpdate(f.continuation)).rejects.toThrow("изменился");
+      await expect(
+        repository.retryReviewBranchUpdate(f.projectId, f.id, f.operatorId),
+      ).rejects.toThrow("недоступно");
+      const job = await database
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", f.id)
+        .executeTakeFirstOrThrow();
+      expect(job).toMatchObject({
+        status: "failed",
+        payload: { reservationReleased: true, rebaseProgress: f.progress },
+      });
+    },
+  );
 
   it("renews the technical retry budget without resetting the lease generation", async () => {
     const f = await pausedRebase();

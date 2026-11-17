@@ -18,6 +18,7 @@ import {
 import { projectChangesHref } from "@/lib/project-paths";
 import { conflictInspectionStore, useConflictInspection } from "./conflict-inspection";
 import { listLocalDrafts } from "./draft-storage";
+import { rebaseCancelLabels } from "./git-operation-labels";
 import { GitOperationKind, gitOperationKey, gitOperationStore } from "./git-operation-store";
 import { branchConflictPollingDelays } from "./git-operation-timing";
 import { PollingLifecycle } from "./polling-lifecycle";
@@ -335,7 +336,7 @@ export function useConflictResolution({
       if (active.current === token)
         setState({
           phase: ResolutionPhase.Editing,
-          error: error instanceof Error ? error.message : "Не удалось отменить rebase.",
+          error: error instanceof Error ? error.message : rebaseCancelLabels.error,
         });
     } finally {
       if (active.current === token) commandPending.current = false;

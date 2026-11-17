@@ -68,6 +68,7 @@ vi.mock("@/app/conflict-actions", () => ({
   prepareConflictResolutionAction: vi.fn(),
   submitConflictResolutionAction: vi.fn(),
   retryConflictResolutionAction: vi.fn(),
+  cancelRebaseUpdateAction: vi.fn(),
 }));
 vi.mock("@/app/actions", () => ({
   resolveConflictAction: vi.fn(),
@@ -402,6 +403,59 @@ it("keeps recovery of a prepared update available after the MR closes", async ()
   expect(reviewLink).toContain('rel="noreferrer"');
   expect(html).not.toContain('href="/projects/project/reviews?review=mr"');
 });
+
+it.each(["open", "closed", "merged", "missing"])(
+  "offers cancellation of the active paused rebase for a %s MR",
+  async (state) => {
+    repository.findOpenChangeRequestByBranch.mockResolvedValueOnce({
+      id: "new-mr",
+      source_branch: "fix",
+      state: "open",
+      title: "Another MR on the same branch",
+    });
+    repository.getActiveReviewBranchUpdate.mockResolvedValueOnce({
+      id: "rebase-job",
+      status: "needs_resolution",
+      payload: {
+        reviewId: "mr",
+        strategy: "rebase",
+        expectedHeadSha: "original-head",
+        conflictSnapshot: { rebase: { conflictId: "current-conflict" } },
+      },
+    });
+    repository.listChangeRequests.mockResolvedValueOnce(
+      state === "missing"
+        ? []
+        : [
+            {
+              id: "mr",
+              state,
+              source_branch: "fix",
+              target_branch: "release",
+              provider_url: "https://git.example/mr",
+              details:
+                state === "open"
+                  ? {
+                      source: { isFork: false },
+                      readiness: { state: "blocked", reason: "conflict" },
+                    }
+                  : null,
+            },
+          ],
+    );
+    const html = renderToStaticMarkup(
+      await ChangesPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ branch: "fix" }),
+      }),
+    );
+    expect(html).toContain("Отменить rebase");
+    expect(html.match(/class="branch-notice /g)).toHaveLength(1);
+    expect(html).not.toContain("Создать MR");
+    expect(html.includes("Исправить конфликты")).toBe(state === "open");
+    expect(html).not.toContain("resolve=new-mr");
+  },
+);
 
 it("shows branch conflicts and the resolver even when no local files have changed", async () => {
   repository.listDraftFiles.mockResolvedValueOnce([]);

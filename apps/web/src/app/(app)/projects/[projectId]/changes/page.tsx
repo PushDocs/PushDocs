@@ -1,4 +1,5 @@
 import {
+  type BranchConflictSnapshot,
   BranchUpdateStrategy,
   branchUpdateStrategy,
   branchUpdateWaitingStatus,
@@ -17,6 +18,7 @@ import { BranchConflictNotice, BranchConflictResolver } from "@/components/branc
 import { BranchImport } from "@/components/branch-import";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
+import { PausedRebaseNotice } from "@/components/paused-rebase-notice";
 import { ProjectContext } from "@/components/project-context";
 import { ReviewBranchUpdate } from "@/components/review-branch-update";
 import { SubmitChanges } from "@/components/submit-changes";
@@ -115,15 +117,24 @@ export default async function ChangesPage({
       store.getActiveReviewBranchUpdate(projectId, branch),
     ]);
   const activePayload = activeUpdate?.payload as
-    | { reviewId: string; strategy: BranchUpdateStrategy; expectedHeadSha: string }
+    | {
+        reviewId: string;
+        strategy: BranchUpdateStrategy;
+        expectedHeadSha: string;
+        conflictSnapshot?: BranchConflictSnapshot;
+      }
     | undefined;
-  const review =
-    openReview ??
-    (activePayload
-      ? (await store.listChangeRequests(projectId)).find(
+  const review = activePayload
+    ? openReview?.id === activePayload.reviewId
+      ? openReview
+      : (await store.listChangeRequests(projectId)).find(
           (item) => item.id === activePayload.reviewId,
         )
-      : undefined);
+    : openReview;
+  const pausedRebase =
+    activeUpdate?.status === branchUpdateWaitingStatus
+      ? activePayload?.conflictSnapshot?.rebase
+      : undefined;
   if (
     !activeUpdate &&
     working.branch.repository_paths.length === 0 &&
@@ -138,7 +149,7 @@ export default async function ChangesPage({
   const branchHasConflicts = hasBranchConflicts(conflictReview?.details?.readiness.reason);
   const rebaseRequired =
     branchUpdateStrategy(conflictReview?.details) === BranchUpdateStrategy.Rebase;
-  const branchNeedsUpdate = Boolean(review && (needsBranchUpdate(review.details) || activeUpdate));
+  const branchNeedsUpdate = Boolean(activeUpdate || (review && needsBranchUpdate(review.details)));
   const branchNeedsAttention = branchHasConflicts || branchNeedsUpdate;
   const reviewUrl =
     review?.state === "open"
@@ -204,7 +215,18 @@ export default async function ChangesPage({
 
       <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
 
-      {review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts || rebaseRequired) ? (
+      {pausedRebase && activeUpdate && activePayload ? (
+        <PausedRebaseNotice
+          key={`${activeUpdate.id}:${pausedRebase.conflictId}`}
+          projectId={projectId}
+          reviewId={activePayload.reviewId}
+          branch={branch}
+          operationId={activeUpdate.id}
+          conflictId={pausedRebase.conflictId}
+          canResolve={review?.state === "open" && review.details?.source?.isFork === false}
+          canWrite={project.role !== "reader"}
+        />
+      ) : review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts || rebaseRequired) ? (
         <ReviewBranchUpdate
           waitingForResolution={activeUpdate?.status === branchUpdateWaitingStatus}
           review={review}

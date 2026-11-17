@@ -51,11 +51,16 @@ test.beforeAll(async () => {
       import { useEffect, useState } from "react";
       import { BranchConflictNotice, BranchConflictResolver, DocumentBranchConflicts, ProjectConflictProgress, ReviewConflictFiles } from "./apps/web/src/components/branch-conflicts";
       import { ReviewBranchUpdate } from "./apps/web/src/components/review-branch-update";
+      import { PausedRebaseNotice } from "./apps/web/src/components/paused-rebase-notice";
+      import { Check, FileText, GitBranch } from "lucide-react";
       import "./apps/web/src/app/globals.css";
       import "./apps/web/src/app/workbench.css";
       import "./packages/ui/src/styles.css";
       const props = {projectId:"project",reviewId:"review",branch:"docs/task",targetBranch:"main",defaultBranch:"main",ownerId:"user",canWrite:true,providerUrl:"https://git.example/review",reviewLabel:"MR"};
       const isRebase=location.search.includes("rebase") || sessionStorage.getItem("fixture-rebase")==="true";
+      const isPausedRebase=location.search.includes("paused-rebase");
+      const closedReview=location.search.includes("closed");
+      if(isPausedRebase && sessionStorage.getItem("rebase-step")===null) sessionStorage.setItem("rebase-step","1");
       if(isRebase) sessionStorage.setItem("fixture-rebase","true");
       function App() {
         const [section,setSection] = useState(location.search.includes("resolve=") ? "resolver" : isRebase ? "changes" : location.search.includes("documents") ? "documents" : location.search.includes("review") ? "review" : "resolver");
@@ -70,6 +75,12 @@ test.beforeAll(async () => {
           return () => { window.removeEventListener("fixture:navigate",navigate); window.removeEventListener("fixture:resolve",resolve); window.removeEventListener("fixture:refresh",refresh); };
         },[]);
         const step=Number(sessionStorage.getItem("rebase-step")||0);
+        if(isPausedRebase) return <div className="page changes-page">
+          <header className="page-header"><div><h1>Изменения в ветке</h1></div><div className="changes-header-actions"><span className="branch-placeholder"><GitBranch aria-hidden size={15} />docs/task</span></div></header>
+          <ol className="branch-workflow" aria-label="Этапы работы с веткой"><li className="complete"><span><Check aria-hidden size={13}/></span>Правки</li><li className="complete"><span><Check aria-hidden size={13}/></span>Коммит в ветку</li><li className="active" aria-current="step"><span>3</span>MR</li></ol>
+          {step>0 ? <PausedRebaseNotice projectId="project" reviewId="review" branch="docs/task" operationId="rebase" conflictId="conflict-1" canResolve={!closedReview} canWrite /> : null}
+          <section className="empty-state"><FileText aria-hidden/><h2>{step>0 ? "Нет локальных правок" : "Все изменения отправлены"}</h2><a className="pd-button pd-button--secondary" href="https://git.example/review" target="_blank" rel="noreferrer">Открыть MR</a><a className="pd-button pd-button--secondary" href="/projects/project/documents?branch=docs%2Ftask">Открыть документы</a></section>
+        </div>;
         const updateNotice = isRebase && step<3 ? <ReviewBranchUpdate projectId="project" ownerId="user" canWrite provider="gitlab" waitingForResolution={step>0} review={{id:"review",head_sha:"12345678",source_branch:"docs/task",target_branch:"main",provider_url:props.providerUrl,details:{updateRequired:true,readiness:{state:"blocked",reason:step>0?"conflict":"need_rebase"},source:{isFork:false},branchUpdatePolicy:{...${JSON.stringify(snapshot.updatePolicy)},strategy:"rebase"}}}} /> : null;
         return <><ProjectConflictProgress projectId="project" ownerId="user" hidden={section === "documents"} />
           <nav><button onClick={()=>setSection("documents")}>Документы</button><button onClick={()=>setSection("review")}>MR</button><button onClick={()=>setSection("resolver")}>Конфликты</button></nav>
@@ -116,7 +127,7 @@ test.beforeAll(async () => {
             return {status:"done", conflictSnapshot: id === "inspect" ? snapshot : null};
           }
           export async function startGitOperationAction() {window.updateStarts=(window.updateStarts||0)+1;sessionStorage.setItem("rebase-step","1");return "rebase";}
-          export async function cancelRebaseUpdateAction() {sessionStorage.setItem("rebase-step","0");}
+          export async function cancelRebaseUpdateAction(...args) {window.cancelledRebase=args;await new Promise(resolve=>setTimeout(resolve,300));sessionStorage.setItem("rebase-step","0");}
           export async function submitConflictResolutionAction(project, inspection, files, conflictId) { window.submittedFiles=files; if(isRebase){sessionStorage.setItem("rebase-decisions",JSON.stringify([...(JSON.parse(sessionStorage.getItem("rebase-decisions")||"[]")),conflictId]));sessionStorage.setItem("rebase-step",String(step()+1));return "rebase";} return "publish"; }
           export async function retryConflictResolutionAction() { return "publish"; }
         `,
@@ -145,6 +156,45 @@ test.beforeAll(async () => {
   };
 });
 test.afterAll(async () => fixture?.close());
+
+test("changes page cancels a paused rebase after its MR closes", async ({ page }, testInfo) => {
+  await page.goto(`${fixture.url}?paused-rebase&closed`);
+  const notice = page.getByRole("region", { name: "Приостановленный rebase" });
+  await expect(notice.getByRole("button", { name: "Отменить rebase" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Исправить конфликты" })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: `output/branch-conflicts/paused-rebase-closed-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+  await notice.getByRole("button", { name: "Отменить rebase" }).click();
+  await expect(notice.getByRole("button", { name: "Отменяем rebase…" })).toBeDisabled();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Все изменения отправлены" })).toBeVisible();
+  expect(await page.evaluate(() => Reflect.get(window, "cancelledRebase"))).toEqual([
+    "project",
+    "rebase",
+    "conflict-1",
+  ]);
+});
+
+test("changes page keeps resolution beside cancellation for an open MR", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`${fixture.url}?paused-rebase`);
+  const notice = page.getByRole("region", { name: "Приостановленный rebase" });
+  await expect(notice.getByRole("link", { name: "Исправить конфликты" })).toBeVisible();
+  await expect(notice.getByRole("button", { name: "Отменить rebase" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: `output/branch-conflicts/paused-rebase-open-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
+});
 
 test("rebase resolves successive commits on the same screen and resumes after reload", async ({
   page,

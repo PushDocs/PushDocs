@@ -28,6 +28,12 @@ export const branchConflictLabels = {
   reader: "Исправить конфликты может редактор проекта",
 } as const;
 
+export const rebaseCancelLabels = {
+  idle: "Отменить rebase",
+  busy: "Отменяем rebase…",
+  error: "Не удалось отменить rebase.",
+} as const;
+
 export const pendingBranchChangesLabels = {
   title: "Сохраните текущие правки",
   description: "Сохраните или отмените текущие правки, чтобы продолжить.",

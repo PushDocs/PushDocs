@@ -14,7 +14,11 @@ import {
   useConflictInspection,
   useConflictInspections,
 } from "./conflict-inspection";
-import { branchConflictLabels, pendingBranchChangesLabels } from "./git-operation-labels";
+import {
+  branchConflictLabels,
+  pendingBranchChangesLabels,
+  rebaseCancelLabels,
+} from "./git-operation-labels";
 import { GitTransferStatus } from "./git-transfer-status";
 import { ResolutionPhase, useConflictResolution } from "./use-conflict-resolution";
 import { useLocalDraftChanges } from "./use-local-draft-changes";
@@ -458,7 +462,7 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
                     type="button"
                     onClick={() => void cancelRebase()}
                   >
-                    Отменить rebase
+                    {rebaseCancelLabels.idle}
                   </button>
                 ) : null}
               </div>
