@@ -1,5 +1,6 @@
 import {
-  type BranchUpdateStrategy,
+  BranchUpdateStrategy,
+  branchUpdateStrategy,
   branchUpdateWaitingStatus,
   hasBranchConflicts,
   needsBranchUpdate,
@@ -135,6 +136,8 @@ export default async function ChangesPage({
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
   const conflictReview = requestedReview ?? review;
   const branchHasConflicts = hasBranchConflicts(conflictReview?.details?.readiness.reason);
+  const rebaseRequired =
+    branchUpdateStrategy(conflictReview?.details) === BranchUpdateStrategy.Rebase;
   const branchNeedsUpdate = Boolean(review && (needsBranchUpdate(review.details) || activeUpdate));
   const branchNeedsAttention = branchHasConflicts || branchNeedsUpdate;
   const reviewUrl =
@@ -201,7 +204,7 @@ export default async function ChangesPage({
 
       <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
 
-      {review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts) ? (
+      {review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts || rebaseRequired) ? (
         <ReviewBranchUpdate
           waitingForResolution={activeUpdate?.status === branchUpdateWaitingStatus}
           review={review}

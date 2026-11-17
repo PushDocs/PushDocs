@@ -10,6 +10,21 @@ import {
 } from "./index";
 
 describe("branch update requirement and policy", () => {
+  it.each(["conflict", "dirty"])(
+    "updates a conflicted rebase branch before opening the editor: %s",
+    (reason) => {
+      const details = {
+        readiness: { state: "blocked", reason },
+        branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+      } as ChangeRequestDetails;
+      expect(needsBranchUpdate(details)).toBe(true);
+      expect(needsBranchUpdate({ ...details, updateRequired: false })).toBe(false);
+      expect(
+        needsBranchUpdate({ ...details, branchUpdatePolicy: resolvedBranchUpdatePolicy() }),
+      ).toBe(false);
+    },
+  );
+
   it.each(["need_rebase", "behind", "conflict", "draft_status", null])(
     "keeps the selected merge strategy when readiness becomes %s",
     (reason) => {

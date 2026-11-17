@@ -8,7 +8,7 @@ import {
 } from "@pushdocs/contracts";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
+import { gitOperationStatusAction } from "@/app/actions";
 import {
   cancelRebaseUpdateAction,
   prepareConflictResolutionAction,
@@ -18,6 +18,7 @@ import {
 import { projectChangesHref } from "@/lib/project-paths";
 import { conflictInspectionStore, useConflictInspection } from "./conflict-inspection";
 import { listLocalDrafts } from "./draft-storage";
+import { GitOperationKind, gitOperationKey, gitOperationStore } from "./git-operation-store";
 import { branchConflictPollingDelays } from "./git-operation-timing";
 import { PollingLifecycle } from "./polling-lifecycle";
 import { readProjectBranch, rememberProjectBranch } from "./project-context";
@@ -45,6 +46,7 @@ type ResolutionState =
       phase: ResolutionPhase.Sending | ResolutionPhase.SendFailed | ResolutionPhase.Retrying;
       jobId: string;
       prepared: boolean;
+      rebase?: boolean;
       error?: string;
     };
 
@@ -86,7 +88,9 @@ export function useConflictResolution({
     ready,
   );
   const { inspection, loading } = inspectionState;
-  const isRebase = inspection?.snapshot.updatePolicy?.strategy === BranchUpdateStrategy.Rebase;
+  const isRebase =
+    inspection?.snapshot.updatePolicy?.strategy === BranchUpdateStrategy.Rebase ||
+    ("rebase" in state && state.rebase === true);
   const snapshot = ready ? inspection?.snapshot : undefined;
   const policyError = snapshot ? conflictResolutionPolicyError(snapshot) : null;
   const drafts = useConflictResolutionDrafts({ projectId, reviewId, ownerId }, inspection);
@@ -153,6 +157,7 @@ export function useConflictResolution({
             phase: merge.mergeFailed ? ResolutionPhase.SendFailed : ResolutionPhase.Sending,
             jobId: merge.mergeJobId,
             prepared: false,
+            rebase: job.branchUpdateOperation,
           });
         } else if (!returnToChanges(pending)) {
           if (
@@ -211,9 +216,15 @@ export function useConflictResolution({
           return false;
         }
         if (job.status === "done") {
-          setState({ phase: ResolutionPhase.Done, rebase: isRebase });
           conflictInspectionStore.invalidate(projectId, reviewId);
           clearDrafts();
+          if (isRebase) {
+            const key = gitOperationKey(projectId, branch, GitOperationKind.UpdateBranch);
+            const task = gitOperationStore.getSnapshot(key);
+            if (task?.jobId === jobId) gitOperationStore.acknowledge(key, task);
+            setState({ phase: ResolutionPhase.Redirecting });
+            router.replace(projectChangesHref(projectId, branch));
+          } else setState({ phase: ResolutionPhase.Done, rebase: false });
           return false;
         }
         return true;
@@ -230,7 +241,18 @@ export function useConflictResolution({
     });
     poller.start();
     return () => poller.dispose();
-  }, [sending, jobId, projectId, reviewId, branch, targetBranch, clearDrafts, isRebase]);
+  }, [sending, jobId, projectId, reviewId, branch, targetBranch, clearDrafts, isRebase, router]);
+
+  const needsRebaseUpdate = Boolean(
+    snapshot?.updatePolicy?.strategy === BranchUpdateStrategy.Rebase &&
+      !snapshot.updatePolicy.error &&
+      !snapshot.rebase,
+  );
+  useEffect(() => {
+    if (state.phase !== ResolutionPhase.Editing || loading || !needsRebaseUpdate) return;
+    setState({ phase: ResolutionPhase.Redirecting });
+    router.replace(projectChangesHref(projectId, branch));
+  }, [state.phase, loading, needsRebaseUpdate, router, projectId, branch]);
 
   const complete = snapshot?.files.every(
     (file) =>
@@ -241,13 +263,6 @@ export function useConflictResolution({
 
   const canEdit =
     state.phase === ResolutionPhase.Editing && !loading && canWrite && !policyError && drafts.ready;
-  const canStartRebase =
-    state.phase === ResolutionPhase.Editing &&
-    !loading &&
-    canWrite &&
-    snapshot?.updatePolicy?.strategy === BranchUpdateStrategy.Rebase &&
-    !snapshot.updatePolicy.error &&
-    !snapshot.rebase;
   const canSubmit = Boolean(
     canEdit &&
       inspection &&
@@ -287,36 +302,6 @@ export function useConflictResolution({
         setState({
           phase: ResolutionPhase.Editing,
           error: error instanceof Error ? error.message : "Не удалось начать отправку.",
-        });
-    } finally {
-      if (active.current === token) commandPending.current = false;
-    }
-  }
-
-  async function startRebase() {
-    const token = active.current;
-    if (!token || commandPending.current || !canStartRebase || !snapshot) return;
-    commandPending.current = true;
-    setState({ phase: ResolutionPhase.Submitting });
-    try {
-      if (returnToChanges(await check()) || active.current !== token) return;
-      const result = await startGitOperationAction({
-        projectId,
-        branch,
-        updateReview: {
-          reviewId,
-          expectedHeadSha: snapshot.parentSha,
-          expectedStrategy: BranchUpdateStrategy.Rebase,
-        },
-      });
-      if (typeof result !== "string") throw new Error(result.error);
-      if (active.current === token)
-        setState({ phase: ResolutionPhase.Sending, jobId: result, prepared: true });
-    } catch (error) {
-      if (active.current === token)
-        setState({
-          phase: ResolutionPhase.Editing,
-          error: error instanceof Error ? error.message : "Не удалось начать rebase.",
         });
     } finally {
       if (active.current === token) commandPending.current = false;
@@ -382,14 +367,13 @@ export function useConflictResolution({
     choices: drafts.choices,
     fragments: drafts.fragments,
     choose: drafts.choose,
-    snapshot,
-    policyError,
+    snapshot: needsRebaseUpdate ? undefined : snapshot,
+    updateStrategy: inspection?.snapshot.updatePolicy?.strategy,
+    policyError: needsRebaseUpdate ? null : policyError,
     phase: state.phase,
     canEdit,
     canSubmit,
-    canStartRebase,
     isRebase: state.phase === ResolutionPhase.Done ? state.rebase : isRebase,
-    startRebase,
     cancelRebase,
     error: "error" in state ? (state.error ?? "") : "",
     submit,

@@ -1,5 +1,7 @@
+import { BranchUpdateStrategy } from "@pushdocs/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
+import { resolvedBranchUpdatePolicy } from "../../../../../../../../tests/fixtures/branch-update-policy";
 
 const submitChangesProps = vi.hoisted(() => vi.fn());
 const repository = vi.hoisted(() => ({
@@ -98,6 +100,64 @@ import { BranchConflictResolver } from "@/components/branch-conflicts";
 import { BranchImport } from "@/components/branch-import";
 import ChangesPage from "./page";
 
+it.each(["conflict", "dirty"])(
+  "starts with an update action for a rebase branch reported as %s",
+  async (reason) => {
+    repository.listDraftFiles.mockResolvedValueOnce([]);
+    repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+    repository.findOpenChangeRequestByBranch.mockResolvedValueOnce({
+      id: "mr",
+      head_sha: "head",
+      source_branch: "fix",
+      target_branch: "release",
+      state: "open",
+      provider_url: "https://git.example/mr",
+      details: {
+        source: { isFork: false },
+        readiness: { state: "blocked", reason },
+        branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+      },
+    });
+    const html = renderToStaticMarkup(
+      await ChangesPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ branch: "fix" }),
+      }),
+    );
+    expect(html.match(/class="branch-notice /g)).toHaveLength(1);
+    expect(html).toContain("Обновить ветку");
+    expect(html).not.toContain("Исправить конфликты");
+  },
+);
+
+it("shows no branch notice after a completed rebase", async () => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.findOpenChangeRequestByBranch.mockResolvedValueOnce({
+    id: "mr",
+    head_sha: "updated",
+    source_branch: "fix",
+    target_branch: "release",
+    state: "open",
+    provider_url: "https://git.example/mr",
+    details: {
+      source: { isFork: false },
+      updateRequired: false,
+      readiness: { state: "ready", reason: null },
+      branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+    },
+  });
+  const html = renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ branch: "fix" }),
+    }),
+  );
+  expect(html).toContain("Изменения в ветке");
+  expect(html).not.toContain('class="branch-notice ');
+  expect(html).not.toContain('role="alert"');
+});
+
 it.each([
   { provider: "gitlab", reviewLabel: "MR" },
   { provider: "github", reviewLabel: "PR" },
@@ -143,7 +203,7 @@ it("opens normal changes with a notice instead of preparation when the review br
   expect(html).toContain("Изменения в ветке");
   expect(html).toContain("Before server draft");
   expect(html).toContain("After server draft");
-  expect(html).toContain("Сначала разберитесь с текущими правками");
+  expect(html).toContain("Сохраните текущие правки");
   expect(html).not.toContain("Подготовка к разрешению конфликтов");
   expect(html).not.toContain("Проверить состояние и продолжить");
 });
@@ -164,15 +224,15 @@ it.each(["need_rebase", "behind"])("prioritizes current changes before %s", asyn
       searchParams: Promise.resolve({ branch: "fix" }),
     }),
   );
-  expect(html).toContain('aria-label="Обновление ветки"');
-  expect(html).toContain("release");
-  expect(html).toContain("Сначала завершите текущие правки");
+  expect(html).not.toContain('class="branch-notice');
+  expect(html).not.toContain("release");
+  expect(html).not.toContain("Сохраните текущие правки");
   expect(html).not.toContain("Обновить ветку");
   expect(html).toContain("Отправить изменения");
   expect(html).not.toContain('href="https://git.example/mr"');
   expect(html).toContain("Обновить из Git");
   expect(html).not.toContain("Получить из Git");
-  expect(html).not.toContain("Разрешить конфликты");
+  expect(html).not.toContain("Исправить конфликты");
 });
 
 it.each(["conflict", "dirty"])(
@@ -180,6 +240,7 @@ it.each(["conflict", "dirty"])(
   async (reason) => {
     const review = {
       id: "mr",
+      head_sha: "sha",
       source_branch: "fix",
       target_branch: "release",
       state: "open",
@@ -189,6 +250,7 @@ it.each(["conflict", "dirty"])(
         source: { isFork: false },
         readiness: { state: "blocked", reason },
         updateRequired: true,
+        branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
       },
     };
     const renderPage = async () =>
@@ -202,10 +264,10 @@ it.each(["conflict", "dirty"])(
     repository.listChangeRequests.mockResolvedValueOnce([review]);
     const pendingHtml = await renderPage();
     expect(pendingHtml.match(/class="branch-notice /g)).toHaveLength(1);
-    expect(pendingHtml).toContain("Сначала завершите текущие правки");
+    expect(pendingHtml).toContain("Сохраните текущие правки");
     expect(pendingHtml).toContain("Отправить изменения");
-    expect(pendingHtml).not.toContain("Разрешить конфликты");
-    expect(pendingHtml).not.toContain('aria-label="Обновление ветки"');
+    expect(pendingHtml).not.toContain("Исправить конфликты");
+    expect(pendingHtml).toContain('aria-label="Обновление ветки"');
 
     repository.listDraftFiles.mockResolvedValueOnce([]);
     repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
@@ -213,10 +275,11 @@ it.each(["conflict", "dirty"])(
     repository.listChangeRequests.mockResolvedValueOnce([review]);
     const conflictHtml = await renderPage();
     expect(conflictHtml.match(/class="branch-notice /g)).toHaveLength(1);
-    expect(conflictHtml).toContain("Ветка конфликтует с release");
-    expect(conflictHtml).toContain("Разрешить конфликты");
-    expect(conflictHtml).not.toContain("Сначала завершите текущие правки");
-    expect(conflictHtml).not.toContain('aria-label="Обновление ветки"');
+    expect(conflictHtml).toContain("Есть конфликты");
+    expect(conflictHtml).toContain("Обновить ветку");
+    expect(conflictHtml).not.toContain("Исправить конфликты");
+    expect(conflictHtml).not.toContain("Сохраните текущие правки");
+    expect(conflictHtml).toContain('aria-label="Обновление ветки"');
 
     const updatedReview = {
       ...review,
@@ -231,9 +294,9 @@ it.each(["conflict", "dirty"])(
         searchParams: Promise.resolve({ branch: "fix" }),
       }),
     );
-    expect(updateHtml.match(/class="branch-notice /g)).toHaveLength(1);
+    expect(updateHtml).not.toContain('class="branch-notice');
     expect(updateHtml).toContain("Обновить ветку");
-    expect(updateHtml).not.toContain("Разрешить конфликты");
+    expect(updateHtml).not.toContain("Исправить конфликты");
   },
 );
 
@@ -259,9 +322,9 @@ it("prioritizes recovery of an active update over stale conflicts and current ch
     }),
   );
   expect(html.match(/class="branch-notice /g)).toHaveLength(1);
-  expect(html).toContain("Продолжить обновление ветки");
-  expect(html).not.toContain("Разрешить конфликты");
-  expect(html).not.toContain("Сначала завершите текущие правки");
+  expect(html).toContain("Обновить ветку");
+  expect(html).not.toContain("Исправить конфликты");
+  expect(html).not.toContain("Сохраните текущие правки");
 });
 
 it.each(["need_rebase", "conflict"])(
@@ -289,7 +352,7 @@ it.each(["need_rebase", "conflict"])(
     expect(html).not.toContain('href="https://git.example/mr"');
     expect(html.match(/href="\/projects\/project\/reviews\?review=mr"/g)).toHaveLength(1);
     expect(html.match(/Открыть документы/g)).toHaveLength(1);
-    expect(html).toContain(reason === "conflict" ? "Разрешить конфликты" : "Обновить ветку");
+    expect(html).toContain(reason === "conflict" ? "Исправить конфликты" : "Обновить ветку");
   },
 );
 
@@ -332,7 +395,7 @@ it("keeps recovery of a prepared update available after the MR closes", async ()
       searchParams: Promise.resolve({ branch: "fix" }),
     }),
   );
-  expect(html).toContain("Продолжить обновление ветки");
+  expect(html).toContain("Обновить ветку");
   expect(html).not.toContain("Ветка отстаёт");
   const reviewLink = html.match(/<a\b[^>]*href="https:\/\/git.example\/mr"[^>]*>/)?.[0];
   expect(reviewLink).toContain('target="_blank"');
@@ -357,8 +420,8 @@ it("shows branch conflicts and the resolver even when no local files have change
       searchParams: Promise.resolve({ branch: "fix" }),
     }),
   );
-  expect(html).toContain("Ветка конфликтует с release");
-  expect(html).toContain("Разрешить конфликты");
+  expect(html).toContain("Исправьте конфликты");
+  expect(html).toContain("Исправить конфликты");
   expect(html).toContain('href="/projects/project/changes?branch=fix&amp;resolve=mr"');
   expect(html).toContain("Нет локальных правок");
   expect(html).not.toContain("Все изменения отправлены");

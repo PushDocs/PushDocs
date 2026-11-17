@@ -22,6 +22,8 @@ import {
   branchUpdateWaitingStatus,
   conflictResolutionPolicyError,
   hasBranchConflicts,
+  jobAttempt,
+  jobRetryPolicy,
   mergeResolutionPolicyError,
   needsBranchUpdate,
   type PreparedBranchUpdate,
@@ -831,7 +833,7 @@ export class PushDocsRepository extends SecurityRepository {
     await this.database
       .updateTable("jobs")
       .set({
-        available_at: new Date(Date.now() + 30_000),
+        available_at: new Date(Date.now() + jobRetryPolicy.delayMs),
         last_error: error.slice(0, 4000),
         locked_at: null,
         status: retry ? "queued" : "failed",
@@ -1412,14 +1414,14 @@ export class PushDocsRepository extends SecurityRepository {
         ...reviews
           .filter(
             ({ details }) =>
-              details?.source?.isFork === false &&
-              (needsBranchUpdate(details) || hasBranchConflicts(details.readiness.reason)),
+              details?.source?.isFork === false && hasBranchConflicts(details.readiness.reason),
           )
           .map((review) => review.source_branch),
         ...updates.flatMap((job) => {
           const payload = job.payload as Record<string, unknown>;
           return !payload.reservationReleased &&
-            (job.status !== "failed" || payload.preparedUpdate || payload.rebaseProgress) &&
+            (job.status === branchUpdateWaitingStatus ||
+              (!payload.preparedUpdate && payload.conflictSnapshot)) &&
             typeof payload.branch === "string"
             ? [payload.branch]
             : [];
@@ -2025,6 +2027,8 @@ export class PushDocsRepository extends SecurityRepository {
     return {
       status: job.status,
       last_error: job.last_error,
+      attempt: jobAttempt(job),
+      maxAttempts: jobRetryPolicy.maxAttempts,
       ...(job.kind === branchUpdateJobKind ? { branchUpdateOperation: true } : {}),
       ...(payload.conflictSnapshot
         ? { conflictSnapshot: payload.conflictSnapshot as BranchConflictSnapshot }

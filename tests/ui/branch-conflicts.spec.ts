@@ -50,16 +50,30 @@ test.beforeAll(async () => {
       import { createRoot } from "react-dom/client";
       import { useEffect, useState } from "react";
       import { BranchConflictNotice, BranchConflictResolver, DocumentBranchConflicts, ProjectConflictProgress, ReviewConflictFiles } from "./apps/web/src/components/branch-conflicts";
+      import { ReviewBranchUpdate } from "./apps/web/src/components/review-branch-update";
       import "./apps/web/src/app/globals.css";
       import "./apps/web/src/app/workbench.css";
       import "./packages/ui/src/styles.css";
       const props = {projectId:"project",reviewId:"review",branch:"docs/task",targetBranch:"main",defaultBranch:"main",ownerId:"user",canWrite:true,providerUrl:"https://git.example/review",reviewLabel:"MR"};
+      const isRebase=location.search.includes("rebase") || sessionStorage.getItem("fixture-rebase")==="true";
+      if(isRebase) sessionStorage.setItem("fixture-rebase","true");
       function App() {
-        const [section,setSection] = useState(location.search.includes("documents") ? "documents" : location.search.includes("review") ? "review" : "resolver");
-        useEffect(() => { const navigate = () => setSection("changes"); window.addEventListener("fixture:navigate",navigate); return () => window.removeEventListener("fixture:navigate",navigate); },[]);
+        const [section,setSection] = useState(location.search.includes("resolve=") ? "resolver" : isRebase ? "changes" : location.search.includes("documents") ? "documents" : location.search.includes("review") ? "review" : "resolver");
+        const [,setVersion] = useState(0);
+        useEffect(() => {
+          const navigate = () => setSection("changes");
+          const resolve = () => setSection("resolver");
+          const refresh = () => setVersion(value=>value+1);
+          window.addEventListener("fixture:navigate",navigate);
+          window.addEventListener("fixture:resolve",resolve);
+          window.addEventListener("fixture:refresh",refresh);
+          return () => { window.removeEventListener("fixture:navigate",navigate); window.removeEventListener("fixture:resolve",resolve); window.removeEventListener("fixture:refresh",refresh); };
+        },[]);
+        const step=Number(sessionStorage.getItem("rebase-step")||0);
+        const updateNotice = isRebase && step<3 ? <ReviewBranchUpdate projectId="project" ownerId="user" canWrite provider="gitlab" waitingForResolution={step>0} review={{id:"review",head_sha:"12345678",source_branch:"docs/task",target_branch:"main",provider_url:props.providerUrl,details:{updateRequired:true,readiness:{state:"blocked",reason:step>0?"conflict":"need_rebase"},source:{isFork:false},branchUpdatePolicy:{...${JSON.stringify(snapshot.updatePolicy)},strategy:"rebase"}}}} /> : null;
         return <><ProjectConflictProgress projectId="project" ownerId="user" hidden={section === "documents"} />
           <nav><button onClick={()=>setSection("documents")}>Документы</button><button onClick={()=>setSection("review")}>MR</button><button onClick={()=>setSection("resolver")}>Конфликты</button></nav>
-          {section === "documents" ? <div className="page"><h1>Документы</h1><div className="wb-branch-conflicts"><DocumentBranchConflicts {...props} canInspect hasPendingChanges={false} /></div></div> : section === "review" ? <div className="page"><ReviewConflictFiles {...props} /></div> : section === "changes" ? <div className="page"><h1>Изменения в ветке</h1><BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges={true} /></div> : <BranchConflictResolver {...props} />}
+          {section === "documents" ? <div className="page"><h1>Документы</h1><div className="wb-branch-conflicts"><DocumentBranchConflicts {...props} canInspect hasPendingChanges={false} /></div></div> : section === "review" ? <div className="page"><ReviewConflictFiles {...props} /></div> : section === "changes" ? <div className="page"><h1>Изменения в ветке</h1>{isRebase ? updateNotice : <BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges={true} />}</div> : <BranchConflictResolver {...props} />}
         </>;
       }
       createRoot(document.getElementById("root")).render(<App />);
@@ -85,11 +99,11 @@ test.beforeAll(async () => {
             loader: "js",
             contents:
               args.path === "next/link"
-                ? 'import {createElement} from "react"; export default (props) => createElement("a",props,props.children);'
+                ? 'import {createElement} from "react"; export default (props) => createElement("a",{...props,onClick:props.href.includes("resolve=") ? event=>{event.preventDefault();history.pushState({},"",props.href);window.dispatchEvent(new Event("fixture:resolve"));} : undefined},props.children);'
                 : args.path === "next/navigation"
-                  ? 'const router={replace(href){history.replaceState({},"",href);window.dispatchEvent(new Event("fixture:navigate"));},push(href){this.replace(href);}};export function useRouter(){return router;}'
+                  ? 'const router={replace(href){history.replaceState({},"",href);window.dispatchEvent(new Event("fixture:navigate"));},push(href){this.replace(href);},refresh(){window.dispatchEvent(new Event("fixture:refresh"));}};export function useRouter(){return router;}'
                   : `
-          const isRebase=location.search.includes("rebase");
+          const isRebase=location.search.includes("rebase") || sessionStorage.getItem("fixture-rebase")==="true";
           const step=()=>Number(sessionStorage.getItem("rebase-step")||0);
           const snapshot=${JSON.stringify(snapshot)};
           if(isRebase) snapshot.updatePolicy.strategy="rebase";
@@ -97,11 +111,11 @@ test.beforeAll(async () => {
           let polls=0;
           export async function inspectReviewConflictsAction() { window.inspectionStarts=(window.inspectionStarts||0)+1; await new Promise(r=>setTimeout(r, 700)); if(location.search.includes("failed") && window.inspectionStarts === 1) throw new Error("GitLab is not responding"); return "inspect"; }
           export async function gitOperationStatusAction(project, id) {
-            if(id === "rebase") return step()<3 ? {status:"needs_resolution",conflictSnapshot:{...snapshot,rebase:{operationId:"rebase",conflictId:"conflict-"+step(),commitSha:"commit-"+step(),currentParentSha:"current",originalParentSha:"original",index:step(),total:2,title:"Edit "+step()}}} : {status:"done"};
+            if(id === "rebase") { await new Promise(resolve=>setTimeout(resolve,500)); return step()<3 ? {status:"needs_resolution",conflictSnapshot:{...snapshot,rebase:{operationId:"rebase",conflictId:"conflict-"+step(),commitSha:"commit-"+step(),currentParentSha:"current",originalParentSha:"original",index:step(),total:2,title:"Edit "+step()}}} : {status:"done"}; }
             if(id === "inspect" && polls++ === 0) return {status:"running", progress:"comparing-conflicts",transferProgress:{receivedBytes:12500000,totalBytes:null}};
             return {status:"done", conflictSnapshot: id === "inspect" ? snapshot : null};
           }
-          export async function startGitOperationAction() {sessionStorage.setItem("rebase-step","1");return "rebase";}
+          export async function startGitOperationAction() {window.updateStarts=(window.updateStarts||0)+1;sessionStorage.setItem("rebase-step","1");return "rebase";}
           export async function cancelRebaseUpdateAction() {sessionStorage.setItem("rebase-step","0");}
           export async function submitConflictResolutionAction(project, inspection, files, conflictId) { window.submittedFiles=files; if(isRebase){sessionStorage.setItem("rebase-decisions",JSON.stringify([...(JSON.parse(sessionStorage.getItem("rebase-decisions")||"[]")),conflictId]));sessionStorage.setItem("rebase-step",String(step()+1));return "rebase";} return "publish"; }
           export async function retryConflictResolutionAction() { return "publish"; }
@@ -134,25 +148,38 @@ test.afterAll(async () => fixture?.close());
 
 test("rebase resolves successive commits on the same screen and resumes after reload", async ({
   page,
-}) => {
+}, testInfo) => {
   await page.goto(`${fixture.url}?rebase`);
-  await page.getByRole("button", { name: "Начать rebase" }).click();
-  await expect(page.getByRole("heading", { name: "Rebase · коммит 1 из 2" })).toBeVisible();
+  await page.getByRole("button", { name: "Обновить ветку" }).click();
+  await expect(page.getByRole("heading", { name: "Исправьте конфликты" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Обновление ветки" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Исправить конфликты" }).click();
+  await expect(page.getByRole("heading", { name: "Коммит 1 из 2" })).toBeVisible();
+  await expect(page.locator(".page-header p")).toHaveText("docs/task ← main (rebase)");
+  await expect(page.getByRole("button", { name: "Начать rebase" })).toHaveCount(0);
+  await expect(page.getByText(/Для проекта выбран rebase/)).toHaveCount(0);
+  await page.screenshot({
+    path: `output/branch-conflicts/rebase-${testInfo.project.name}.png`,
+    fullPage: true,
+  });
   for (const radio of await page.getByRole("radio", { name: "Оставить актуальную основу" }).all())
     await radio.check();
-  await page.getByRole("button", { name: "Продолжить rebase" }).click();
-  await expect(page.getByRole("heading", { name: "Rebase · коммит 2 из 2" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Продолжить rebase" })).toBeDisabled();
+  await page.getByRole("button", { name: "Сохранить и продолжить" }).click();
+  await expect(page.getByText("Обновляем ветку из main…")).toBeVisible();
+  await expect(page.locator(".branch-conflict-files")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Коммит 2 из 2" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Сохранить и продолжить" })).toBeDisabled();
   const radio = page.getByRole("radio", { name: "Применить изменения коммита" });
   await radio.first().check();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Rebase · коммит 2 из 2" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Коммит 2 из 2" })).toBeVisible();
   await expect(radio.first()).toBeChecked();
   for (const choice of await radio.all()) await choice.check();
-  await page.getByRole("button", { name: "Продолжить rebase" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Rebase завершён. Результат отправлен в docs/task" }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Сохранить и продолжить" }).click();
+  await expect(page.getByText("Обновляем ветку из main…")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Изменения в ветке" })).toBeVisible();
+  await expect(page.locator(".branch-notice")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   expect(
     await page.evaluate(() => JSON.parse(sessionStorage.getItem("rebase-decisions") || "[]")),
   ).toEqual(["conflict-1", "conflict-2"]);
@@ -345,11 +372,11 @@ test("documents keep the conflict list after background progress finishes and re
   await expect(page.getByRole("status")).toHaveCount(1);
   await expect(page.getByRole("progressbar")).toHaveCount(0);
   await expect(notice.locator(".review-conflict-files li")).toHaveCount(1);
-  await expect(notice.getByRole("link", { name: "Разрешить конфликты" })).toHaveAttribute(
+  await expect(notice.getByRole("link", { name: "Исправить конфликты" })).toHaveAttribute(
     "href",
     "/projects/project/changes?branch=docs%2Ftask&resolve=review",
   );
-  await expect(notice.getByRole("link", { name: "Разрешить конфликты" })).toBeInViewport();
+  await expect(notice.getByRole("link", { name: "Исправить конфликты" })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
@@ -370,7 +397,7 @@ test("documents show a retryable inspection error without losing the conflict no
   await page.goto(`${fixture.url}?documents&failed`);
   const notice = page.getByRole("region", { name: "Конфликты между ветками" });
   await expect(notice.getByRole("alert")).toContainText("GitLab is not responding");
-  await expect(notice.getByRole("link", { name: "Разрешить конфликты" })).toBeVisible();
+  await expect(notice.getByRole("link", { name: "Исправить конфликты" })).toBeVisible();
   await notice.getByRole("button", { name: "Повторить", exact: true }).click();
   await expect(notice.locator(".review-conflict-files li")).toHaveCount(1);
   await expect(notice.getByRole("alert")).toHaveCount(0);
@@ -387,7 +414,7 @@ test("browser drafts lead to normal changes and a conflict notice without prepar
   );
   await page.goto(fixture.url);
   await expect(page.getByRole("heading", { name: "Изменения в ветке" })).toBeVisible();
-  await expect(page.getByText(/Сначала разберитесь с текущими правками/)).toBeVisible();
+  await expect(page.getByText(/Сохраните текущие правки/)).toBeVisible();
   await expect(page.getByText("Подготовка к разрешению конфликтов")).toHaveCount(0);
   expect(await page.evaluate(() => Reflect.get(window, "inspectionStarts") || 0)).toBe(0);
 });

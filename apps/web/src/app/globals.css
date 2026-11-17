@@ -2152,7 +2152,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   align-items: start;
   display: grid;
   gap: 20px;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
 }
 
 .review-list {
@@ -2193,11 +2193,6 @@ textarea:where(:not(.monaco-editor *)):focus {
   overflow: hidden;
 }
 
-.review-detail > .panel-note {
-  padding: 16px var(--review-content-inset) 0;
-  overflow-wrap: anywhere;
-}
-
 .review-heading {
   padding: 22px var(--review-content-inset) 16px;
   overflow-wrap: anywhere;
@@ -2214,8 +2209,42 @@ textarea:where(:not(.monaco-editor *)):focus {
 .review-actions > * {
   max-width: 100%;
 }
-.review-provider-link {
+.review-actions > .panel-note {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.review-primary-actions {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
   margin-left: auto;
+}
+.review-branch-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.branch-action-message {
+  margin-top: 8px;
+}
+.review-primary-actions > .branch-action-message {
+  order: 1;
+  flex-basis: 100%;
+  margin-top: 0;
+  text-align: right;
+}
+.branch-action-message p {
+  margin: 0;
+  font-size: 13px;
 }
 
 .review-heading h2 {
@@ -2726,13 +2755,16 @@ textarea:where(:not(.monaco-editor *)):focus {
 
 .branch-notice {
   display: flex;
-  gap: 12px;
-  padding: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
   margin-bottom: 20px;
   border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
   border-radius: 8px;
   background: var(--warning-wash);
   overflow-wrap: anywhere;
+  font-size: 13px;
 }
 
 .branch-notice > svg {
@@ -2741,56 +2773,35 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 
 .branch-notice h2 {
+  flex: 1 1 120px;
+  min-width: 0;
   margin: 0;
-  font-size: 16px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
-.branch-notice > div {
+.branch-notice-message {
+  flex-basis: calc(100% - 30px);
+  margin-left: 30px;
   min-width: 0;
 }
 .branch-notice p {
-  margin: 10px 0;
+  margin: 0;
+  color: var(--ink);
+  font-family: inherit;
   font-size: 13px;
 }
-.branch-notice--compact {
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  padding: 10px 12px;
+.review-heading > .branch-notice {
   margin: 16px 0 0;
-  font-size: 13px;
 }
-.branch-notice--compact strong {
-  flex: 1;
-  min-width: 0;
-}
-.branch-notice--compact a {
+.branch-notice > a:not(.pd-button) {
   color: var(--violet-deep);
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-@media (max-width: 640px) {
-  .branch-notice--compact a,
-  .branch-notice--compact > .muted {
-    flex-basis: 100%;
-    margin-left: 30px;
-  }
-}
-.branch-update-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-.branch-update-actions .pd-button {
+.branch-notice > :is(a, button) {
   max-width: 100%;
   white-space: normal;
-}
-.branch-update-confirmation {
-  margin-top: 12px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
 }
 .branch-conflict-files {
   min-width: 0;
@@ -2800,6 +2811,11 @@ textarea:where(:not(.monaco-editor *)):focus {
 }
 .branch-conflict-files legend {
   font-weight: 600;
+}
+.branch-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .branch-conflict-files h2 {
   font-size: 16px;
@@ -4625,10 +4641,16 @@ progress::-moz-progress-bar {
   }
 }
 
-.review-list a > span > .pd-status {
-  display: inline-flex;
-  justify-self: start;
+.review-list-statuses {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 8px;
+  min-width: 0;
+}
+.review-list-statuses > .pd-status {
+  font-weight: 500;
   max-width: 100%;
   white-space: normal;
 }

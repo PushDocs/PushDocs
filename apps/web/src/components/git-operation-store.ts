@@ -1,5 +1,6 @@
 import { branchUpdateWaitingStatus } from "@pushdocs/contracts";
 import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
+import { branchUpdateLabels, gitRetryMessage } from "./git-operation-labels";
 import { gitOperationPollingDelays } from "./git-operation-timing";
 import { PollingLifecycle } from "./polling-lifecycle";
 
@@ -124,8 +125,14 @@ class GitOperationStore {
             result.status !== "done" &&
             result.status !== "failed" &&
             result.status !== branchUpdateWaitingStatus
-          )
+          ) {
+            const queued = result.status === "queued";
+            const attempt = result.attempt + (queued && result.last_error ? 1 : 0);
+            const message =
+              attempt > 1 ? gitRetryMessage(attempt, result.maxAttempts, queued) : undefined;
+            if (entry.task?.message !== message) this.update(entry, { ...task, message });
             return true;
+          }
           this.update(entry, {
             ...task,
             phase: result.status,
@@ -141,7 +148,10 @@ class GitOperationStore {
         onError: () => {
           this.update(entry, {
             ...task,
-            message: "Нет связи с сервером. Проверяем результат…",
+            message:
+              task.kind === GitOperationKind.UpdateBranch
+                ? branchUpdateLabels.checking
+                : "Нет связи с сервером. Проверяем результат…",
           });
           return true;
         },

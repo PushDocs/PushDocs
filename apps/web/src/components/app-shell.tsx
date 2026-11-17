@@ -22,6 +22,7 @@ import { projectChangesHref } from "@/lib/project-paths";
 import type { CurrentUser } from "@/lib/server";
 import { ProjectConflictProgress } from "./branch-conflicts";
 import { ProjectBranchImportProgress } from "./branch-import";
+import { branchConflictLabels } from "./git-operation-labels";
 import { documentHref, readProjectBranch, rememberProjectBranch } from "./project-context";
 import { PushDocsLogo } from "./pushdocs-logo";
 import { RealtimeRefresh } from "./realtime-refresh";
@@ -258,7 +259,7 @@ export function AppShell({
                         className="sidebar-attention-dot"
                         role="img"
                         aria-label="Ветка требует внимания"
-                        title="Нужно обновить ветку или разрешить конфликты"
+                        title={branchConflictLabels.noticeTitle}
                       />
                     ) : null}
                   </Link>

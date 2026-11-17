@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect } from "react";
 import { projectChangesHref } from "@/lib/project-paths";
 import { BranchConflictEditor } from "./branch-conflict-editor";
+import { BranchNotice } from "./branch-notice";
 import {
   type ConflictInspectionTask,
   ConflictLoadState,
@@ -13,7 +14,7 @@ import {
   useConflictInspection,
   useConflictInspections,
 } from "./conflict-inspection";
-import { pendingBranchChangesTitle } from "./git-operation-labels";
+import { branchConflictLabels, pendingBranchChangesLabels } from "./git-operation-labels";
 import { GitTransferStatus } from "./git-transfer-status";
 import { ResolutionPhase, useConflictResolution } from "./use-conflict-resolution";
 import { useLocalDraftChanges } from "./use-local-draft-changes";
@@ -178,16 +179,28 @@ function ConflictReviewAction({
   canWrite,
   providerUrl,
   reviewLabel,
+  actionOnly = false,
 }: Pick<
   ConflictReviewProps,
   "projectId" | "reviewId" | "branch" | "canWrite" | "providerUrl" | "reviewLabel"
->) {
+> & { actionOnly?: boolean }) {
+  if (!canWrite && actionOnly)
+    return (
+      <button
+        className="pd-button pd-button--primary"
+        type="button"
+        disabled
+        title={branchConflictLabels.reader}
+      >
+        {branchConflictLabels.action}
+      </button>
+    );
   return canWrite ? (
     <Link
       className="pd-button pd-button--primary"
       href={projectChangesHref(projectId, { branch, resolve: reviewId })}
     >
-      Разрешить конфликты
+      {branchConflictLabels.action}
     </Link>
   ) : (
     <a
@@ -196,7 +209,7 @@ function ConflictReviewAction({
       target="_blank"
       rel="noreferrer"
     >
-      Открыть {reviewLabel} в Git-провайдере
+      Открыть {reviewLabel}
     </a>
   );
 }
@@ -205,48 +218,46 @@ export function BranchConflictNotice({
   projectId,
   reviewId,
   branch,
-  targetBranch,
   currentBranch,
   ownerId,
   hasPendingChanges,
   canWrite,
   providerUrl,
   reviewLabel,
-}: ConflictReviewProps & { currentBranch: string; hasPendingChanges: boolean }) {
+  noticeLabel = branchConflictRegionLabel,
+  pendingChangesHref,
+  actionOnly = false,
+  disableReadOnlyAction = false,
+}: ConflictReviewProps & {
+  currentBranch: string;
+  hasPendingChanges: boolean;
+  noticeLabel?: string;
+  pendingChangesHref?: string;
+  actionOnly?: boolean;
+  disableReadOnlyAction?: boolean;
+}) {
   const localChanges = useLocalDraftChanges(projectId, ownerId, branch, currentBranch);
   const pendingChanges = hasPendingChanges || localChanges;
+  const pendingHref = localChanges
+    ? `/projects/${projectId}/documents?${new URLSearchParams({ branch: currentBranch })}`
+    : pendingChangesHref;
   return (
-    <section
-      className="branch-notice branch-conflict-notice"
-      aria-label={branchConflictRegionLabel}
-    >
-      <AlertTriangle aria-hidden size={20} />
-      <div>
-        <h2>
-          {pendingChanges
-            ? pendingBranchChangesTitle
-            : `${currentBranch === branch ? "Ветка" : `Ветка ${branch}`} конфликтует с ${targetBranch}`}
-        </h2>
-        {pendingChanges ? (
-          <p>
-            Сначала разберитесь с текущими правками в {currentBranch}: отправьте их в Git или
-            отмените. После этого можно разрешить конфликты.
-          </p>
-        ) : (
-          <p>
-            Перед слиянием {reviewLabel} нужно разрешить конфликты между {branch} и {targetBranch}.
-          </p>
-        )}
-        {localChanges ? (
-          <p>
+    <BranchNotice
+      label={noticeLabel}
+      className="branch-conflict-notice"
+      actionOnly={actionOnly}
+      title={pendingChanges ? pendingBranchChangesLabels.title : branchConflictLabels.title}
+      action={
+        pendingChanges ? (
+          pendingHref ? (
             <Link
-              href={`/projects/${projectId}/documents?${new URLSearchParams({ branch: currentBranch })}`}
+              className={actionOnly ? "pd-button pd-button--primary" : undefined}
+              href={pendingHref}
             >
-              Открыть документы с локальными правками
+              {pendingBranchChangesLabels.action}
             </Link>
-          </p>
-        ) : null}
-        {!pendingChanges ? (
+          ) : null
+        ) : (
           <ConflictReviewAction
             projectId={projectId}
             reviewId={reviewId}
@@ -254,10 +265,11 @@ export function BranchConflictNotice({
             canWrite={canWrite}
             providerUrl={providerUrl}
             reviewLabel={reviewLabel}
+            actionOnly={actionOnly || disableReadOnlyAction}
           />
-        ) : null}
-      </div>
-    </section>
+        )
+      }
+    />
   );
 }
 
@@ -270,13 +282,11 @@ export function DocumentBranchConflicts({
     <section className="document-branch-conflicts" aria-label={branchConflictRegionLabel}>
       <header>
         <h2>
-          <AlertTriangle aria-hidden size={18} /> Ветка конфликтует с {props.targetBranch}
+          <AlertTriangle aria-hidden size={18} /> {branchConflictLabels.title}
         </h2>
         <ConflictReviewAction {...props} />
       </header>
-      {hasPendingChanges ? (
-        <p>Перед разрешением конфликтов отправьте текущие правки в Git или отмените их.</p>
-      ) : null}
+      {hasPendingChanges ? <p>{pendingBranchChangesLabels.description}</p> : null}
       {canInspect ? <ReviewConflictFiles {...props} showProgress /> : null}
     </section>
   );
@@ -309,6 +319,7 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
     task,
     loading,
     snapshot,
+    updateStrategy,
     policyError,
     choose,
     submit,
@@ -317,11 +328,14 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
     phase,
     canEdit,
     canSubmit,
-    canStartRebase,
     isRebase,
-    startRebase,
     cancelRebase,
   } = useConflictResolution(props);
+  const updatingBranch =
+    isRebase &&
+    (phase === ResolutionPhase.Submitting ||
+      phase === ResolutionPhase.Sending ||
+      phase === ResolutionPhase.Retrying);
   return (
     <div className="page branch-conflict-page">
       <header className="page-header">
@@ -329,6 +343,7 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
           <h1>Разрешение конфликтов</h1>
           <p>
             <code>{branch}</code> ← <code>{targetBranch}</code>
+            {updateStrategy ? ` (${updateStrategy})` : null}
           </p>
         </div>
         <Link
@@ -341,10 +356,7 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
       {phase === ResolutionPhase.Done ? (
         <section className="empty-state">
           <GitMerge aria-hidden />
-          <h2>
-            {isRebase ? "Rebase завершён. Результат отправлен в " : "Решение отправлено в "}
-            {branch}
-          </h2>
+          <h2>Решение отправлено в {branch}</h2>
           <p>{reviewLabel} обновится после синхронизации с Git.</p>
         </section>
       ) : (
@@ -362,59 +374,34 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
               </button>
             </div>
           ) : null}
-          {snapshot ? (
+          {updatingBranch ? (
+            <GitTransferStatus label={`Обновляем ветку из ${targetBranch}…`} />
+          ) : null}
+          {policyError ? <p role="alert">{policyError}</p> : null}
+          {snapshot && !updatingBranch ? (
             <>
-              <p className="muted">
-                Стратегия: {snapshot.updatePolicy?.strategy ?? "не определена"}.
-              </p>
               {snapshot.rebase ? (
                 <section aria-label="Текущий коммит rebase">
                   <h2>
-                    Rebase · коммит {snapshot.rebase.index} из {snapshot.rebase.total}
+                    Коммит {snapshot.rebase.index} из {snapshot.rebase.total}
                   </h2>
-                  <p>
-                    <code>{snapshot.rebase.commitSha.slice(0, 8)}</code> {snapshot.rebase.title}
-                  </p>
-                  <p>
-                    Разрешите конфликт текущего коммита и продолжите перенос. SHA коммитов
-                    изменятся; результат отправится в Git после завершения всего rebase.
-                  </p>
+                  <p>{snapshot.rebase.title}</p>
                 </section>
               ) : null}
               <div className="branch-conflict-instructions">
-                <strong>
-                  {canStartRebase
-                    ? "Обновите ветку через rebase"
-                    : "Выберите, какой текст сохранить"}
-                </strong>
+                <strong>Выберите, какой текст сохранить</strong>
                 <p>
-                  {canStartRebase ? (
-                    `Коммиты ${branch} будут перенесены поверх ${targetBranch}; их SHA изменятся. При конфликте здесь откроется переносимый коммит. Результат отправится в Git после завершения всего rebase.`
-                  ) : (
-                    <>
-                      Выберите текст для каждого спорного фрагмента. Остальные изменения сохранятся
-                      автоматически.{" "}
-                      {snapshot.rebase
-                        ? "Когда всё будет готово, продолжите rebase."
-                        : `Когда всё будет готово, отправьте решение в ${branch}.`}
-                    </>
-                  )}
+                  Выберите текст для каждого спорного фрагмента. Остальные изменения сохранятся
+                  автоматически.{" "}
+                  {snapshot.rebase
+                    ? `Сохраните решение, чтобы перейти к следующим конфликтам. После последнего шага исправления отправятся в ${branch}.`
+                    : `Когда всё будет готово, отправьте решение в ${branch}.`}
                 </p>
               </div>
               {snapshot.unsupportedReason ? (
                 <p role="alert">
                   <AlertTriangle aria-hidden size={16} /> {snapshot.unsupportedReason}
                 </p>
-              ) : null}
-              {policyError ? <p role="alert">{policyError}</p> : null}
-              {canStartRebase ? (
-                <button
-                  type="button"
-                  className="pd-button pd-button--primary"
-                  onClick={() => void startRebase()}
-                >
-                  Начать rebase
-                </button>
               ) : null}
               {!snapshot.files.length ? (
                 <p role="status">
@@ -450,33 +437,36 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
                   </section>
                 ))}
               </fieldset>
-              {snapshot.files.length &&
-              (snapshot.rebase ||
-                snapshot.updatePolicy?.strategy !== BranchUpdateStrategy.Rebase) ? (
-                <button
-                  className="pd-button pd-button--primary"
-                  type="button"
-                  disabled={!canSubmit}
-                  onClick={() => void submit()}
-                >
-                  {snapshot.rebase ? "Продолжить rebase" : `Отправить исправления в ${branch}`}
-                </button>
-              ) : null}
-              {snapshot.rebase && phase === ResolutionPhase.Editing && canWrite ? (
-                <button
-                  className="pd-button pd-button--secondary"
-                  type="button"
-                  onClick={() => void cancelRebase()}
-                >
-                  Отменить rebase
-                </button>
-              ) : null}
+              <div className="branch-conflict-actions">
+                {snapshot.files.length &&
+                (snapshot.rebase ||
+                  snapshot.updatePolicy?.strategy !== BranchUpdateStrategy.Rebase) ? (
+                  <button
+                    className="pd-button pd-button--primary"
+                    type="button"
+                    disabled={!canSubmit}
+                    onClick={() => void submit()}
+                  >
+                    {snapshot.rebase
+                      ? "Сохранить и продолжить"
+                      : `Отправить исправления в ${branch}`}
+                  </button>
+                ) : null}
+                {snapshot.rebase && phase === ResolutionPhase.Editing && canWrite ? (
+                  <button
+                    className="pd-button pd-button--secondary"
+                    type="button"
+                    onClick={() => void cancelRebase()}
+                  >
+                    Отменить rebase
+                  </button>
+                ) : null}
+              </div>
             </>
           ) : null}
-          {phase === ResolutionPhase.Sending ? (
+          {phase === ResolutionPhase.Sending && !updatingBranch ? (
             <p role="status">
-              <LoaderCircle className="spin" aria-hidden size={16} />{" "}
-              {isRebase ? "Продолжаем rebase…" : `Отправляем решение в ${branch}…`}
+              <LoaderCircle className="spin" aria-hidden size={16} /> Отправляем решение в {branch}…
             </p>
           ) : null}
           {error ? <p role="alert">{error}</p> : null}
@@ -499,7 +489,7 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
       )}
       <p>
         <a href={providerUrl} target="_blank" rel="noreferrer">
-          Открыть {reviewLabel} в Git-провайдере
+          Открыть {reviewLabel}
         </a>
       </p>
     </div>

@@ -3,6 +3,7 @@ import {
   type BranchConflictResolution,
   type BranchConflictSnapshot,
   branchConflictLimits,
+  hasBranchConflicts,
 } from "./branch-conflicts";
 import type { ChangeRequestDetails } from "./index";
 
@@ -121,5 +122,10 @@ export function branchUpdateStrategy(details: ChangeRequestDetails | null | unde
 
 export function needsBranchUpdate(details: ChangeRequestDetails | null | undefined) {
   if (details?.updateRequired != null) return details.updateRequired;
-  return details?.readiness?.reason === "need_rebase" || details?.readiness?.reason === "behind";
+  return (
+    details?.readiness?.reason === "need_rebase" ||
+    details?.readiness?.reason === "behind" ||
+    (branchUpdateStrategy(details) === BranchUpdateStrategy.Rebase &&
+      hasBranchConflicts(details?.readiness?.reason))
+  );
 }

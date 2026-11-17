@@ -860,9 +860,9 @@ describe("review branch updates", () => {
     ).toBeUndefined();
   });
 
-  it("lists attention from cached readiness and retains failed updates even after readiness clears", async () => {
+  it("does not mark clean updates or interrupted pushes as conflicts", async () => {
     const fixture = await reviewUpdateFixture();
-    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual([]);
     const id = await repository.queueReviewBranchUpdate(fixture.input);
     await database
       .updateTable("jobs")
@@ -878,8 +878,34 @@ describe("review branch updates", () => {
       } as never)
       .where("id", "=", fixture.review.id)
       .execute();
-    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual([]);
     expect(await repository.queueReviewBranchUpdate(fixture.input)).toBe(id);
+  });
+
+  it("marks known conflicts and paused updates even after cached readiness clears", async () => {
+    const fixture = await reviewUpdateFixture();
+    const id = await repository.queueReviewBranchUpdate(fixture.input);
+    await database
+      .updateTable("change_requests")
+      .set({
+        details: { ...fixture.review.details, readiness: { state: "blocked", reason: "conflict" } },
+      } as never)
+      .where("id", "=", fixture.review.id)
+      .execute();
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
+    await database
+      .updateTable("change_requests")
+      .set({
+        details: { ...fixture.review.details, readiness: { state: "ready", reason: null } },
+      } as never)
+      .where("id", "=", fixture.review.id)
+      .execute();
+    await database
+      .updateTable("jobs")
+      .set({ status: "needs_resolution" })
+      .where("id", "=", id)
+      .execute();
+    expect(await repository.listBranchesNeedingAttention(fixture.projectId)).toEqual(["docs/task"]);
   });
 });
 
@@ -3462,6 +3488,36 @@ describe("invitations and members", () => {
 });
 
 describe("job lifecycle", () => {
+  it("reports the retry budget of a continued rebase without exposing its payload", async () => {
+    const fixture = await projectFixture();
+    const job = await database
+      .insertInto("jobs")
+      .values({
+        kind: "branch.update",
+        attempts: 12,
+        status: "running",
+        payload: { projectId: fixture.projectId, retryBaseAttempt: 11, privateValue: "secret" },
+      })
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    expect(await repository.getProjectJob(fixture.projectId, job.id)).toEqual({
+      status: "running",
+      last_error: null,
+      attempt: 1,
+      maxAttempts: 2,
+      branchUpdateOperation: true,
+      progress: null,
+      progressCounts: null,
+    });
+    await repository.failJob(job.id, "Git fetch failed", true, 12);
+    expect(await repository.getProjectJob(fixture.projectId, job.id)).toMatchObject({
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 2,
+      last_error: "Git fetch failed",
+    });
+  });
+
   it("persists operation stages without exposing payloads or accepting stale worker updates", async () => {
     const fixture = await projectFixture();
     const jobId = await repository.enqueueBranchCreation({
@@ -3484,6 +3540,8 @@ describe("job lifecycle", () => {
     expect(await repository.getProjectJob(fixture.projectId, jobId)).toEqual({
       status: "running",
       last_error: null,
+      attempt: 1,
+      maxAttempts: 2,
       progress: "checking-source",
       progressCounts: null,
     });

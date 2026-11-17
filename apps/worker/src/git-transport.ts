@@ -454,6 +454,38 @@ export class GitTransport {
     return entries;
   }
 
+  private async prefetchBlobs(objects: string[]) {
+    const unique = [...new Set(objects.map((object) => this.sha(object)))];
+    if (!unique.length) return;
+    // Checking the local cache must not trigger one network request per missing blob.
+    const records = (
+      await this.run(
+        ["--no-lazy-fetch", "cat-file", "--batch-check=%(objectname)"],
+        `${unique.join("\n")}\n`,
+      )
+    )
+      .toString()
+      .trim()
+      .split("\n");
+    const missing = unique.filter((object, index) => records[index] === `${object} missing`);
+    if (missing.length)
+      await this.run(
+        [
+          "-c",
+          "fetch.negotiationAlgorithm=noop",
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--recurse-submodules=no",
+          "--filter=blob:none",
+          "--stdin",
+          "origin",
+        ],
+        `${missing.join("\n")}\n`,
+      );
+  }
+
   /** Preview only: opaque media retain identity without fetching bytes for rename similarity. */
   private async inspectionTrees(parentSha: string, sourceSha: string, baseRef?: string) {
     const bases = baseRef
@@ -748,6 +780,7 @@ export class GitTransport {
       const configEntry = tree.get(`${root}${projectConfigPaths.config}`);
       let config: ReturnType<typeof parseProjectConfig>;
       try {
+        if (configEntry) await this.prefetchBlobs([configEntry.sha]);
         config = parseProjectConfig(
           configEntry
             ? (await this.run(["cat-file", "blob", configEntry.sha])).toString()
@@ -768,8 +801,10 @@ export class GitTransport {
           config.documentRoots.some((dir) => filePath.slice(root.length).startsWith(`${dir}/`)),
       );
       if (documents.length > conflictReportLimits.referenceDocs) complete = false;
+      const selected = documents.slice(0, conflictReportLimits.referenceDocs);
+      await this.prefetchBlobs(selected.map(([, entry]) => entry.sha));
       const files: Array<{ path: string; content: string; status: string }> = [];
-      for (const [filePath, entry] of documents.slice(0, conflictReportLimits.referenceDocs)) {
+      for (const [filePath, entry] of selected) {
         const size = Number((await this.run(["cat-file", "-s", entry.sha])).toString());
         if (
           size > branchConflictLimits.textBytes ||

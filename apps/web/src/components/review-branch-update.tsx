@@ -1,26 +1,29 @@
 "use client";
 
 import {
-  BranchUpdatePolicySource,
-  BranchUpdateStrategy,
-  branchUpdateMessages,
+  type BranchUpdateStrategy,
   branchUpdateStrategy,
   branchUpdateWaitingStatus,
   type ChangeRequestDetails,
+  hasBranchConflicts,
+  needsBranchUpdate,
 } from "@pushdocs/contracts";
-import { AlertTriangle, GitMerge, LoaderCircle } from "lucide-react";
+import { GitMerge, LoaderCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { BranchConflictNotice } from "./branch-conflicts";
+import { BranchNotice } from "./branch-notice";
 import { listLocalDrafts } from "./draft-storage";
 import {
+  branchConflictLabels,
   branchSyncLabels,
   branchUpdateLabels,
-  pendingBranchChangesTitle,
+  pendingBranchChangesLabels,
 } from "./git-operation-labels";
 import { GitOperationKind } from "./git-operation-store";
 import { useGitOperation } from "./use-git-operation";
-import { useLocalDraftChanges } from "./use-local-draft-changes";
+import { useLocalDraftState } from "./use-local-draft-changes";
 
 export function ReviewBranchUpdate({
   review,
@@ -32,6 +35,10 @@ export function ReviewBranchUpdate({
   activeHeadSha,
   hasPendingChanges = false,
   waitingForResolution = false,
+  noticeLabel,
+  pendingChangesHref,
+  actionOnly = false,
+  disableReadOnlyAction = false,
 }: {
   projectId: string;
   ownerId: string;
@@ -40,6 +47,10 @@ export function ReviewBranchUpdate({
   activeHeadSha?: string;
   hasPendingChanges?: boolean;
   waitingForResolution?: boolean;
+  noticeLabel?: string;
+  pendingChangesHref?: string;
+  actionOnly?: boolean;
+  disableReadOnlyAction?: boolean;
   review: {
     id: string;
     head_sha?: string | null;
@@ -52,158 +63,129 @@ export function ReviewBranchUpdate({
 }) {
   const reviewLabel = provider === "gitlab" ? "MR" : "PR";
   const router = useRouter();
-  const [confirming, setConfirming] = useState(false);
-  const [localError, setLocalError] = useState("");
-  const localChanges = useLocalDraftChanges(projectId, ownerId, review.source_branch);
+  const [needsResolution, setNeedsResolution] = useState(false);
+  const { hasChanges: localChanges, refresh: refreshLocalChanges } = useLocalDraftState(
+    projectId,
+    ownerId,
+    review.source_branch,
+  );
   const localChangesHref = `/projects/${projectId}/documents?${new URLSearchParams({ branch: review.source_branch })}`;
+  const pendingHref = localChanges ? localChangesHref : pendingChangesHref;
   const strategy = activeStrategy ?? branchUpdateStrategy(review.details);
+  const knownConflicts = hasBranchConflicts(review.details?.readiness.reason);
   const headSha = activeHeadSha ?? review.head_sha ?? review.details?.headSha;
   const allowed =
     canWrite &&
     !!strategy &&
     !!headSha &&
+    (activeStrategy !== undefined || needsBranchUpdate(review.details)) &&
     (activeStrategy !== undefined || review.details?.source?.isFork === false);
   const { busy, message, error, start, task } = useGitOperation({
     projectId,
     branch: review.source_branch,
     kind: GitOperationKind.UpdateBranch,
-    successMessage: () => "Ветка обновлена и отправлена в Git. Данные PR / MR обновлены.",
+    successMessage: () => branchUpdateLabels.success,
     onComplete: () => router.refresh(),
-    onNeedsResolution: () => router.refresh(),
+    onNeedsResolution: () => {
+      setNeedsResolution(true);
+      router.refresh();
+    },
   });
   const pendingChanges = !activeStrategy && !busy && (hasPendingChanges || localChanges);
-  const policyError =
-    !activeStrategy && !strategy
-      ? (review.details?.branchUpdatePolicy?.error ?? branchUpdateMessages.unavailable)
-      : null;
+  const policyError = !activeStrategy && (!strategy || !needsBranchUpdate(review.details));
+  const statusMessage = pendingChanges
+    ? null
+    : policyError
+      ? branchUpdateLabels.unavailable
+      : message
+        ? error
+          ? branchUpdateLabels.error
+          : busy
+            ? message
+            : branchUpdateLabels.success
+        : null;
   async function update() {
     if (!allowed || !headSha || !strategy || busy || pendingChanges) return;
     if (!activeStrategy && listLocalDrafts(projectId, [review.source_branch], ownerId).length) {
-      setLocalError("В этой ветке есть локальные правки. Сначала отправьте их в Git или отмените.");
-      setConfirming(false);
+      refreshLocalChanges();
       return;
     }
-    setLocalError("");
-    setConfirming(false);
     await start({
       projectId,
       branch: review.source_branch,
       updateReview: { reviewId: review.id, expectedHeadSha: headSha, expectedStrategy: strategy },
     });
   }
+  if (waitingForResolution || needsResolution || task?.phase === branchUpdateWaitingStatus)
+    return (
+      <BranchConflictNotice
+        projectId={projectId}
+        reviewId={review.id}
+        branch={review.source_branch}
+        targetBranch={review.target_branch}
+        currentBranch={review.source_branch}
+        ownerId={ownerId}
+        hasPendingChanges={hasPendingChanges}
+        canWrite={canWrite}
+        providerUrl={review.provider_url}
+        reviewLabel={reviewLabel}
+        noticeLabel={noticeLabel}
+        pendingChangesHref={pendingChangesHref}
+        actionOnly={actionOnly}
+        disableReadOnlyAction={disableReadOnlyAction}
+      />
+    );
   return (
-    <section className="branch-notice branch-update-notice" aria-label="Обновление ветки">
-      <AlertTriangle aria-hidden size={20} />
-      <div>
-        <h2>
-          {activeStrategy
-            ? "Обновление ветки"
-            : pendingChanges
-              ? pendingBranchChangesTitle
-              : `Ветка отстаёт от ${review.target_branch}`}
-        </h2>
-        <p>
-          {activeStrategy
-            ? `Продолжите обновление ${review.source_branch}.`
-            : pendingChanges
-              ? `Отправьте текущие правки из ${review.source_branch} в Git или отмените их. После этого можно обновить ветку из ${review.target_branch}.`
-              : `Обновите ${review.source_branch}, чтобы продолжить слияние ${reviewLabel}.`}
-        </p>
-        {policyError ? (
-          <p role="alert">{policyError}</p>
-        ) : strategy ? (
-          <p className="muted">
-            Способ обновления: {strategy},{" "}
-            {activeStrategy
-              ? "зафиксирован для текущей операции"
-              : review.details?.branchUpdatePolicy?.source === BranchUpdatePolicySource.Project
-                ? "задан конфигом проекта"
-                : "выбран по настройкам репозитория"}
-            .
-          </p>
-        ) : null}
-        {waitingForResolution || task?.phase === branchUpdateWaitingStatus ? (
-          <Link
-            className="pd-button pd-button--primary"
-            href={`/projects/${projectId}/changes?${new URLSearchParams({ branch: review.source_branch, resolve: review.id })}`}
-          >
-            Разрешить конфликт rebase
-          </Link>
-        ) : pendingChanges ? (
-          localChanges ? (
-            <Link href={localChangesHref}>Открыть локальные правки</Link>
-          ) : null
-        ) : confirming && !busy ? (
-          <div className="branch-update-confirmation">
-            <p>
-              {activeStrategy ? (
-                "PushDocs проверит результат предыдущей отправки и продолжит обновление. Уже отправленный результат повторно не создаётся."
-              ) : (
-                <>
-                  {strategy === BranchUpdateStrategy.Rebase
-                    ? `Коммиты ${review.source_branch} будут перенесены поверх ${review.target_branch} (rebase). Их SHA изменятся.`
-                    : `Изменения ${review.target_branch} будут влиты в ${review.source_branch} (merge).`}{" "}
-                  Результат сразу отправится в Git. {reviewLabel} обновится автоматически и
-                  останется открытым.
-                </>
-              )}
-            </p>
-            <div className="branch-update-actions">
-              <button
-                className="pd-button pd-button--primary"
-                type="button"
-                onClick={() => void update()}
-              >
-                {branchUpdateLabels.confirm}
-              </button>
-              <button
-                className="pd-button pd-button--secondary"
-                type="button"
-                onClick={() => setConfirming(false)}
-              >
-                Отмена
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="branch-update-actions">
-            <button
-              className="pd-button pd-button--primary"
-              type="button"
-              disabled={busy || !allowed}
-              aria-busy={busy}
-              title={
-                !canWrite
-                  ? "Нужны права редактора"
-                  : !allowed
-                    ? "Исходная ветка недоступна для обновления"
-                    : undefined
-              }
-              onClick={() => {
-                setLocalError("");
-                setConfirming(true);
-              }}
+    <BranchNotice
+      label={noticeLabel ?? "Обновление ветки"}
+      className="branch-update-notice"
+      actionOnly={actionOnly || !knownConflicts}
+      title={
+        pendingChanges
+          ? pendingBranchChangesLabels.title
+          : knownConflicts
+            ? branchConflictLabels.noticeTitle
+            : branchUpdateLabels.title
+      }
+      action={
+        pendingChanges ? (
+          pendingHref ? (
+            <Link
+              className={actionOnly ? "pd-button pd-button--primary" : undefined}
+              href={pendingHref}
             >
-              {busy ? (
-                <LoaderCircle className="spin" aria-hidden size={15} />
-              ) : (
-                <GitMerge aria-hidden size={15} />
-              )}
-              {busy
-                ? branchSyncLabels.busy
-                : activeStrategy
-                  ? branchUpdateLabels.resume
-                  : branchUpdateLabels.idle}
-            </button>
-          </div>
-        )}
-        {localError ? (
-          <p role="alert">
-            {localError} <Link href={localChangesHref}>Открыть локальные правки</Link>
-          </p>
-        ) : null}
-        {message ? <p role={error ? "alert" : "status"}>{message}</p> : null}
-      </div>
-    </section>
+              {pendingBranchChangesLabels.action}
+            </Link>
+          ) : null
+        ) : (
+          <button
+            className="pd-button pd-button--primary"
+            type="button"
+            disabled={busy || !allowed}
+            aria-busy={busy}
+            title={
+              !canWrite
+                ? branchUpdateLabels.reader
+                : !allowed
+                  ? branchUpdateLabels.unavailableBranch
+                  : undefined
+            }
+            onClick={() => void update()}
+          >
+            {busy ? (
+              <LoaderCircle className="spin" aria-hidden size={15} />
+            ) : (
+              <GitMerge aria-hidden size={15} />
+            )}
+            {busy ? branchSyncLabels.busy : branchUpdateLabels.idle}
+          </button>
+        )
+      }
+      message={
+        statusMessage ? (
+          <p role={policyError || error ? "alert" : "status"}>{statusMessage}</p>
+        ) : null
+      }
+    />
   );
 }

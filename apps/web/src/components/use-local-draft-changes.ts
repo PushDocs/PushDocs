@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listLocalDrafts } from "./draft-storage";
 
 export function useLocalDraftChanges(
@@ -9,17 +9,28 @@ export function useLocalDraftChanges(
   branch: string,
   currentBranch = branch,
 ) {
+  return useLocalDraftState(projectId, ownerId, branch, currentBranch).hasChanges;
+}
+
+export function useLocalDraftState(
+  projectId: string,
+  ownerId: string,
+  branch: string,
+  currentBranch = branch,
+) {
   const [hasChanges, setHasChanges] = useState(false);
+  const refresh = useCallback(
+    () => setHasChanges(listLocalDrafts(projectId, [branch, currentBranch], ownerId).length > 0),
+    [projectId, ownerId, branch, currentBranch],
+  );
   useEffect(() => {
-    const update = () =>
-      setHasChanges(listLocalDrafts(projectId, [branch, currentBranch], ownerId).length > 0);
-    update();
-    window.addEventListener("storage", update);
-    window.addEventListener("focus", update);
+    refresh();
+    window.addEventListener("storage", refresh);
+    window.addEventListener("focus", refresh);
     return () => {
-      window.removeEventListener("storage", update);
-      window.removeEventListener("focus", update);
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("focus", refresh);
     };
-  }, [projectId, ownerId, branch, currentBranch]);
-  return hasChanges;
+  }, [refresh]);
+  return { hasChanges, refresh };
 }

@@ -4,7 +4,7 @@ import {
   MediaInsertionMode,
   needsBranchUpdate,
 } from "@pushdocs/contracts";
-import { GitPullRequest, X } from "lucide-react";
+import { ExternalLink, GitPullRequest, X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssetVideo } from "../../apps/web/src/components/asset-video";
@@ -16,12 +16,12 @@ import { FilePicker } from "../../apps/web/src/components/file-picker";
 import { LivePreviewButton } from "../../apps/web/src/components/live-preview-button";
 import { MediaLibrary } from "../../apps/web/src/components/media-library";
 import { QuickOpen } from "../../apps/web/src/components/quick-open";
+import { ReviewBranchAction } from "../../apps/web/src/components/review-branch-action";
 import {
   ReviewBranchList,
   ReviewBranchSwitch,
   ReviewMissingBranchNotice,
 } from "../../apps/web/src/components/review-branch-context";
-import { ReviewBranchNotice } from "../../apps/web/src/components/review-branch-notice";
 import { ReviewBranchUpdate } from "../../apps/web/src/components/review-branch-update";
 import {
   ReviewInformation,
@@ -30,7 +30,7 @@ import {
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
 import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
-import { Button, SearchableSelect, Select } from "../../packages/ui/src";
+import { Button, SearchableSelect, Select, Status } from "../../packages/ui/src";
 import { resolvedBranchUpdatePolicy } from "../fixtures/branch-update-policy";
 import { BranchImportFixture } from "./branch-import-fixture";
 import { ChangeReviewFixture } from "./change-review-fixture";
@@ -243,7 +243,12 @@ function App() {
     const updateReason = new URLSearchParams(window.location.search).get("update");
     const branch = updateReason ? `docs/${"long-branch-name-".repeat(6)}` : "docs/update";
     const details = {
-      branchUpdatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
+      branchUpdatePolicy: resolvedBranchUpdatePolicy({
+        strategy:
+          new URLSearchParams(window.location.search).get("strategy") === "merge"
+            ? BranchUpdateStrategy.Merge
+            : BranchUpdateStrategy.Rebase,
+      }),
       headSha: "sha",
       readiness: { state: "blocked" as const, reason: updateReason ?? "not_approved" },
       labels: [
@@ -276,12 +281,25 @@ function App() {
       provider_url: "https://git.example/review/7",
       details,
     };
+    const hasConflicts = hasBranchConflicts(details.readiness.reason);
+    const branchAction = (
+      <ReviewBranchAction
+        projectId="project"
+        ownerId="user"
+        provider="gitlab"
+        canWrite
+        review={review}
+        hasPendingChanges={new URLSearchParams(window.location.search).has("pending")}
+        actionOnly={!hasConflicts}
+      />
+    );
     if (new URLSearchParams(window.location.search).has("changes")) {
       const hasPendingChanges = new URLSearchParams(window.location.search).has("pending");
       return (
         <main className="page changes-page">
           <h1>Изменения в ветке</h1>
-          {hasBranchConflicts(details.readiness.reason) ? (
+          {hasBranchConflicts(details.readiness.reason) &&
+          details.branchUpdatePolicy.strategy === BranchUpdateStrategy.Merge ? (
             <BranchConflictNotice
               projectId="project"
               ownerId="user"
@@ -346,7 +364,9 @@ function App() {
                     <span>
                       <strong>Update documentation</strong>
                       <small>!7 {branch} → stable</small>
-                      <ReviewReadiness details={details} showAction />
+                      <span className="review-list-statuses">
+                        <ReviewReadiness details={details} showAction />
+                      </span>
                     </span>
                   </a>
                 ),
@@ -355,9 +375,10 @@ function App() {
           />
           <section className="review-detail">
             <header className="review-heading">
+              <Status tone="success">Открыт</Status>
               <h2>Update documentation</h2>
               <p>{branch} → stable</p>
-              <ReviewBranchNotice projectId="project" review={review} />
+              {hasConflicts ? branchAction : null}
             </header>
             <nav className="review-actions" aria-label="Действия с MR">
               <ReviewBranchSwitch
@@ -366,6 +387,22 @@ function App() {
                 defaultBranch="stable"
                 isFork={false}
               />
+              <div className="review-primary-actions">
+                <a
+                  className="pd-button pd-button--secondary review-provider-link"
+                  href={review.provider_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Открыть MR в GitLab <ExternalLink aria-hidden size={15} />
+                </a>
+                {!hasConflicts ? branchAction : null}
+                {new URLSearchParams(window.location.search).has("review-preview") ? (
+                  <a className="pd-button pd-button--secondary" href="#preview">
+                    Открыть предпросмотр
+                  </a>
+                ) : null}
+              </div>
             </nav>
             <ReviewInformation
               details={details}

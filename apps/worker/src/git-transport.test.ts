@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -809,6 +809,100 @@ it("finds article references to a deleted GIF inside a project root without fetc
       await git(data.source, "rev-parse", `${ref}:manual/static/img/demo.gif`),
     );
 }, 20_000);
+
+it.each([false, true])(
+  "batches reference downloads and reuses cached blobs without fetching unrelated files (bitmaps: %s)",
+  async (withBitmaps) => {
+    const data = await fixture();
+    await mkdir(path.join(data.source, "manual/.pushdocs"), { recursive: true });
+    await mkdir(path.join(data.source, "manual/docs"), { recursive: true });
+    await mkdir(path.join(data.source, "manual/static/img"), { recursive: true });
+    await writeFile(
+      path.join(data.source, "manual/.pushdocs/config.json"),
+      JSON.stringify({ version: 1, documentRoots: ["docs"] }),
+    );
+    for (let index = 0; index < 24; index++)
+      await writeFile(
+        path.join(data.source, `manual/docs/${index}.md`),
+        `# Article ${index}\n\n![Demo](../static/img/demo.gif)\n`,
+      );
+    await writeFile(path.join(data.source, "manual/unrelated.md"), "Unrelated document\n");
+    await writeFile(path.join(data.source, "manual/static/img/demo.gif"), Buffer.from([0, 1, 2]));
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Articles with media");
+    await git(data.source, "push", "origin", "main");
+    await git(data.source, "branch", "docs/task");
+    const baseSha = await git(data.source, "rev-parse", "HEAD");
+    const unrelatedSha = await git(data.source, "rev-parse", "HEAD:manual/unrelated.md");
+    await git(data.source, "rm", "manual/static/img/demo.gif");
+    await git(data.source, "commit", "-m", "Remove media");
+    await git(data.source, "push", "origin", "main");
+    await git(data.source, "checkout", "docs/task");
+    await writeFile(path.join(data.source, "manual/static/img/demo.gif"), Buffer.from([0, 3, 4]));
+    await writeFile(
+      path.join(data.source, "manual/docs/0.md"),
+      "# Branch article\n\n![Demo](../static/img/demo.gif)\n",
+    );
+    await git(data.source, "add", ".");
+    await git(data.source, "commit", "-m", "Replace media");
+    await git(data.source, "push", "origin", "docs/task");
+    const mediaSha = await git(data.source, "rev-parse", "HEAD:manual/static/img/demo.gif");
+    const directory = path.join(data.directory, "batch-references");
+    if (withBitmaps) {
+      const warm = new GitTransport({ directory, remote: data.remote, allowLocal: true });
+      await warm.head("docs/task");
+      await warm.head("main");
+      // Isolate bitmap negotiation during blob loading from the initial head imports.
+      await git(data.remote, "repack", "-adb");
+    }
+
+    const wrapperDirectory = path.join(data.directory, "bin");
+    const tracePath = path.join(data.directory, "git-trace.jsonl");
+    await mkdir(wrapperDirectory);
+    await writeFile(
+      path.join(wrapperDirectory, "git"),
+      '#!/bin/sh\nexport GIT_TRACE2_EVENT="$PUSHDOCS_TEST_GIT_TRACE"\nexec "$PUSHDOCS_TEST_GIT_EXECUTABLE" "$@"\n',
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PUSHDOCS_TEST_GIT_EXECUTABLE", (await exec("which", ["git"])).stdout.trim());
+    vi.stubEnv("PUSHDOCS_TEST_GIT_TRACE", tracePath);
+    vi.stubEnv("PATH", `${wrapperDirectory}${path.delimiter}${process.env.PATH}`);
+    const transport = new GitTransport({ directory, remote: data.remote, allowLocal: true });
+    const input = { branch: "docs/task", sourceBranch: "main", rootPath: "manual" };
+    const snapshot = await transport.inspectConflicts(input);
+    const fetches = async () =>
+      (await readFile(tracePath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+        .filter((event) => event.event === "start" && event.argv?.includes("fetch")).length;
+    const firstFetches = await fetches();
+    expect(firstFetches).toBe(5);
+    expect(snapshot.files).toHaveLength(1);
+    expect(snapshot.files[0]?.mediaReferences?.complete).toBe(true);
+    expect(snapshot.files[0]?.mediaReferences?.articles).toHaveLength(48);
+    expect(snapshot.files[0]?.mediaReferences?.articles).toContainEqual({
+      path: "manual/docs/0.md",
+      version: "target",
+      title: "Article 0",
+    });
+    expect(await transport.inspectConflicts(input)).toEqual(snapshot);
+    expect((await fetches()) - firstFetches).toBe(2);
+    const objects = await git(
+      directory,
+      "cat-file",
+      "--batch-all-objects",
+      "--batch-check=%(objectname)",
+    );
+    for (const sha of [
+      mediaSha,
+      unrelatedSha,
+      await git(data.source, "rev-parse", `${baseSha}:manual/static/img/demo.gif`),
+    ])
+      expect(objects).not.toContain(sha);
+  },
+  20_000,
+);
 
 it(
   "stops inspection before fetching blobs when the server does not advertise filtering",

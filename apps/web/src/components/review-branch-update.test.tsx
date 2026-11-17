@@ -15,9 +15,17 @@ vi.mock("@/app/actions", () => ({
   gitOperationStatusAction: mocks.status,
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
+vi.mock("@/app/conflict-actions", () => ({
+  prepareConflictResolutionAction: vi.fn(),
+  inspectReviewConflictsAction: vi.fn(),
+  submitConflictResolutionAction: vi.fn(),
+  retryConflictResolutionAction: vi.fn(),
+  cancelRebaseUpdateAction: vi.fn(),
+}));
 
 import { clearDraft, draftKey, writeDraft } from "./draft-storage";
 import { gitOperationStore } from "./git-operation-store";
+import { gitOperationPollingDelays } from "./git-operation-timing";
 import { ReviewBranchUpdate } from "./review-branch-update";
 
 afterEach(() => {
@@ -100,7 +108,7 @@ it("blocks an update until a legacy review has a resolved policy", () => {
       },
     },
   });
-  expect(screen.getByRole("alert").textContent).toContain("определить способ обновления");
+  expect(screen.getByRole("alert").textContent).toContain("Обновление пока недоступно");
   expect(
     (screen.getByRole("button", { name: "Обновить ветку" }) as HTMLButtonElement).disabled,
   ).toBe(true);
@@ -108,25 +116,21 @@ it("blocks an update until a legacy review has a resolved policy", () => {
 });
 
 it.each([
-  { provider: "gitlab", reviewLabel: "MR", reason: "need_rebase" },
-  { provider: "github", reviewLabel: "PR", reason: "behind" },
+  { provider: "gitlab", reason: "need_rebase" },
+  { provider: "github", reason: "behind" },
 ] as const)(
-  "updates $provider branches inside PushDocs after confirmation",
-  async ({ provider, reviewLabel, reason }) => {
+  "updates $provider branches in one click without technical explanations",
+  async ({ provider, reason }) => {
     mocks.start.mockResolvedValue("job");
     mocks.status.mockResolvedValue({ status: "done" });
     const { container } = mount(reason, { provider });
-    expect(screen.getByRole("region", { name: "Обновление ветки" }).textContent).toContain(
-      "release",
-    );
+    expect(screen.queryByRole("heading", { name: "Обновите ветку" })).toBeNull();
+    expect(container.querySelector(".branch-notice")).toBeNull();
+    expect(container.textContent).not.toMatch(/release|SHA|rebase|merge|MR|PR/);
     expect(screen.queryByRole("link", { name: /Открыть .* в Git/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
-    expect(mocks.start).not.toHaveBeenCalled();
-    expect(container.textContent?.includes("SHA изменятся")).toBe(reason === "need_rebase");
-    expect(container.textContent).toContain(
-      `${reviewLabel} обновится автоматически и останется открытым`,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Обновить и отправить в Git" }));
+    expect(screen.queryByRole("button", { name: "Отмена" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Обновить и отправить в Git" })).toBeNull();
     await act(async () => {});
     expect(mocks.start).toHaveBeenCalledWith({
       projectId: "project",
@@ -139,15 +143,46 @@ it.each([
       },
     });
     expect(mocks.refresh).toHaveBeenCalledOnce();
-    expect(screen.getByRole("status").textContent).toContain("Ветка обновлена и отправлена в Git");
+    expect(screen.getByRole("status").textContent).toContain("Ветка обновлена.");
   },
 );
 
-it("cancels confirmation without touching Git", () => {
+it("disables the update action while it runs and avoids duplicate starts", async () => {
+  mocks.start.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({ status: "running" });
   mount();
   fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
-  fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
-  expect(screen.queryByText(/SHA изменятся/)).toBeNull();
+  const action = screen.getByRole("button", { name: "Обновляем ветку…" });
+  expect(action).toHaveProperty("disabled", true);
+  fireEvent.click(action);
+  await act(async () => {});
+  expect(mocks.start).toHaveBeenCalledOnce();
+});
+
+it("replaces the update notice with a conflict notice when the current commit needs resolution", async () => {
+  mocks.start.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({ status: "needs_resolution" });
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
+  await act(async () => {});
+  expect(screen.queryByRole("region", { name: "Обновление ветки" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Исправьте конфликты" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Исправить конфликты" }).getAttribute("href")).toBe(
+    "/projects/project/changes?branch=docs%2Ffix+%231&resolve=review",
+  );
+  expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
+  expect(mocks.start).toHaveBeenCalledOnce();
+});
+
+it("opens a paused update with a conflict notice without starting another operation", () => {
+  mount("need_rebase", {
+    activeStrategy: BranchUpdateStrategy.Rebase,
+    activeHeadSha: "sha",
+    waitingForResolution: true,
+  });
+  expect(screen.getByRole("heading", { name: "Исправьте конфликты" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Исправить конфликты" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
   expect(mocks.start).not.toHaveBeenCalled();
 });
 
@@ -173,7 +208,7 @@ it("keeps reader and fork mutations disabled", () => {
 
 it("shows saved changes as the next step before updating the branch", () => {
   mount("need_rebase", { hasPendingChanges: true });
-  expect(screen.getByRole("heading", { name: "Сначала завершите текущие правки" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
   expect(mocks.start).not.toHaveBeenCalled();
 });
@@ -182,29 +217,31 @@ it("shows browser drafts before the update action and restores it when drafts ar
   const key = draftKey("project", "docs/fix #1", "docs/a.md", "user");
   writeDraft(key, "Unsaved", "Original");
   mount();
-  expect(screen.getByRole("heading", { name: "Сначала завершите текущие правки" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Обновление ветки" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Обновить ветку" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Открыть локальные правки" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Открыть правки" })).toBeTruthy();
   expect(mocks.start).not.toHaveBeenCalled();
   expect(localStorage.getItem(key)).toContain("Unsaved");
   clearDraft(key);
   fireEvent(window, new Event("storage"));
   expect(screen.getByRole("button", { name: "Обновить ветку" })).toBeTruthy();
-  expect(screen.queryByText("Сначала завершите текущие правки")).toBeNull();
+  expect(screen.queryByText("Сохраните текущие правки")).toBeNull();
 });
 
 it("rechecks the source branch's local drafts before starting an update and preserves them", async () => {
   mount();
   writeDraft(draftKey("project", "docs/fix #1", "docs/a.md", "user"), "Unsaved", "Original");
   fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
-  fireEvent.click(screen.getByRole("button", { name: "Обновить и отправить в Git" }));
   await act(async () => {});
-  expect(screen.getByRole("alert").textContent).toContain("локальные правки");
-  expect(
-    screen.getByRole("link", { name: "Открыть локальные правки" }).getAttribute("href"),
-  ).toContain("branch=docs%2Ffix+%231");
+  expect(screen.queryByRole("region", { name: "Обновление ветки" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Открыть правки" }).getAttribute("href")).toContain(
+    "branch=docs%2Ffix+%231",
+  );
   expect(mocks.start).not.toHaveBeenCalled();
   expect(localStorage.length).toBe(1);
+  clearDraft(draftKey("project", "docs/fix #1", "docs/a.md", "user"));
+  fireEvent.focus(window);
+  expect(screen.getByRole("button", { name: "Обновить ветку" })).toBeTruthy();
 });
 
 it("reports server blockers and permits retry without losing the selected review", async () => {
@@ -216,9 +253,11 @@ it("reports server blockers and permits retry without losing the selected review
   mount();
   for (let attempt = 0; attempt < 2; attempt++) {
     fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
-    fireEvent.click(screen.getByRole("button", { name: "Обновить и отправить в Git" }));
     await act(async () => {});
-    if (attempt === 0) expect(screen.getByRole("alert").textContent).toContain("Сначала завершите");
+    if (attempt === 0)
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Не удалось обновить ветку. Попробуйте ещё раз.",
+      );
   }
   expect(mocks.refresh).toHaveBeenCalledOnce();
 });
@@ -229,7 +268,6 @@ it("continues polling after navigation without starting another update", async (
   mocks.status.mockResolvedValue({ status: "running" });
   const view = mount();
   fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
-  fireEvent.click(screen.getByRole("button", { name: "Обновить и отправить в Git" }));
   await act(async () => {});
   view.unmount();
   mocks.status.mockResolvedValue({ status: "done" });
@@ -239,7 +277,49 @@ it("continues polling after navigation without starting another update", async (
   expect(mocks.refresh).toHaveBeenCalledOnce();
 });
 
-it("can reconcile an existing update after MR data disappears, even with newer local drafts", async () => {
+it("shows the second attempt and restores the action after its failure", async () => {
+  vi.useFakeTimers();
+  mocks.start.mockResolvedValue("job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 2,
+      last_error: "Git fetch failed",
+    })
+    .mockResolvedValueOnce({ status: "running", attempt: 2, maxAttempts: 2 })
+    .mockResolvedValueOnce({
+      status: "failed",
+      attempt: 2,
+      maxAttempts: 2,
+      last_error: "Git fetch failed",
+    });
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
+  await act(async () => {});
+  expect(screen.getByRole("status").textContent).toBe(
+    "Запрос завершился ошибкой. Ожидаем повтор: попытка 2 из 2.",
+  );
+  expect(screen.getByRole("button", { name: "Обновляем ветку…" })).toHaveProperty("disabled", true);
+  await act(() => vi.advanceTimersByTimeAsync(gitOperationPollingDelays.normal));
+  expect(screen.getByRole("status").textContent).toBe("Повторяем запрос: попытка 2 из 2…");
+  await act(() => vi.advanceTimersByTimeAsync(gitOperationPollingDelays.normal));
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Не удалось обновить ветку. Попробуйте ещё раз.",
+  );
+  expect(screen.getByRole("button", { name: "Обновить ветку" })).toHaveProperty("disabled", false);
+  await act(() => vi.advanceTimersByTimeAsync(gitOperationPollingDelays.normal));
+  expect(mocks.status).toHaveBeenCalledTimes(3);
+  expect(mocks.start).toHaveBeenCalledOnce();
+  expect(mocks.refresh).not.toHaveBeenCalled();
+  mocks.status.mockResolvedValue({ status: "done", attempt: 1, maxAttempts: 2 });
+  fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
+  await act(async () => {});
+  expect(mocks.start).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("status").textContent).toBe("Ветка обновлена.");
+});
+
+it("resumes an existing update in one click after MR data disappears, even with newer local drafts", async () => {
   mocks.start.mockResolvedValue("same-job");
   mocks.status.mockResolvedValue({ status: "done" });
   writeDraft(draftKey("project", "docs/fix #1", "docs/new.md", "user"), "New local work", "");
@@ -256,10 +336,12 @@ it("can reconcile an existing update after MR data disappears, even with newer l
       details: null,
     },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Продолжить обновление ветки" }));
-  expect(screen.getByText(/проверит результат предыдущей отправки/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Обновить и отправить в Git" }));
+  expect(screen.queryByText(/Продолжите обновление/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Обновить ветку" }));
+  expect(screen.queryByRole("button", { name: "Обновить и отправить в Git" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Отмена" })).toBeNull();
   await act(async () => {});
+  expect(mocks.start).toHaveBeenCalledOnce();
   expect(mocks.start).toHaveBeenCalledWith(
     expect.objectContaining({
       updateReview: {

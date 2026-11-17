@@ -23,6 +23,8 @@ import {
   branchUpdateStrategy,
   ConflictInspectionStage,
   isConflictMediaFile,
+  jobAttempt,
+  jobRetryPolicy,
   mergeResolutionPolicyError,
   needsBranchUpdate,
   type PreparedBranchUpdate,
@@ -1526,12 +1528,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
         await repository.failJob(job.id, message, false, job.attempts);
         return true;
       }
-      const retryBase = (job.payload as { retryBaseAttempt?: number }).retryBaseAttempt;
-      const failures =
-        job.kind === branchUpdateJobKind && typeof retryBase === "number"
-          ? Math.max(1, job.attempts - retryBase)
-          : job.attempts;
-      const retryAllowed = failures < 5;
+      const retryAllowed = jobAttempt(job) < jobRetryPolicy.maxAttempts;
       if (!retryAllowed || permanentSubmissionFailure) {
         await repository.markProjectAttention(projectId);
         if (job.kind === "change-set.submit") {

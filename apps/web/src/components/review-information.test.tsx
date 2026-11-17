@@ -9,8 +9,8 @@ afterEach(cleanup);
 it.each([
   ["need_rebase", "Обновить ветку"],
   ["behind", "Обновить ветку"],
-  ["conflict", "Разрешить конфликты"],
-  ["dirty", "Разрешить конфликты"],
+  ["conflict", "Исправить конфликты"],
+  ["dirty", "Исправить конфликты"],
   ["not_approved", "Нужны одобрения"],
   ["requested_changes", "Внести правки"],
   ["discussions_not_resolved", "Закрыть обсуждения"],
@@ -140,10 +140,10 @@ it("keeps an unfinished update available after readiness becomes ready", () => {
   render(
     <ReviewInformation
       details={{ ...details, readiness: { state: "ready", reason: null } }}
-      readinessNotice={<p>Продолжить обновление ветки</p>}
+      readinessNotice={<p>Обновить ветку</p>}
     />,
   );
-  expect(screen.getByText("Продолжить обновление ветки")).toBeTruthy();
+  expect(screen.getByText("Обновить ветку")).toBeTruthy();
   expect(screen.getByText("Готов к слиянию")).toBeTruthy();
 });
 

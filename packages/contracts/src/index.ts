@@ -40,6 +40,7 @@ export {
   type RebaseResolution,
   sameBranchUpdatePolicy,
 } from "./branch-update";
+export { jobAttempt, jobRetryPolicy } from "./job-retry";
 
 export {
   defaultMediaLocations,

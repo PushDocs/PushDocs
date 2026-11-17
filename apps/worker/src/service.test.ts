@@ -1915,10 +1915,10 @@ describe("job execution and review polling", () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('"jobId":"job"'));
   });
 
-  it("releases a submission after its fifth failed attempt", async () => {
+  it("releases a submission after its second failed attempt", async () => {
     const port = repository();
     vi.mocked(port.claimNextJob).mockResolvedValue({
-      attempts: 5,
+      attempts: 2,
       id: "job",
       kind: "change-set.submit",
       payload: { changeSetId: "change", message: "Update", projectId: "project" },
@@ -1931,7 +1931,7 @@ describe("job execution and review polling", () => {
       "project",
       "Change set is unavailable",
     );
-    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false, 5);
+    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false, 2);
   });
 
   it("polls visible projects and isolates provider failures", async () => {
@@ -2758,6 +2758,23 @@ describe("updating a review branch inside PushDocs", () => {
     expect(transport.publish).toHaveBeenCalledOnce();
     expect(port.completeJob).toHaveBeenCalledWith("update-job", 2);
     expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", []);
+  });
+
+  it.each([
+    { attempts: 1, retryBaseAttempt: undefined, retry: true },
+    { attempts: 2, retryBaseAttempt: undefined, retry: false },
+    { attempts: 12, retryBaseAttempt: 11, retry: true },
+    { attempts: 13, retryBaseAttempt: 11, retry: false },
+  ])("limits failed updates to two attempts: %j", async ({ attempts, retryBaseAttempt, retry }) => {
+    const f = setup();
+    f.job.attempts = attempts;
+    Object.assign(f.payload, { retryBaseAttempt });
+    f.transport.prepareUpdate.mockRejectedValue(new Error("Git fetch failed"));
+    await f.service.runJob();
+    expect(f.port.failJob).toHaveBeenCalledWith("update-job", "Git fetch failed", retry, attempts);
+    expect(f.port.markProjectAttention).toHaveBeenCalledTimes(retry ? 0 : 1);
+    expect(f.transport.publish).not.toHaveBeenCalled();
+    expect(f.port.completeJob).not.toHaveBeenCalled();
   });
 
   it("restores the same durable result when a retry confirms the previous push never completed", async () => {

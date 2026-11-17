@@ -3,20 +3,20 @@ import { Status } from "@pushdocs/ui";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { branchUpdateLabels } from "./git-operation-labels";
+import { branchConflictLabels, branchUpdateLabels } from "./git-operation-labels";
 
 const reasons: Record<string, string> = {
   draft_status: "Черновик нужно перевести в готовый к проверке режим.",
-  conflict: "Есть конфликты с основной веткой.",
+  conflict: branchConflictLabels.title,
   not_approved: "Не хватает обязательных одобрений.",
   requested_changes: "Ревьюеры запросили изменения.",
   discussions_not_resolved: "Остались незавершённые обсуждения.",
   ci_must_pass: "Обязательные проверки должны пройти успешно.",
   ci_still_running: "Проверки ещё выполняются.",
   security_policy_pipeline_check: "Ожидается успешное завершение проверок безопасности.",
-  need_rebase: "Нужно обновить ветку относительно основной.",
-  behind: "Нужно обновить ветку относительно основной.",
-  dirty: "Есть конфликты с основной веткой.",
+  need_rebase: branchUpdateLabels.title,
+  behind: branchUpdateLabels.title,
+  dirty: branchConflictLabels.title,
   unstable: "Есть непройденные проверки.",
   blocked: "Не выполнены условия слияния, заданные в GitHub.",
   merge_request_blocked: "Слияние заблокировано другим MR.",
@@ -28,13 +28,12 @@ function safeMarkdown(source: string) {
   return source.replace(/<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>/g, "");
 }
 
-const resolveConflictsAction = "Разрешить конфликты";
 const failedChecksAction = "Проверить ошибки CI";
 const readinessActions: Record<string, string> = {
   need_rebase: branchUpdateLabels.idle,
   behind: branchUpdateLabels.idle,
-  conflict: resolveConflictsAction,
-  dirty: resolveConflictsAction,
+  conflict: branchConflictLabels.action,
+  dirty: branchConflictLabels.action,
   not_approved: "Нужны одобрения",
   requested_changes: "Внести правки",
   discussions_not_resolved: "Закрыть обсуждения",

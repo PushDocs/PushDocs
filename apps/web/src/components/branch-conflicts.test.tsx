@@ -90,7 +90,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("offers to start rebase from the branch tip comparison", async () => {
+it("returns to the existing branch update notice instead of showing uneditable rebase previews", async () => {
   mocks.status.mockResolvedValue({
     status: "done",
     conflictSnapshot: {
@@ -99,11 +99,16 @@ it("offers to start rebase from the branch tip comparison", async () => {
     },
   });
   render(<BranchConflictResolver {...props} />);
-  expect(await screen.findByText(/Для проекта выбран rebase/)).toBeTruthy();
+  await waitFor(() =>
+    expect(mocks.router.replace).toHaveBeenCalledWith(
+      "/projects/project/changes?branch=docs%2Ftask",
+    ),
+  );
+  expect(screen.queryByText(/Для проекта выбран rebase/)).toBeNull();
   expect(screen.queryByRole("button", { name: "Отправить исправления в docs/task" })).toBeNull();
-  expect(
-    (screen.getByRole("button", { name: "Начать rebase" }) as HTMLButtonElement).disabled,
-  ).toBe(false);
+  expect(screen.queryByRole("button", { name: "Начать rebase" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "docs/a.md" })).toBeNull();
+  expect(mocks.start).not.toHaveBeenCalled();
   expect(mocks.submit).not.toHaveBeenCalled();
 });
 
@@ -122,8 +127,12 @@ const rebaseSnapshot = (index: number) => ({
   },
 });
 
-it("starts rebase and resolves consecutive commits in the same operation without reusing the previous draft", async () => {
-  let step = 0;
+it("resolves consecutive commits, shows progress between them and returns to changes when rebase is done", async () => {
+  let step = 1;
+  let finishNextCommit: ((job: unknown) => void) | undefined;
+  mocks.prepare.mockResolvedValue([
+    { branch: "docs/task", paths: [], busy: true, mergeJobId: "rebase" },
+  ]);
   mocks.status.mockImplementation(async (_project, id) =>
     id === "inspect"
       ? {
@@ -133,32 +142,41 @@ it("starts rebase and resolves consecutive commits in the same operation without
             updatePolicy: resolvedBranchUpdatePolicy({ strategy: BranchUpdateStrategy.Rebase }),
           },
         }
-      : step < 3
-        ? { status: "needs_resolution", conflictSnapshot: rebaseSnapshot(step) }
-        : { status: "done" },
+      : step === 2
+        ? new Promise((resolve) => (finishNextCommit = resolve))
+        : step < 3
+          ? { status: "needs_resolution", conflictSnapshot: rebaseSnapshot(step) }
+          : { status: "done" },
   );
-  mocks.start.mockImplementation(async () => {
-    step = 1;
-    return "rebase";
-  });
   mocks.submit.mockImplementation(async () => {
     step++;
     return "rebase";
   });
   render(<BranchConflictResolver {...props} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Начать rebase" }));
   expect(await screen.findByText(/Edit 1/)).toBeTruthy();
+  expect(screen.getByText("docs/task").closest("p")?.textContent).toBe(
+    "docs/task ← stable (rebase)",
+  );
+  expect(screen.queryByText(/SHA/)).toBeNull();
+  expect(screen.queryByText(/Для проекта выбран rebase/)).toBeNull();
+  expect(mocks.start).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("radio", { name: "Оставить актуальную основу" }));
-  fireEvent.click(screen.getByRole("button", { name: "Продолжить rebase" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить и продолжить" }));
+  expect(await screen.findByText("Обновляем ветку из stable…")).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "docs/a.md" })).toBeNull();
+  await waitFor(() => expect(finishNextCommit).toBeTypeOf("function"));
+  await act(async () =>
+    finishNextCommit?.({ status: "needs_resolution", conflictSnapshot: rebaseSnapshot(2) }),
+  );
   expect(await screen.findByText(/Edit 2/)).toBeTruthy();
   expect(
-    (screen.getByRole("button", { name: "Продолжить rebase" }) as HTMLButtonElement).disabled,
+    (screen.getByRole("button", { name: "Сохранить и продолжить" }) as HTMLButtonElement).disabled,
   ).toBe(true);
   expect(
     (screen.getByRole("radio", { name: "Оставить актуальную основу" }) as HTMLInputElement).checked,
   ).toBe(false);
   fireEvent.click(screen.getByRole("radio", { name: "Применить изменения коммита" }));
-  fireEvent.click(screen.getByRole("button", { name: "Продолжить rebase" }));
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить и продолжить" }));
   await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(2));
   expect(mocks.submit).toHaveBeenNthCalledWith(
     1,
@@ -174,7 +192,13 @@ it("starts rebase and resolves consecutive commits in the same operation without
     [{ path: "docs/a.md", choice: BranchConflictChoice.Manual, content: "Theirs" }],
     "conflict-2",
   );
-  expect(await screen.findByText(/Rebase завершён/)).toBeTruthy();
+  await waitFor(() =>
+    expect(mocks.router.replace).toHaveBeenCalledWith(
+      "/projects/project/changes?branch=docs%2Ftask",
+    ),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText(/Результат отправлен/)).toBeNull();
 });
 
 it("reopens the current paused commit after reload and cancels that exact conflict", async () => {
@@ -202,9 +226,9 @@ it("keeps conflicts visible in documents after the background inspection finishe
   );
   const notice = screen.getByRole("region", { name: "Конфликты между ветками" });
   expect(await within(notice).findByText("docs/a.md")).toBeTruthy();
-  expect(within(notice).getByText("Ветка конфликтует с stable")).toBeTruthy();
+  expect(within(notice).getByText("Исправьте конфликты")).toBeTruthy();
   expect(
-    within(notice).getByRole("link", { name: "Разрешить конфликты" }).getAttribute("href"),
+    within(notice).getByRole("link", { name: "Исправить конфликты" }).getAttribute("href"),
   ).toBe("/projects/project/changes?branch=docs%2Ftask&resolve=review");
   expect(screen.queryByRole("complementary", { name: "Фоновые проверки конфликтов" })).toBeNull();
 });
@@ -228,7 +252,7 @@ it("shows loading and a retryable error inside documents while keeping the resol
   await act(async () => fail?.(new Error("GitLab is not responding")));
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.getByRole("alert").textContent).toContain("GitLab is not responding");
-  expect(screen.getByRole("link", { name: "Разрешить конфликты" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Исправить конфликты" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
   expect(await screen.findByText("docs/a.md")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
@@ -257,8 +281,8 @@ it("lets readers inspect conflicts and directs fork conflicts to the provider", 
     <DocumentBranchConflicts {...props} canWrite={false} canInspect hasPendingChanges={false} />,
   );
   await screen.findByText("docs/a.md");
-  expect(screen.queryByRole("link", { name: "Разрешить конфликты" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Открыть MR в Git-провайдере" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Исправить конфликты" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Открыть MR" })).toBeTruthy();
   view.unmount();
   mocks.inspect.mockClear();
   render(
@@ -271,7 +295,7 @@ it("lets readers inspect conflicts and directs fork conflicts to the provider", 
   );
   expect(mocks.inspect).not.toHaveBeenCalled();
   expect(screen.queryByText("docs/a.md")).toBeNull();
-  expect(screen.getByRole("link", { name: "Открыть MR в Git-провайдере" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Открыть MR" })).toBeTruthy();
 });
 
 it("shows actual conflict paths directly in review details", async () => {
@@ -421,13 +445,13 @@ it("offers conflict resolution only after the current saved changes are cleared"
   const view = render(
     <BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges />,
   );
-  expect(screen.getByRole("heading", { name: "Сначала завершите текущие правки" })).toBeTruthy();
-  expect(screen.queryByRole("link", { name: "Разрешить конфликты" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Сохраните текущие правки" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Исправить конфликты" })).toBeNull();
   view.rerender(
     <BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges={false} />,
   );
-  expect(screen.getByRole("heading", { name: "Ветка конфликтует с stable" })).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Разрешить конфликты" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Исправьте конфликты" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Исправить конфликты" })).toBeTruthy();
 });
 
 it("returns browser-only drafts to the normal changes view and explains them in the notice", async () => {
@@ -443,15 +467,13 @@ it("returns browser-only drafts to the normal changes view and explains them in 
   expect(localStorage.getItem(key)).toContain("Unsaved");
   view.unmount();
   render(<BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges={false} />);
-  expect(await screen.findByText(/Сначала разберитесь с текущими правками/)).toBeTruthy();
-  expect(
-    screen.getByRole("link", { name: "Открыть документы с локальными правками" }),
-  ).toBeTruthy();
-  expect(screen.queryByRole("link", { name: "Разрешить конфликты" })).toBeNull();
+  expect(await screen.findByText(/Сохраните текущие правки/)).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Открыть правки" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Исправить конфликты" })).toBeNull();
   clearDraft(key);
   fireEvent.focus(window);
-  expect(screen.getByRole("link", { name: "Разрешить конфликты" })).toBeTruthy();
-  expect(screen.queryByText(/Сначала разберитесь с текущими правками/)).toBeNull();
+  expect(screen.getByRole("link", { name: "Исправить конфликты" })).toBeTruthy();
+  expect(screen.queryByText(/Сохраните текущие правки/)).toBeNull();
 });
 
 it("requires a decision and sends the chosen branch version to the existing review branch", async () => {
