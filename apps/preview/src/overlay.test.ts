@@ -38,6 +38,9 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+const waitForPreview = (assertion: () => void | Promise<void>) =>
+  vi.waitFor(assertion, { timeout: 5000 });
+
 it("updates only changed files, preserves dependencies across commits and reinstalls changed manifests", async () => {
   launches.length = 0;
   const root = await mkdtemp(path.join(tmpdir(), "pushdocs-overlay-"));
@@ -62,6 +65,8 @@ it("updates only changed files, preserves dependencies across commits and reinst
     head_commit_sha: string;
   }> = [];
   let revision = 1;
+  let advanceRevisionAfterRead = false;
+  const recordPreviewWorkspace = vi.fn();
   let leaseExpired = false;
   const logger = { error: vi.fn(), log: vi.fn() };
   let preview: ReturnType<typeof createPreviewService> | undefined;
@@ -107,6 +112,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
       logger,
       gitAccess: async () => ({ remote, env: process.env }),
       repository: {
+        recordPreviewWorkspace,
         reconcilePreviewLeases: async () => {
           if (leaseExpired) session.desired_state = "stopped";
         },
@@ -119,14 +125,21 @@ it("updates only changed files, preserves dependencies across commits and reinst
           kind: "github",
           secret_encrypted: "token",
         }),
-        listChangedWorkingFiles: async () => ({
-          branch: { head_commit_sha: head },
-          changeSet: { revision },
-          files: [
-            { path: "docs/unchanged.md", content: "unchanged", status: "add" },
-            { path: "docs/edited.md", content: `revision ${revision}`, status: "add" },
-          ],
-        }),
+        listChangedWorkingFiles: async () => {
+          const snapshotRevision = revision;
+          if (advanceRevisionAfterRead) {
+            advanceRevisionAfterRead = false;
+            revision++;
+          }
+          return {
+            branch: { head_commit_sha: head },
+            changeSet: { revision: snapshotRevision },
+            files: [
+              { path: "docs/unchanged.md", content: "unchanged", status: "add" },
+              { path: "docs/edited.md", content: `revision ${snapshotRevision}`, status: "add" },
+            ],
+          };
+        },
         listPreviewAttachments: async () => [
           { repository_path: "static/new/folder/image.png", storage_key: "attachment" },
         ],
@@ -147,7 +160,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
       decryptSecret: (value) => value,
     });
     await preview.tick();
-    await vi.waitFor(() => expect(session.status).toBe("ready"));
+    await waitForPreview(() => expect(session.status).toBe("ready"));
     // Locate the workspace through its article, also after migration to a stable branch path.
     const { readdir } = await import("node:fs/promises");
     const entries = await readdir(root, { recursive: true });
@@ -200,7 +213,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
       await preview?.tick();
       expect(session.status).toBe("queued");
       await preview?.tick();
-      await vi.waitFor(() => expect(session.status).toBe("ready"));
+      await waitForPreview(() => expect(session.status).toBe("ready"));
     };
     await writeFile(path.join(currentWorkspace, "base.txt"), "new base");
     await advance();
@@ -232,7 +245,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     session.desired_state = "running";
     session.status = "queued";
     await preview.tick();
-    await vi.waitFor(() => expect(session.status).toBe("ready"));
+    await waitForPreview(() => expect(session.status).toBe("ready"));
     expect(installations()).toBe(2);
 
     const queued = {
@@ -260,7 +273,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("не является папкой"));
     await rm(path.join(currentWorkspace, ".cache"));
     leaseExpired = false;
-    await vi.waitFor(() => expect(queued.status).toBe("ready"));
+    await waitForPreview(() => expect(queued.status).toBe("ready"));
 
     queued.desired_state = "stopped";
     backgroundBranches.push({
@@ -276,7 +289,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
       "worktrees",
       workspaceKey({ projectId: session.project_id, branch: "docs/prepared" }),
     );
-    await vi.waitFor(async () =>
+    await waitForPreview(async () =>
       expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
         "revision 2",
       ),
@@ -292,7 +305,7 @@ it("updates only changed files, preserves dependencies across commits and reinst
     sessions.push(preparedSession);
     const beforeFetch = launches.filter((args) => args.includes("fetch")).length;
     await preview.tick();
-    await vi.waitFor(() => expect(preparedSession.status).toBe("ready"));
+    await waitForPreview(() => expect(preparedSession.status).toBe("ready"));
     expect(launches.filter((args) => args.includes("fetch")).length).toBe(beforeFetch);
     preparedSession.desired_state = "stopped";
     await preview.tick();
@@ -304,7 +317,23 @@ it("updates only changed files, preserves dependencies across commits and reinst
       status: "queued",
     });
     await preview.tick();
-    await vi.waitFor(() => expect(sessions.at(-1)?.status).toBe("ready"));
+    await waitForPreview(() => expect(sessions.at(-1)?.status).toBe("ready"));
+    expect(installations()).toBe(beforeReopen);
+    // A change arriving after the active-site read belongs to the next restart,
+    // never to an independent background publication over the active workspace.
+    recordPreviewWorkspace.mockClear();
+    advanceRevisionAfterRead = true;
+    await preview.tick();
+    expect(recordPreviewWorkspace).not.toHaveBeenCalledWith(
+      session.project_id,
+      "docs/prepared",
+      expect.objectContaining({ preparation_status: "starting" }),
+    );
+    await preview.tick();
+    expect(sessions.at(-1)?.status).toBe("ready");
+    expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
+      "revision 3",
+    );
     expect(installations()).toBe(beforeReopen);
   } finally {
     await preview?.stopAll();
