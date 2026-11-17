@@ -1189,6 +1189,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
           headSha: branch.head_commit_sha,
         };
         const key = workspaceKey(ref);
+        // Only the active-site path may replace its tree after a coordinated restart.
+        if ([...running.values()].some((preview) => path.basename(preview.workspace) === key))
+          continue;
         if (evictedWorkspaces.has(key) || (retryAfter.get(key) ?? 0) > Date.now()) continue;
         const cache = await workspaces.readCache(ref);
         const working = await repository.listChangedWorkingFiles(ref.projectId, ref.branch);
