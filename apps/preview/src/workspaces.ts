@@ -1,17 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   realpath,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import {
+  privateTreeCleanupIdentity,
+  privateTreeCopyBudget,
+  privateTreeOperation,
+} from "./private-filesystem";
 
 export type WorkspaceBranch = { projectId: string; branch: string; headSha: string };
 export type WorkspaceCache = {
@@ -25,6 +33,8 @@ export type WorkspaceCache = {
   legacyWorkspace?: string;
   lastUsedAt: number;
   revision?: number;
+  gitDirectory?: string;
+  exposed?: boolean;
 };
 export type GitAccess = { remote: string; env: NodeJS.ProcessEnv };
 type Runner = (
@@ -66,25 +76,27 @@ export function createWorkspaceManager(options: {
   access: (projectId: string) => Promise<GitAccess>;
   fetch: (operation: () => Promise<string>) => Promise<string>;
   isActive?: (key: string) => boolean;
-  quiesce?: (uid: number) => Promise<void>;
-  hasRuntimeProcesses?: (uid: number) => Promise<boolean>;
+  copyBudgetBytes?: number;
 }) {
   const repositories = path.join(options.root, "repositories");
   const worktrees = path.join(options.root, "worktrees");
   const metadata = path.join(options.root, "metadata");
+  const preparing = path.join(options.root, "preparing");
+  const retired = path.join(options.root, "retired");
+  type Pending = {
+    branch: WorkspaceBranch;
+    workspace: string;
+    source?: string;
+    old: WorkspaceCache | null;
+    cache: WorkspaceCache;
+  };
+  const pending = new Map<string, Pending>();
   const locks = new Map<string, Promise<unknown>>();
   const runtimeLocks = new Map<number, Promise<unknown>>();
   let initialization: Promise<void> | undefined;
   const repositoryPath = (projectId: string) => path.join(repositories, `${digest(projectId)}.git`);
   const workspacePath = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
     path.join(worktrees, workspaceKey(branch));
-  const worktreeGitDir = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
-    path.join(repositoryPath(branch.projectId), "worktrees", workspaceKey(branch));
-  function gitLocation(branch: Pick<WorkspaceBranch, "projectId" | "branch">, cwd: string) {
-    return cwd === workspacePath(branch)
-      ? [`--git-dir=${worktreeGitDir(branch)}`, `--work-tree=${cwd}`]
-      : [`--git-dir=${repositoryPath(branch.projectId)}`];
-  }
   const cachePath = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
     path.join(metadata, `${workspaceKey(branch)}.json`);
 
@@ -99,6 +111,10 @@ export function createWorkspaceManager(options: {
       await chmod(worktrees, 0o755);
       await mkdir(repositories, { recursive: true, mode: 0o711 });
       await mkdir(metadata, { recursive: true, mode: 0o700 });
+      await mkdir(preparing, { recursive: true, mode: 0o700 });
+      await chmod(preparing, 0o700);
+      await mkdir(retired, { recursive: true, mode: 0o711 });
+      await chmod(retired, 0o711);
       if (process.platform === "linux" && process.getuid?.() === 0) {
         // A previous container's runtime users no longer own access to dormant workspaces.
         for (const directory of [options.root, worktrees]) {
@@ -121,6 +137,8 @@ export function createWorkspaceManager(options: {
   async function readCache(
     branch: Pick<WorkspaceBranch, "projectId" | "branch">,
   ): Promise<WorkspaceCache | null> {
+    const stage = pending.get(workspaceKey(branch));
+    if (stage) return stage.cache;
     try {
       const cache = JSON.parse(await readFile(cachePath(branch), "utf8")) as WorkspaceCache;
       if (
@@ -142,6 +160,11 @@ export function createWorkspaceManager(options: {
     branch: Pick<WorkspaceBranch, "projectId" | "branch">,
     cache: WorkspaceCache,
   ) {
+    const stage = pending.get(workspaceKey(branch));
+    if (stage) {
+      stage.cache = cache;
+      return;
+    }
     await atomicWrite(
       cachePath(branch),
       JSON.stringify({
@@ -186,76 +209,45 @@ export function createWorkspaceManager(options: {
     }
   }
 
-  async function quiesceWorkspace(uid: number, workspace: string) {
-    return lockedRuntime(uid, () => quiesceAssignedWorkspace(uid, workspace));
-  }
-
-  async function quiesceAssignedWorkspace(uid: number, workspace: string) {
-    if (!options.quiesce) return true;
-    if (!Number.isSafeInteger(uid) || uid <= 0) throw new Error("Недопустимый UID предпросмотра");
-    // A container restart leaves old cache/assignment receipts but no site processes.
-    // This also supports legacy receipts that recorded only the repository.
-    if (options.hasRuntimeProcesses && !(await options.hasRuntimeProcesses(uid))) return true;
-    let assignedWorkspace: unknown;
-    try {
-      assignedWorkspace = JSON.parse(
-        await readFile(path.join(metadata, `runtime-${uid}.json`), "utf8"),
-      ).workspace;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (assignedWorkspace === workspace) {
-      await options.quiesce(uid);
-      return true;
-    }
-    if (
-      typeof assignedWorkspace !== "string" ||
-      path.dirname(assignedWorkspace) !== worktrees ||
-      !/^[a-f0-9]{64}$/.test(path.basename(assignedWorkspace))
-    )
-      throw new Error("Не удалось подтвердить рабочую папку живого UID предпросмотра");
-    // grantReadAccess revokes the former workspace before assigning this UID elsewhere.
-    // Never kill its new site's processes. Refuse preparation if that revocation is absent.
-    if (process.platform === "linux" && process.getuid?.() === 0) {
-      const info = await lstat(workspace);
-      if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o077) !== 0)
-        throw new Error("Старая рабочая папка доступна переназначенному UID предпросмотра");
-    }
-    return false;
-  }
-
   async function ensure(branch: WorkspaceBranch, signal: AbortSignal, legacySessionId?: string) {
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(branch.headSha))
       throw new Error("Коммит ветки предпросмотра настроен неверно");
     return locked(branch.projectId, async () => {
       signal.throwIfAborted();
       await initialize();
-      const repository = repositoryPath(branch.projectId);
-      const workspace = workspacePath(branch);
-      const legacyWorkspace =
+      const existing = pending.get(workspaceKey(branch));
+      if (existing) return { workspace: existing.workspace, cache: existing.cache };
+      const old = await readCache(branch);
+      const stable = workspacePath(branch);
+      const legacy =
         legacySessionId && /^[a-f0-9-]{36}$/.test(legacySessionId)
           ? path.join(options.root, legacySessionId)
           : undefined;
-      let cache = await readCache(branch);
-      let legacyCanReuseCache = true;
-      if (cache?.uid !== undefined) await quiesceWorkspace(cache.uid, workspace);
-      // Legacy Git metadata is untrusted. A controller-owned receipt may preserve a
-      // same-base legacy file tree, but all Git objects and metadata come from the remote.
-      if (cache?.headSha === branch.headSha && (await exists(worktreeGitDir(branch))))
-        return { workspace, cache };
-
+      const source = (await exists(stable))
+        ? stable
+        : legacy && (await exists(legacy))
+          ? legacy
+          : undefined;
+      let sourceCache = old;
+      if (!sourceCache && source === legacy) {
+        try {
+          sourceCache = JSON.parse(
+            await readFile(path.join(options.root, `${legacySessionId}.json`), "utf8"),
+          ) as WorkspaceCache;
+        } catch {
+          /* Rebuild tracked files from Git and durable PostgreSQL drafts. */
+        }
+      }
+      const repository = repositoryPath(branch.projectId);
       const { remote, env } = await options.access(branch.projectId);
-      const git = (args: string[], cwd = repository, maxOutput?: number) =>
-        options.run(
-          ["git", ...gitLocation(branch, cwd), "-c", "core.hooksPath=/dev/null", ...args],
-          {
-            cwd,
-            env,
-            signal,
-            timeoutMs: 10 * 60_000,
-            maxOutput,
-          },
-        );
+      const git = (args: string[], maxOutput?: number) =>
+        options.run(["git", `--git-dir=${repository}`, "-c", "core.hooksPath=/dev/null", ...args], {
+          cwd: options.root,
+          env,
+          signal,
+          timeoutMs: 10 * 60_000,
+          maxOutput,
+        });
       if (!(await exists(repository))) {
         await mkdir(repository, { mode: 0o700 });
         await git(["init", "--bare", "--quiet"]);
@@ -270,7 +262,6 @@ export function createWorkspaceManager(options: {
       try {
         await git(["show-ref", "--verify", "--quiet", `refs/pushdocs/commits/${branch.headSha}`]);
       } catch {
-        // Fetch the imported SHA, never a possibly newer tip of the remote branch.
         await options.fetch(() =>
           git([
             "fetch",
@@ -283,85 +274,192 @@ export function createWorkspaceManager(options: {
           ]),
         );
       }
-      if (!(await exists(worktreeGitDir(branch)))) {
-        await git(["worktree", "add", "--detach", "--no-checkout", workspace, branch.headSha]);
-        await chmod(workspace, 0o700);
-        let legacyCache: WorkspaceCache | undefined;
-        if (legacyWorkspace && (await exists(legacyWorkspace))) {
-          try {
-            legacyCache = JSON.parse(
-              await readFile(path.join(options.root, `${legacySessionId}.json`), "utf8"),
-            ) as WorkspaceCache;
-          } catch {
-            /* No complete controller receipt: rebuild from the imported commit. */
-          }
-        }
-        if (legacyWorkspace && legacyCache?.uid !== undefined)
-          legacyCanReuseCache = await quiesceWorkspace(legacyCache.uid, legacyWorkspace);
-        if (
-          legacyCanReuseCache &&
-          legacyWorkspace &&
-          legacyCache?.headSha === branch.headSha &&
-          Array.isArray(legacyCache.appliedPaths) &&
-          legacyCache.appliedPaths.every((filename) => typeof filename === "string")
-        ) {
-          await rm(path.join(legacyWorkspace, ".git"), { recursive: true, force: true });
-          await rename(path.join(workspace, ".git"), path.join(legacyWorkspace, ".git"));
-          await rm(workspace, { recursive: true });
-          await rename(legacyWorkspace, workspace);
-          await chmod(workspace, 0o700);
-          await git(["read-tree", branch.headSha], workspace);
-          cache = { ...legacyCache, legacyWorkspace, lastUsedAt: Date.now() };
-          await saveCache(branch, cache);
-          return { workspace, cache };
-        }
-        await git(["sparse-checkout", "set", "--cone", "--no-sparse-index"], workspace);
-        await options.fetch(() =>
-          git(["checkout", "--quiet", "--detach", branch.headSha], workspace),
-        );
-        const directories = leafCheckoutDirectories(
-          await git(
-            ["ls-tree", "-r", "-d", "--name-only", "-z", branch.headSha],
-            repository,
-            10_000_000,
-          ),
-        );
-        for (const directory of directories)
-          await options.fetch(() => git(["sparse-checkout", "add", "--", directory], workspace));
-        await options.fetch(() => git(["sparse-checkout", "disable"], workspace));
-      } else {
-        // Drafts are durable in PostgreSQL. Restore the old overlay before changing its base.
-        for (const filename of cache?.appliedPaths ?? [])
-          await restore(workspace, filename, cache?.headSha);
-        await options.fetch(() =>
-          git(["checkout", "--force", "--quiet", "--detach", branch.headSha], workspace),
-        );
-        await options.fetch(() => git(["sparse-checkout", "disable"], workspace));
-      }
-      // Without a matching receipt, keep dependency caches but rebuild tracked files
-      // from the imported commit. Drafts will be reapplied from PostgreSQL by the service.
-      if (legacyWorkspace && legacyCanReuseCache) {
-        for (const name of ["node_modules", ".package-cache", ".docusaurus", ".next"]) {
-          const from = path.join(legacyWorkspace, name);
-          const info = await lstat(from).catch((error) => {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-            throw error;
-          });
-          if (info?.isDirectory() && !(await exists(path.join(workspace, name))))
-            await rename(from, path.join(workspace, name));
-        }
-      }
-      cache = {
-        ...cache,
+      const gitDirectory = randomUUID();
+      const workspace = path.join(preparing, gitDirectory);
+      await mkdir(workspace, { mode: 0o700 });
+      const provisional: WorkspaceCache = {
+        ...sourceCache,
         headSha: branch.headSha,
+        gitDirectory,
         appliedPaths: [],
-        revision: undefined,
-        installed: cache?.installed ?? false,
-        uid: undefined,
-        gid: undefined,
+        installed: false,
+        exposed: false,
+        lastUsedAt: Date.now(),
+      };
+      pending.set(workspaceKey(branch), { branch, workspace, source, old, cache: provisional });
+      await git(["worktree", "add", "--detach", "--no-checkout", workspace, branch.headSha]);
+      const gitDir = path.join(repository, "worktrees", gitDirectory);
+      await options.fetch(() =>
+        options.run(
+          [
+            "git",
+            `--git-dir=${gitDir}`,
+            `--work-tree=${workspace}`,
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "--detach",
+            branch.headSha,
+          ],
+          { cwd: options.root, env, signal, timeoutMs: 10 * 60_000 },
+        ),
+      );
+      let copied = true;
+      if (source)
+        copied = (
+          await privateTreeOperation(
+            "copy-caches",
+            source,
+            workspace,
+            undefined,
+            options.copyBudgetBytes,
+          )
+        ).complete;
+      const cache: WorkspaceCache = {
+        ...sourceCache,
+        headSha: branch.headSha,
+        gitDirectory,
+        appliedPaths: [],
+        installed: Boolean(sourceCache?.installed && copied),
+        exposed: false,
+        legacyWorkspace: source === legacy ? legacy : sourceCache?.legacyWorkspace,
+        lastUsedAt: Date.now(),
+      };
+      pending.set(workspaceKey(branch), { branch, workspace, source, old, cache });
+      return { workspace, cache };
+    });
+  }
+
+  async function revokeWorkspaceAccess(workspace: string, uid?: number) {
+    if (process.platform !== "linux" || process.getuid?.() !== 0) return;
+    const directory = await open(
+      workspace,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      if (uid !== undefined && (await directory.stat()).uid !== uid) return;
+      await directory.chown(0, 0);
+      await directory.chmod(0o700);
+    } finally {
+      await directory.close();
+    }
+  }
+
+  async function cleanupRetired() {
+    return lockedRuntime(privateTreeCleanupIdentity.uid, cleanupRetiredOnce);
+  }
+
+  async function cleanupRetiredOnce() {
+    for (const filename of await readdir(metadata)) {
+      if (!/^retired-[a-f0-9-]{36}\.json$/.test(filename)) continue;
+      const receiptPath = path.join(metadata, filename);
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as {
+        directory: string;
+        gitDir?: string;
+        uid?: number;
+        gid?: number;
+        exposed: boolean;
+      };
+      if (path.dirname(receipt.directory) !== retired)
+        throw new Error("Неверная папка устаревшего предпросмотра");
+      try {
+        if (!receipt.exposed) await rm(receipt.directory, { recursive: true, force: true });
+        else {
+          await privateTreeOperation("prepare-cleanup", receipt.directory);
+          await privateTreeOperation(
+            "clear",
+            receipt.directory,
+            undefined,
+            privateTreeCleanupIdentity,
+          );
+          // Only the now-empty top-level entry is removed by the controller.
+          await rmdir(receipt.directory);
+        }
+        if (receipt.gitDir) await rm(receipt.gitDir, { recursive: true, force: true });
+        await rm(receiptPath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          await rm(receiptPath, { force: true });
+        // A failed unprivileged cleanup is retained for the next bounded prune.
+      }
+    }
+  }
+
+  async function discard(branch: Pick<WorkspaceBranch, "projectId" | "branch">) {
+    await locked(branch.projectId, async () => {
+      const stage = pending.get(workspaceKey(branch));
+      if (!stage) return;
+      // This ancestor never grants a runtime UID traversal rights.
+      await rm(stage.workspace, { recursive: true, force: true });
+      if (stage.cache.gitDirectory)
+        await rm(
+          path.join(repositoryPath(branch.projectId), "worktrees", stage.cache.gitDirectory),
+          { recursive: true, force: true },
+        );
+      pending.delete(workspaceKey(branch));
+    });
+  }
+
+  async function retireWorkspace(
+    branch: Pick<WorkspaceBranch, "projectId" | "branch">,
+    cache: WorkspaceCache | null,
+  ) {
+    const workspace = workspacePath(branch);
+    if (!(await exists(workspace))) return;
+    const id = randomUUID();
+    const directory = path.join(retired, id);
+    await rename(workspace, directory);
+    const gitDirectory = cache?.gitDirectory ?? workspaceKey(branch);
+    const gitDir = path.join(repositoryPath(branch.projectId), "worktrees", gitDirectory);
+    if (await exists(gitDir))
+      await writeFile(path.join(gitDir, "gitdir"), `${path.join(directory, ".git")}\n`);
+    await atomicWrite(
+      path.join(metadata, `retired-${id}.json`),
+      JSON.stringify({
+        directory,
+        gitDir,
+        uid: cache?.uid,
+        gid: cache?.gid,
+        exposed: cache?.exposed !== false,
+      }),
+      0o600,
+    );
+  }
+
+  async function publish(branch: WorkspaceBranch, identity?: { uid: number; gid: number }) {
+    if (identity?.uid === privateTreeCleanupIdentity.uid)
+      throw new Error("UID очистки нельзя передавать процессу сайта");
+    return locked(branch.projectId, async () => {
+      const stage = pending.get(workspaceKey(branch));
+      if (!stage) throw new Error("Приватная подготовка предпросмотра не найдена");
+      // Reads of old runtime inodes are descriptor-relative and never follow links.
+      if (stage.source) await privateTreeOperation("preserve-times", stage.source, stage.workspace);
+      if (identity && process.platform === "linux" && process.getuid?.() === 0)
+        // No site can reach this tree: its ancestor stays root-only until rename below.
+        await options.run(
+          ["chown", "-h", "-R", "-P", `${identity.uid}:${identity.gid}`, stage.workspace],
+          { cwd: options.root, timeoutMs: 120_000 },
+        );
+      await retireWorkspace(branch, stage.old);
+      const workspace = workspacePath(branch);
+      const gitDir = path.join(
+        repositoryPath(branch.projectId),
+        "worktrees",
+        stage.cache.gitDirectory ?? "",
+      );
+      await writeFile(path.join(gitDir, "gitdir"), `${path.join(workspace, ".git")}\n`);
+      await rename(stage.workspace, workspace);
+      pending.delete(workspaceKey(branch));
+      const cache = {
+        ...stage.cache,
+        uid: identity?.uid,
+        gid: identity?.gid,
+        exposed: Boolean(identity),
         lastUsedAt: Date.now(),
       };
       await saveCache(branch, cache);
+      await cleanupRetired();
       return { workspace, cache };
     });
   }
@@ -369,14 +467,30 @@ export function createWorkspaceManager(options: {
   async function restore(workspace: string, filename: string, headSha?: string) {
     const { safePath } = await import("@pushdocs/content");
     const safe = safePath(filename);
-    if (path.dirname(workspace) !== worktrees || !/^[a-f0-9]{64}$/.test(path.basename(workspace)))
-      throw new Error("Неизвестная рабочая папка предпросмотра");
-    const cache = JSON.parse(
-      await readFile(path.join(metadata, `${path.basename(workspace)}.json`), "utf8"),
-    ) as WorkspaceBranch;
-    if (workspacePath(cache) !== workspace)
-      throw new Error("Рабочая папка не совпадает с метаданными");
-    const location = gitLocation(cache, workspace);
+    const stage = [...pending.values()].find((item) => item.workspace === workspace);
+    let cache: WorkspaceCache & Partial<WorkspaceBranch>;
+    let location: string[];
+    if (stage) {
+      cache = stage.cache;
+      location = [
+        `--git-dir=${path.join(repositoryPath(stage.branch.projectId), "worktrees", stage.cache.gitDirectory ?? "")}`,
+        `--work-tree=${workspace}`,
+      ];
+    } else {
+      if (path.dirname(workspace) !== worktrees || !/^[a-f0-9]{64}$/.test(path.basename(workspace)))
+        throw new Error("Неизвестная рабочая папка предпросмотра");
+      cache = JSON.parse(
+        await readFile(path.join(metadata, `${path.basename(workspace)}.json`), "utf8"),
+      );
+      if (cache.exposed !== false)
+        throw new Error("Root restore requires a private preparation tree");
+      if (!cache.projectId || !cache.branch)
+        throw new Error("Метаданные рабочей папки отсутствуют");
+      location = [
+        `--git-dir=${path.join(repositoryPath(cache.projectId), "worktrees", cache.gitDirectory ?? path.basename(workspace))}`,
+        `--work-tree=${workspace}`,
+      ];
+    }
     try {
       await options.run(
         [
@@ -435,11 +549,7 @@ export function createWorkspaceManager(options: {
       path.dirname(previousWorkspace) === worktrees &&
       (await exists(previousWorkspace))
     ) {
-      await options.run(["chown", "0:0", previousWorkspace], {
-        cwd: options.root,
-        timeoutMs: 30_000,
-      });
-      await chmod(previousWorkspace, 0o700);
+      await revokeWorkspaceAccess(previousWorkspace, uid);
     }
     if (
       previous &&
@@ -465,6 +575,8 @@ export function createWorkspaceManager(options: {
       ["find", repository, "-type", "d", "-exec", "setfacl", "-m", `d:u:${uid}:r-x`, "{}", "+"],
       { cwd: options.root, timeoutMs: 120_000 },
     );
+    const cache = await readCache(branch);
+    if (cache) await saveCache(branch, { ...cache, exposed: true });
     await atomicWrite(userCache, JSON.stringify({ repository, workspace }), 0o600);
   }
 
@@ -506,32 +618,49 @@ export function createWorkspaceManager(options: {
   async function remove(branch: Pick<WorkspaceBranch, "projectId" | "branch">) {
     await initialize();
     await locked(branch.projectId, async () => {
-      const workspace = workspacePath(branch);
-      if (await exists(path.join(workspace, ".git"))) {
-        await options.run(
-          [
-            "git",
-            "-C",
-            repositoryPath(branch.projectId),
-            "worktree",
-            "remove",
-            "--force",
-            workspace,
-          ],
-          { cwd: options.root, timeoutMs: 120_000 },
-        );
-      } else await rm(workspace, { recursive: true, force: true });
+      await retireWorkspace(branch, await readCache(branch));
       await rm(cachePath(branch), { force: true });
+      await cleanupRetired();
     });
+  }
+
+  async function retireAbandonedPreparations() {
+    // An ensure() between mkdir and pending registration still holds a project lock.
+    if (locks.size > 0) return;
+    for (const entry of await readdir(preparing, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
+      const directory = path.join(preparing, entry.name);
+      if ([...pending.values()].some((stage) => stage.workspace === directory)) continue;
+      let gitDir: string | undefined;
+      for (const repository of await readdir(repositories, { withFileTypes: true })) {
+        if (!repository.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(repository.name)) continue;
+        const candidate = path.join(repositories, repository.name, "worktrees", entry.name);
+        if (await exists(candidate)) {
+          if (gitDir) throw new Error("Неоднозначная регистрация приватной рабочей папки");
+          gitDir = candidate;
+        }
+      }
+      const id = randomUUID();
+      const target = path.join(retired, id);
+      await rename(directory, target);
+      if (gitDir) await writeFile(path.join(gitDir, "gitdir"), `${path.join(target, ".git")}\n`);
+      await atomicWrite(
+        path.join(metadata, `retired-${id}.json`),
+        JSON.stringify({ directory: target, gitDir, exposed: true }),
+        0o600,
+      );
+    }
+    await cleanupRetired();
   }
 
   async function prune(
     active: Set<string>,
     cutoff: number,
     protectedLegacyIds = new Set<string>(),
-    maxBytes = 8192 * 1024 * 1024,
+    maxBytes = privateTreeCopyBudget,
   ) {
     await initialize();
+    await retireAbandonedPreparations();
     const candidates: Array<{
       key: string;
       directory: string;
@@ -601,13 +730,28 @@ export function createWorkspaceManager(options: {
       )
         continue;
       const size = await diskBytes(candidate.directory);
-      if (candidate.repository)
-        await options.run(
-          ["git", "-C", candidate.repository, "worktree", "remove", "--force", candidate.directory],
-          { cwd: options.root, timeoutMs: 120_000 },
+      if (!candidate.legacy && candidate.metadata && (await exists(candidate.metadata))) {
+        const cache = JSON.parse(await readFile(candidate.metadata, "utf8")) as WorkspaceCache &
+          WorkspaceBranch;
+        await remove(cache);
+      } else {
+        const id = randomUUID();
+        const directory = path.join(retired, id);
+        let cache: WorkspaceCache | null = null;
+        try {
+          cache = JSON.parse(await readFile(candidate.metadata ?? "", "utf8"));
+        } catch {
+          /* Unknown runtime provenance: retain instead of root deletion. */
+        }
+        await rename(candidate.directory, directory);
+        await atomicWrite(
+          path.join(metadata, `retired-${id}.json`),
+          JSON.stringify({ directory, uid: cache?.uid, gid: cache?.gid, exposed: true }),
+          0o600,
         );
-      else await rm(candidate.directory, { recursive: true, force: true });
-      if (candidate.metadata) await rm(candidate.metadata, { force: true });
+        if (candidate.metadata) await rm(candidate.metadata, { force: true });
+        await cleanupRetired();
+      }
       bytes -= size;
       removed.push(candidate.key);
     }
@@ -643,6 +787,8 @@ export function createWorkspaceManager(options: {
 
   return {
     ensure,
+    publish,
+    discard,
     grantReadAccess,
     initialize,
     inventory,
