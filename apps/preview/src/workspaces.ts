@@ -67,11 +67,13 @@ export function createWorkspaceManager(options: {
   fetch: (operation: () => Promise<string>) => Promise<string>;
   isActive?: (key: string) => boolean;
   quiesce?: (uid: number) => Promise<void>;
+  hasRuntimeProcesses?: (uid: number) => Promise<boolean>;
 }) {
   const repositories = path.join(options.root, "repositories");
   const worktrees = path.join(options.root, "worktrees");
   const metadata = path.join(options.root, "metadata");
   const locks = new Map<string, Promise<unknown>>();
+  const runtimeLocks = new Map<number, Promise<unknown>>();
   let initialization: Promise<void> | undefined;
   const repositoryPath = (projectId: string) => path.join(repositories, `${digest(projectId)}.git`);
   const workspacePath = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
@@ -173,6 +175,55 @@ export function createWorkspaceManager(options: {
     }
   }
 
+  async function lockedRuntime<T>(uid: number, operation: () => Promise<T>): Promise<T> {
+    const previous = runtimeLocks.get(uid) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    runtimeLocks.set(uid, current);
+    try {
+      return await current;
+    } finally {
+      if (runtimeLocks.get(uid) === current) runtimeLocks.delete(uid);
+    }
+  }
+
+  async function quiesceWorkspace(uid: number, workspace: string) {
+    return lockedRuntime(uid, () => quiesceAssignedWorkspace(uid, workspace));
+  }
+
+  async function quiesceAssignedWorkspace(uid: number, workspace: string) {
+    if (!options.quiesce) return true;
+    if (!Number.isSafeInteger(uid) || uid <= 0) throw new Error("Недопустимый UID предпросмотра");
+    // A container restart leaves old cache/assignment receipts but no site processes.
+    // This also supports legacy receipts that recorded only the repository.
+    if (options.hasRuntimeProcesses && !(await options.hasRuntimeProcesses(uid))) return true;
+    let assignedWorkspace: unknown;
+    try {
+      assignedWorkspace = JSON.parse(
+        await readFile(path.join(metadata, `runtime-${uid}.json`), "utf8"),
+      ).workspace;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (assignedWorkspace === workspace) {
+      await options.quiesce(uid);
+      return true;
+    }
+    if (
+      typeof assignedWorkspace !== "string" ||
+      path.dirname(assignedWorkspace) !== worktrees ||
+      !/^[a-f0-9]{64}$/.test(path.basename(assignedWorkspace))
+    )
+      throw new Error("Не удалось подтвердить рабочую папку живого UID предпросмотра");
+    // grantReadAccess revokes the former workspace before assigning this UID elsewhere.
+    // Never kill its new site's processes. Refuse preparation if that revocation is absent.
+    if (process.platform === "linux" && process.getuid?.() === 0) {
+      const info = await lstat(workspace);
+      if (!info.isDirectory() || info.uid !== 0 || (info.mode & 0o077) !== 0)
+        throw new Error("Старая рабочая папка доступна переназначенному UID предпросмотра");
+    }
+    return false;
+  }
+
   async function ensure(branch: WorkspaceBranch, signal: AbortSignal, legacySessionId?: string) {
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(branch.headSha))
       throw new Error("Коммит ветки предпросмотра настроен неверно");
@@ -186,7 +237,8 @@ export function createWorkspaceManager(options: {
           ? path.join(options.root, legacySessionId)
           : undefined;
       let cache = await readCache(branch);
-      if (cache?.uid !== undefined) await options.quiesce?.(cache.uid);
+      let legacyCanReuseCache = true;
+      if (cache?.uid !== undefined) await quiesceWorkspace(cache.uid, workspace);
       // Legacy Git metadata is untrusted. A controller-owned receipt may preserve a
       // same-base legacy file tree, but all Git objects and metadata come from the remote.
       if (cache?.headSha === branch.headSha && (await exists(worktreeGitDir(branch))))
@@ -244,13 +296,15 @@ export function createWorkspaceManager(options: {
             /* No complete controller receipt: rebuild from the imported commit. */
           }
         }
+        if (legacyWorkspace && legacyCache?.uid !== undefined)
+          legacyCanReuseCache = await quiesceWorkspace(legacyCache.uid, legacyWorkspace);
         if (
+          legacyCanReuseCache &&
           legacyWorkspace &&
           legacyCache?.headSha === branch.headSha &&
           Array.isArray(legacyCache.appliedPaths) &&
           legacyCache.appliedPaths.every((filename) => typeof filename === "string")
         ) {
-          if (legacyCache.uid !== undefined) await options.quiesce?.(legacyCache.uid);
           await rm(path.join(legacyWorkspace, ".git"), { recursive: true, force: true });
           await rename(path.join(workspace, ".git"), path.join(legacyWorkspace, ".git"));
           await rm(workspace, { recursive: true });
@@ -286,7 +340,7 @@ export function createWorkspaceManager(options: {
       }
       // Without a matching receipt, keep dependency caches but rebuild tracked files
       // from the imported commit. Drafts will be reapplied from PostgreSQL by the service.
-      if (legacyWorkspace) {
+      if (legacyWorkspace && legacyCanReuseCache) {
         for (const name of ["node_modules", ".package-cache", ".docusaurus", ".next"]) {
           const from = path.join(legacyWorkspace, name);
           const info = await lstat(from).catch((error) => {
@@ -359,6 +413,10 @@ export function createWorkspaceManager(options: {
 
   async function grantReadAccess(branch: WorkspaceBranch, uid: number) {
     if (process.platform !== "linux") return;
+    return lockedRuntime(uid, () => grantRuntimeReadAccess(branch, uid));
+  }
+
+  async function grantRuntimeReadAccess(branch: WorkspaceBranch, uid: number) {
     const repository = repositoryPath(branch.projectId);
     const userCache = path.join(metadata, `runtime-${uid}.json`);
     let previous: string | undefined;

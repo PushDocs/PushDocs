@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { run } from "./service";
 import { createWorkspaceManager, workspaceKey } from "./workspaces";
 
@@ -10,7 +10,10 @@ afterEach(async () => {
   for (const root of temporary.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function fixture() {
+async function fixture(
+  quiesce?: (uid: number) => Promise<void>,
+  hasRuntimeProcesses?: (uid: number) => Promise<boolean>,
+) {
   const root = await mkdtemp(path.join(tmpdir(), "pushdocs-worktrees-"));
   temporary.push(root);
   const source = path.join(root, "source");
@@ -28,6 +31,8 @@ async function fixture() {
   const commands: string[][] = [];
   const manager = createWorkspaceManager({
     root: path.join(root, "preview"),
+    quiesce,
+    hasRuntimeProcesses,
     access: async () => ({ remote: source, env: process.env }),
     fetch: (operation) => operation(),
     run: (command, options) => {
@@ -108,7 +113,13 @@ it("keeps different projects separate and prunes only inactive worktrees", async
 });
 
 it("migrates a prepared legacy checkout without losing its installed dependencies or drafts", async () => {
-  const { root, source, first, manager } = await fixture();
+  const quiesce = vi.fn(async () => {});
+  const { root, source, first, manager } = await fixture(quiesce, async () => false);
+  await manager.initialize();
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ repository: "legacy" }),
+  );
   const id = "00000000-0000-4000-8000-000000000001";
   const legacy = path.join(root, "preview", id);
   await run(["git", "clone", "--quiet", source, legacy], { cwd: root, timeoutMs: 10_000 });
@@ -146,6 +157,7 @@ it("migrates a prepared legacy checkout without losing its installed dependencie
   );
   expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("draft");
   expect(prepared.cache.installed).toBe(true);
+  expect(quiesce).not.toHaveBeenCalled();
   expect(prepared.cache.appliedPaths).toEqual(["docs/page.md"]);
   expect(
     await run(["git", "rev-parse", "HEAD"], { cwd: prepared.workspace, timeoutMs: 10_000 }),
@@ -300,4 +312,85 @@ it("ignores a runtime-replaced Git pointer when restoring a draft", async () => 
   await manager.restore(prepared.workspace, "docs/page.md", first);
   expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
   expect(await readFile(path.join(source, "docs/page.md"), "utf8")).toBe("outside runtime");
+});
+
+it("does not stop a reused UID now assigned to another workspace", async () => {
+  const quiesce = vi.fn(async () => {});
+  const { root, first, manager } = await fixture(quiesce);
+  const a = { projectId: "a", branch: "main", headSha: first };
+  const b = { ...a, projectId: "b" };
+  const one = await manager.ensure(a, new AbortController().signal);
+  const two = await manager.ensure(b, new AbortController().signal);
+  await manager.saveCache(a, { ...one.cache, uid: 11000 });
+  // A stopped. B now owns the same port/UID; grantReadAccess revoked A's access.
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ workspace: two.workspace }),
+  );
+  await manager.ensure(a, new AbortController().signal);
+  expect(quiesce).not.toHaveBeenCalled();
+});
+
+it("stops an orphan UID only when its trusted assignment still names this workspace", async () => {
+  const quiesce = vi.fn(async () => {});
+  const { root, first, manager } = await fixture(quiesce, async () => true);
+  const branch = { projectId: "a", branch: "main", headSha: first };
+  const prepared = await manager.ensure(branch, new AbortController().signal);
+  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ workspace: prepared.workspace }),
+  );
+  await manager.ensure(branch, new AbortController().signal);
+  expect(quiesce).toHaveBeenCalledExactlyOnceWith(11000);
+});
+it("permits preparation after restart with a repository-only assignment and no UID processes", async () => {
+  const quiesce = vi.fn(async () => {});
+  const { root, first, manager } = await fixture(quiesce, async () => false);
+  const branch = { projectId: "a", branch: "main", headSha: first };
+  const prepared = await manager.ensure(branch, new AbortController().signal);
+  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ repository: "legacy" }),
+  );
+  await expect(manager.ensure(branch, new AbortController().signal)).resolves.toMatchObject({
+    workspace: prepared.workspace,
+  });
+  expect(quiesce).not.toHaveBeenCalled();
+});
+it("does not kill an unknown live owner or modify its workspace", async () => {
+  const quiesce = vi.fn(async () => {});
+  const { first, manager } = await fixture(quiesce, async () => true);
+  const branch = { projectId: "a", branch: "main", headSha: first };
+  const prepared = await manager.ensure(branch, new AbortController().signal);
+  await manager.saveCache(branch, { ...prepared.cache, uid: 11000 });
+  await writeFile(path.join(prepared.workspace, "docs/page.md"), "live writer");
+  await expect(manager.ensure(branch, new AbortController().signal)).rejects.toThrow("подтвердить");
+  expect(quiesce).not.toHaveBeenCalled();
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("live writer");
+});
+
+it("keeps a legacy tree untouched when its old UID belongs to a live different site", async () => {
+  const quiesce = vi.fn(async () => {});
+  const { root, first, manager } = await fixture(quiesce, async () => true);
+  const other = { projectId: "b", branch: "main", headSha: first };
+  const b = await manager.ensure(other, new AbortController().signal);
+  const id = "00000000-0000-4000-8000-000000000003";
+  const legacy = path.join(root, "preview", id);
+  await mkdir(path.join(legacy, "docs"), { recursive: true, mode: 0o700 });
+  await writeFile(path.join(legacy, "docs/page.md"), "legacy draft");
+  await writeFile(
+    path.join(root, "preview", `${id}.json`),
+    JSON.stringify({ headSha: first, uid: 11000, appliedPaths: ["docs/page.md"], installed: true }),
+  );
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ workspace: b.workspace }),
+  );
+  const a = await manager.ensure({ ...other, projectId: "a" }, new AbortController().signal, id);
+  expect(quiesce).not.toHaveBeenCalled();
+  expect(await readFile(path.join(legacy, "docs/page.md"), "utf8")).toBe("legacy draft");
+  expect(await readFile(path.join(a.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(a.cache.installed).toBe(false);
 });

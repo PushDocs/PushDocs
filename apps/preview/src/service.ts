@@ -11,6 +11,7 @@ import { prepareDocusaurusPreview } from "./docusaurus";
 import {
   nodeHeapLimitMb,
   positiveInteger,
+  runtimeProcessIds,
   stopRuntimeProcesses,
   watchRuntimeMemory,
 } from "./resources";
@@ -366,6 +367,10 @@ export function createPreviewService(options: PreviewServiceOptions) {
   const workspaces = createWorkspaceManager({
     root: workspaceRoot,
     quiesce: stopRuntimeProcesses,
+    hasRuntimeProcesses: async (uid) =>
+      process.platform === "linux" && process.getuid?.() === 0
+        ? (await runtimeProcessIds(uid)).length > 0
+        : false,
     isActive: (key) =>
       preparations.has(key) ||
       [...running.values()].some((preview) => path.basename(preview.workspace) === key),
