@@ -301,3 +301,32 @@ describe("realtime request handler", () => {
     }
   });
 });
+
+describe("connection failures", () => {
+  it("rejects malformed cookies without throwing", () => {
+    expect(cookieValue("pushdocs_session=%E0%A4", "pushdocs_session")).toBeUndefined();
+  });
+  it("returns unauthorized for malformed session cookies", async () => {
+    const findUserByToken = vi.fn();
+    const handler = createRealtimeHandler({ findUserByToken, listEvents: vi.fn() });
+    const res = response();
+    handler(request("/events", { cookie: "pushdocs_session=%" }), res);
+    await Promise.resolve();
+    expect(res.status).toBe(401);
+    expect(findUserByToken).not.toHaveBeenCalled();
+  });
+  it("handles rejected session lookup without an unhandled rejection", async () => {
+    const logger = { error: vi.fn() };
+    const handler = createRealtimeHandler({
+      findUserByToken: vi.fn().mockRejectedValue(new Error("unavailable")),
+      listEvents: vi.fn(),
+      logger,
+    });
+    const res = response();
+    handler(request("/events", { cookie: "pushdocs_session=valid" }), res);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(res.status).toBe(500);
+    expect(res.end).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
+  });
+});

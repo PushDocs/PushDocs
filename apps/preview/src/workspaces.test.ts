@@ -289,3 +289,15 @@ it("reports cache disk usage and expiry and removes only the requested branch wo
   expect(await readFile(path.join(other.workspace, "docs/page.md"), "utf8")).toBe("first");
   expect((await manager.inventory()).map((item) => item.branch)).toEqual(["other"]);
 });
+
+it("ignores a runtime-replaced Git pointer when restoring a draft", async () => {
+  const { source, first, manager } = await fixture();
+  const ref = { projectId: "one", branch: "stable", headSha: first };
+  const prepared = await manager.ensure(ref, new AbortController().signal);
+  await writeFile(path.join(prepared.workspace, "docs/page.md"), "runtime draft");
+  await writeFile(path.join(prepared.workspace, ".git"), `gitdir: ${path.join(source, ".git")}\n`);
+  await writeFile(path.join(source, "docs/page.md"), "outside runtime");
+  await manager.restore(prepared.workspace, "docs/page.md", first);
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(source, "docs/page.md"), "utf8")).toBe("outside runtime");
+});

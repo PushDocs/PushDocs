@@ -365,6 +365,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
   ): WorkspaceBranch => ({ projectId: session.project_id, branch: session.branch, headSha });
   const workspaces = createWorkspaceManager({
     root: workspaceRoot,
+    quiesce: stopRuntimeProcesses,
     isActive: (key) =>
       preparations.has(key) ||
       [...running.values()].some((preview) => path.basename(preview.workspace) === key),
@@ -673,6 +674,8 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       await preparations.get(workspaceKey(ref));
       controller.signal.throwIfAborted();
+      // No process of this site's UID may mutate paths while the controller prepares them.
+      await stopRuntimeProcesses(runtimeIdentity(session, workspaces.workspacePath(ref)).uid);
       const { workspace, cache: cached } = await workspaces.ensure(
         ref,
         controller.signal,
@@ -1126,30 +1129,14 @@ export function createPreviewService(options: PreviewServiceOptions) {
           continue;
         }
         if (revision !== active.revision) {
+          // Root must never apply overlays in a tree concurrently writable by a site.
+          // Restart through the same quiesced preparation path used by first launch.
+          await stopProcess(session.id, active);
           await repository.updatePreviewSession(session.id, {
-            status: "starting",
-            log: "Обновляем файлы предпросмотра…",
+            status: "queued",
+            log: "Перезапускаем предпросмотр с обновлёнными файлами…",
           });
-          const updated = await applyOverlay(session, active);
-          active.revision = updated.revision;
-          if (
-            updated.changedPaths.some((filename) =>
-              /(^|\/)(package\.json|yarn\.lock|package-lock\.json|pnpm-lock\.yaml|\.yarnrc(?:\.yml)?|\.npmrc)$|(^|\/)\.yarn\/|(^|\/)\.pushdocs\/config\.json$/.test(
-                filename,
-              ),
-            )
-          ) {
-            const settings = await launchSettings(active.workspace, updated.rootPath);
-            if (settings.launchHash !== active.launchHash) {
-              await stopProcess(session.id, active);
-              await repository.updatePreviewSession(session.id, { status: "queued" });
-              continue;
-            }
-          }
-          await repository.updatePreviewSession(session.id, {
-            revision: updated.revision,
-            status: "ready",
-          });
+          await start(session);
         }
       } catch (error) {
         const active = running.get(session.id);
