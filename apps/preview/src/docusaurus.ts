@@ -19,7 +19,10 @@ export async function prepareDocusaurusPreview(options: {
   let isDocusaurus = command[0] === "docusaurus" && command[1] === "start";
   if ((command[0] === "yarn" || command[0] === "pnpm") && command[1] === "start") {
     try {
-      const packageJson = JSON.parse(await readFile(path.join(cwd, "package.json"), "utf8"));
+      const packagePath = path.join(cwd, "package.json");
+      if (!(await lstat(packagePath)).isFile())
+        throw new Error("Конфигурация пакета не является обычным файлом");
+      const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
       const script = packageJson.scripts?.start ?? "";
       isDocusaurus =
         /^docusaurus\s+start(?:\s|$)/.test(script) &&

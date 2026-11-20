@@ -6,8 +6,12 @@ import { stripVTControlCharacters } from "node:util";
 import { parseProjectConfig, safePath } from "@pushdocs/content";
 import { decryptSecret, type PushDocsRepository } from "@pushdocs/db";
 import { prepareVpnAccess } from "@pushdocs/vpn";
-import { clearPackageCache, clearWebpackCache } from "./caches";
 import { prepareDocusaurusPreview } from "./docusaurus";
+import {
+  defaultPreviewCacheMaxMb,
+  privateTreeCleanupIdentity,
+  privateTreeOperation,
+} from "./private-filesystem";
 import {
   nodeHeapLimitMb,
   positiveInteger,
@@ -52,6 +56,7 @@ type RunningPreview = {
   stopMemoryWatch: () => void;
   launchHash: string;
   uid: number;
+  gid: number;
   generatedConfig?: string;
   stoppingTask?: Promise<void>;
   failureTask?: Promise<void>;
@@ -314,7 +319,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
   const cacheMaxBytes =
     positiveInteger(
       options.cacheMaxMb ?? process.env.PUSHDOCS_PREVIEW_CACHE_MAX_MB,
-      8192,
+      defaultPreviewCacheMaxMb,
       "Лимит дискового кеша предпросмотров",
     ) *
     1024 *
@@ -329,6 +334,11 @@ export function createPreviewService(options: PreviewServiceOptions) {
     !Number.isInteger(portFrom)
   )
     throw new Error("UID процесса предпросмотра настроен неверно");
+  if (
+    privateTreeCleanupIdentity.uid >= runtimeUidFrom &&
+    privateTreeCleanupIdentity.uid < runtimeUidFrom + 100
+  )
+    throw new Error("UID очистки не должен совпадать с UID сайтов предпросмотра");
   const runtimeIdentity = (session: PreviewSession, workspace: string) => {
     const uid = runtimeUidFrom + session.port - portFrom;
     if (uid < runtimeUidFrom || uid >= runtimeUidFrom + 100)
@@ -365,6 +375,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
   ): WorkspaceBranch => ({ projectId: session.project_id, branch: session.branch, headSha });
   const workspaces = createWorkspaceManager({
     root: workspaceRoot,
+    copyBudgetBytes: cacheMaxBytes,
     isActive: (key) =>
       preparations.has(key) ||
       [...running.values()].some((preview) => path.basename(preview.workspace) === key),
@@ -402,7 +413,14 @@ export function createPreviewService(options: PreviewServiceOptions) {
               ? path.join(legacyWorkspace, path.relative(workspace, directory), filename)
               : path.join(path.relative(workspace, directory), filename),
           );
-          hash.update(await readFile(path.join(directory, filename)));
+          hash.update(
+            await readFile(
+              await assertNoSymlink(
+                workspace,
+                path.relative(workspace, path.join(directory, filename)),
+              ),
+            ),
+          );
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
@@ -538,7 +556,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
     if (cache?.headSha !== working.branch.head_commit_sha)
       throw new Error("Ветка обновилась во время подготовки предпросмотра. Повторите запуск.");
     const changedPaths: string[] = [];
-    const writtenPaths: string[] = [];
     const nextPaths = new Set([
       ...working.files.map((file) => `${prefix}${safePath(file.path)}`),
       ...attachments.map((file) => `${prefix}${safePath(file.repository_path)}`),
@@ -558,7 +575,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
       } else {
         if (await writePreviewFile(destination, file.content)) {
           changedPaths.push(relativePath);
-          writtenPaths.push(destination);
         }
       }
     }
@@ -571,7 +587,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
         throw new Error("Путь вложения выходит за хранилище");
       if (await writePreviewFile(destination, await readFile(source))) {
         changedPaths.push(relativePath);
-        writtenPaths.push(destination);
       }
     }
     for (const previous of active.appliedPaths)
@@ -579,22 +594,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
         await restorePath(active.workspace, previous);
         changedPaths.push(previous);
       }
-    if (cache.uid !== undefined && writtenPaths.length > 0) {
-      const owned = new Set(writtenPaths);
-      for (const filename of writtenPaths) {
-        let parent = path.dirname(filename);
-        while (parent !== active.workspace) {
-          owned.add(parent);
-          parent = path.dirname(parent);
-        }
-      }
-      const paths = [...owned];
-      for (let offset = 0; offset < paths.length; offset += 30)
-        await run(
-          ["chown", `${cache.uid}:${cache.gid ?? cache.uid}`, ...paths.slice(offset, offset + 30)],
-          { cwd: active.workspace, timeoutMs: 30_000 },
-        );
-    }
     active.appliedPaths = nextPaths;
     await workspaces.saveCache(ref, {
       ...cache,
@@ -646,6 +645,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
     }
     const preview = config.preview ?? defaultPreview;
     const cwd = path.resolve(workspace, root);
+    if (root !== ".") await assertNoSymlink(workspace, `${safePath(root)}/.directory-probe`);
     const installHash = await installFingerprint(workspace, cwd, preview.install);
     return {
       cwd,
@@ -660,12 +660,15 @@ export function createPreviewService(options: PreviewServiceOptions) {
     const controller = new AbortController();
     let launched: RunningPreview | undefined;
     let generatedConfig: string | undefined;
+    let preparationRef: WorkspaceBranch | undefined;
+    let filesystemIdentity: { uid: number; gid: number } | undefined;
     starting.set(session.id, controller);
     let startupOutput = "";
     let startupFailure: string | undefined;
     try {
       const current = await repository.listChangedWorkingFiles(session.project_id, session.branch);
       const ref = branchRef(session, current.branch.head_commit_sha);
+      preparationRef = ref;
       await repository.updatePreviewSession(session.id, {
         last_error: null,
         log: `Подготавливаем рабочую папку ветки ${session.branch} (${ref.headSha.slice(0, 8)})…`,
@@ -673,7 +676,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       await preparations.get(workspaceKey(ref));
       controller.signal.throwIfAborted();
-      const { workspace, cache: cached } = await workspaces.ensure(
+      // No process of this site's UID may mutate paths while the controller prepares them.
+      await stopRuntimeProcesses(runtimeIdentity(session, workspaces.workspacePath(ref)).uid);
+      let { workspace, cache: cached } = await workspaces.ensure(
         ref,
         controller.signal,
         session.id,
@@ -685,36 +690,48 @@ export function createPreviewService(options: PreviewServiceOptions) {
       });
       const draft = { appliedPaths: new Set(cached.appliedPaths), workspace };
       const state = await applyOverlay(session, draft);
-      const { cwd, preview, installHash, launchHash } = await launchSettings(
-        workspace,
-        target.root_path,
-      );
-      const runtime = runtimeIdentity(session, workspace);
-      await stopRuntimeProcesses(runtime.uid);
-      await mkdir(runtime.env.HOME, { recursive: true, mode: 0o700 });
-      await mkdir(runtime.env.COREPACK_HOME, { recursive: true, mode: 0o700 });
-      await mkdir(runtime.env.npm_config_cache, { recursive: true, mode: 0o700 });
-      const packageCache = path.join(workspace, ".package-cache");
-      if ((await lstat(packageCache)).uid !== runtime.uid)
-        await run(["chown", "-R", `${runtime.uid}:${runtime.gid}`, packageCache], {
-          cwd: workspace,
-          timeoutMs: 120_000,
-        });
-      if (cached.uid !== runtime.uid) {
-        await run(["chown", "-R", `${runtime.uid}:${runtime.gid}`, workspace], {
-          cwd: workspace,
-          timeoutMs: 120_000,
-        });
-      } else if ((await lstat(workspace)).uid !== runtime.uid) {
-        await run(["chown", `${runtime.uid}:${runtime.gid}`, workspace], {
-          cwd: workspace,
-          timeoutMs: 30_000,
-        });
+      const stagingWorkspace = workspace;
+      const settings = await launchSettings(workspace, target.root_path);
+      const { preview, installHash, launchHash } = settings;
+      const stagingIdentity = runtimeIdentity(session, workspace);
+      filesystemIdentity = { uid: stagingIdentity.uid, gid: stagingIdentity.gid };
+      for (const directory of [
+        stagingIdentity.env.HOME,
+        stagingIdentity.env.COREPACK_HOME,
+        stagingIdentity.env.npm_config_cache,
+      ]) {
+        const relative = path.relative(workspace, directory);
+        // Staging is private; reject any copied/Git symlink before root creates directories.
+        await assertNoSymlink(workspace, `${relative}/.directory-probe`);
+        await mkdir(directory, { recursive: true, mode: 0o700 });
       }
-      await workspaces.grantReadAccess(ref, runtime.uid);
+      const stagingStartCommand = await prepareDocusaurusPreview({
+        cwd: settings.cwd,
+        command: preview.start,
+      });
       const legacyHash =
         cached.legacyWorkspace &&
-        (await installFingerprint(workspace, cwd, preview.install, cached.legacyWorkspace));
+        (await installFingerprint(
+          workspace,
+          settings.cwd,
+          preview.install,
+          cached.legacyWorkspace,
+        ));
+      controller.signal.throwIfAborted();
+      const published = await workspaces.publish(ref, filesystemIdentity);
+      workspace = published.workspace;
+      cached = published.cache;
+      const cwd = path.join(workspace, path.relative(stagingWorkspace, settings.cwd));
+      const runtime = runtimeIdentity(session, workspace);
+      const startCommand = stagingStartCommand.map((argument) =>
+        argument.startsWith(`${stagingWorkspace}${path.sep}`)
+          ? path.join(workspace, path.relative(stagingWorkspace, argument))
+          : argument,
+      );
+      generatedConfig = stagingStartCommand !== preview.start ? startCommand.at(-1) : undefined;
+      draft.workspace = workspace;
+      controller.signal.throwIfAborted();
+      await workspaces.grantReadAccess(ref, runtime.uid);
       if (
         !cached.installed ||
         (cached.installHash !== installHash && cached.installHash !== legacyHash)
@@ -751,20 +768,12 @@ export function createPreviewService(options: PreviewServiceOptions) {
         legacyWorkspace: undefined,
         lastUsedAt: Date.now(),
       });
-      await clearPackageCache(workspace, cwd).catch((error) => logger.error(String(error)));
+      await privateTreeOperation("clear-package-cache", workspace, cwd, filesystemIdentity).catch(
+        (error) => logger.error(String(error)),
+      );
       lastInventoryAt = 0;
       if (controller.signal.aborted) throw new Error("Запуск предпросмотра отменён");
       await appendLog(session.id, "\nЗапускаем сайт и ждём ответа…");
-      const startCommand = await prepareDocusaurusPreview({
-        cwd,
-        command: preview.start,
-      });
-      generatedConfig = startCommand !== preview.start ? startCommand.at(-1) : undefined;
-      if (generatedConfig)
-        await run(["chown", `${runtime.uid}:${runtime.gid}`, generatedConfig], {
-          cwd: workspace,
-          timeoutMs: 30_000,
-        });
       const [executable, args] = commandArgs(startCommand, session.port);
       const child = spawn(executable, args, {
         cwd,
@@ -785,6 +794,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
         stopMemoryWatch: () => {},
         launchHash,
         uid: runtime.uid,
+        gid: runtime.gid,
         generatedConfig,
       };
       launched = active;
@@ -882,7 +892,13 @@ export function createPreviewService(options: PreviewServiceOptions) {
         logger.error(JSON.stringify({ error: message, previewSessionId: session.id }));
     } finally {
       if (generatedConfig && !running.has(session.id))
-        await rm(generatedConfig, { force: true }).catch((error) => logger.error(String(error)));
+        await privateTreeOperation(
+          "remove-file",
+          generatedConfig,
+          undefined,
+          filesystemIdentity,
+        ).catch((error) => logger.error(String(error)));
+      if (preparationRef) await workspaces.discard(preparationRef);
       starting.delete(session.id);
     }
   }
@@ -932,13 +948,16 @@ export function createPreviewService(options: PreviewServiceOptions) {
         });
     }
     await stopRuntimeProcesses(active.uid);
-    await clearWebpackCache(active.workspace, active.cwd).catch((error) =>
-      logger.error(String(error)),
-    );
+    await privateTreeOperation("clear-webpack-cache", active.workspace, active.cwd, {
+      uid: active.uid,
+      gid: active.gid,
+    }).catch((error) => logger.error(String(error)));
     lastInventoryAt = 0;
-    if (active.generatedConfig) await rm(active.generatedConfig, { force: true });
-    if (process.platform === "linux" && process.getuid?.() === 0)
-      await run(["chown", "0:0", active.workspace], { cwd: active.workspace, timeoutMs: 30_000 });
+    if (active.generatedConfig)
+      await privateTreeOperation("remove-file", active.generatedConfig, undefined, {
+        uid: active.uid,
+        gid: active.gid,
+      });
     if (running.get(sessionId) === active) running.delete(sessionId);
   }
 
@@ -1126,30 +1145,14 @@ export function createPreviewService(options: PreviewServiceOptions) {
           continue;
         }
         if (revision !== active.revision) {
+          // Root must never apply overlays in a tree concurrently writable by a site.
+          // Restart through the same quiesced preparation path used by first launch.
+          await stopProcess(session.id, active);
           await repository.updatePreviewSession(session.id, {
-            status: "starting",
-            log: "Обновляем файлы предпросмотра…",
+            status: "queued",
+            log: "Перезапускаем предпросмотр с обновлёнными файлами…",
           });
-          const updated = await applyOverlay(session, active);
-          active.revision = updated.revision;
-          if (
-            updated.changedPaths.some((filename) =>
-              /(^|\/)(package\.json|yarn\.lock|package-lock\.json|pnpm-lock\.yaml|\.yarnrc(?:\.yml)?|\.npmrc)$|(^|\/)\.yarn\/|(^|\/)\.pushdocs\/config\.json$/.test(
-                filename,
-              ),
-            )
-          ) {
-            const settings = await launchSettings(active.workspace, updated.rootPath);
-            if (settings.launchHash !== active.launchHash) {
-              await stopProcess(session.id, active);
-              await repository.updatePreviewSession(session.id, { status: "queued" });
-              continue;
-            }
-          }
-          await repository.updatePreviewSession(session.id, {
-            revision: updated.revision,
-            status: "ready",
-          });
+          await start(session);
         }
       } catch (error) {
         const active = running.get(session.id);
@@ -1186,6 +1189,9 @@ export function createPreviewService(options: PreviewServiceOptions) {
           headSha: branch.head_commit_sha,
         };
         const key = workspaceKey(ref);
+        // Only the active-site path may replace its tree after a coordinated restart.
+        if ([...running.values()].some((preview) => path.basename(preview.workspace) === key))
+          continue;
         if (evictedWorkspaces.has(key) || (retryAfter.get(key) ?? 0) > Date.now()) continue;
         const cache = await workspaces.readCache(ref);
         const working = await repository.listChangedWorkingFiles(ref.projectId, ref.branch);
@@ -1215,6 +1221,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
               { project_id: ref.projectId, branch: ref.branch } as PreviewSession,
               { workspace: prepared.workspace, appliedPaths: new Set(prepared.cache.appliedPaths) },
             );
+            await workspaces.publish(ref);
             await repository.recordPreviewWorkspace?.(ref.projectId, ref.branch, {
               preparation_status: "stopped",
               ready_at: new Date(),
@@ -1230,6 +1237,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
               logger.error(JSON.stringify({ error: String(error), previewWorkspace: key }));
             }
           } finally {
+            await workspaces.discard(ref);
             preparations.delete(key);
             preparationControllers.delete(key);
           }

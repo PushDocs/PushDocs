@@ -35,7 +35,7 @@ RUN cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static 
 
 FROM ${NODE_IMAGE} AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends acl git ca-certificates openvpn iproute2 iptables \
+RUN apt-get update && apt-get install -y --no-install-recommends acl git ca-certificates openvpn iproute2 iptables python3 \
   && apt-get clean
 
 ENV NODE_ENV=production

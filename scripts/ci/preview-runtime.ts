@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimeMemoryMb } from "../../apps/preview/src/resources";
+import { runtimeMemoryMb, stopRuntimeProcesses } from "../../apps/preview/src/resources";
 import {
   createPreviewService,
   type PreviewServiceOptions,
@@ -26,12 +28,19 @@ try {
   await git(["add", "."]);
   await git(["commit", "--quiet", "-m", "fixture"]);
   const headSha = (await git(["rev-parse", "HEAD"])).trim();
-  const manager = createWorkspaceManager({
+  const rawManager = createWorkspaceManager({
     root,
     run,
     access: async () => ({ remote: source, env: process.env }),
     fetch: (operation) => operation(),
   });
+  const manager = {
+    ...rawManager,
+    ensure: async (...args: Parameters<typeof rawManager.ensure>) => {
+      await rawManager.ensure(...args);
+      return rawManager.publish(args[0]);
+    },
+  };
   const branch = { projectId: "ci-one", branch: "main", headSha };
   const one = await manager.ensure(branch, new AbortController().signal);
   await manager.grantReadAccess(branch, uid);
@@ -78,13 +87,58 @@ try {
       timeoutMs: 10_000,
     }),
   );
+
+  await writeFile(path.join(one.workspace, ".git"), `gitdir: ${path.join(source, ".git")}\n`);
+  await writeFile(path.join(one.workspace, "page.md"), "runtime draft");
+  await assert.rejects(manager.restore(one.workspace, "page.md", headSha), /private preparation/);
+  const privateOne = await rawManager.ensure(branch, new AbortController().signal);
+  await assert.rejects(
+    run(
+      [
+        process.execPath,
+        "-e",
+        "require('node:fs').readFileSync(process.argv[1])",
+        path.join(privateOne.workspace, "page.md"),
+      ],
+      { cwd: root, uid, gid: uid, timeoutMs: 10_000 },
+    ),
+  );
+  await rawManager.restore(privateOne.workspace, "page.md", headSha);
+  await rawManager.publish(branch, { uid, gid: uid });
+  assert.equal(await readFile(path.join(one.workspace, "page.md"), "utf8"), "page");
   const shared = (
     await run(["git", "rev-parse", "--git-common-dir"], { cwd: one.workspace, timeoutMs: 10_000 })
   ).trim();
 
   const twoBranch = { ...branch, projectId: "ci-two" };
-  await manager.ensure(twoBranch, new AbortController().signal);
+  const two = await manager.ensure(twoBranch, new AbortController().signal);
   await manager.grantReadAccess(twoBranch, uid);
+  await run(["chown", "-R", `${uid}:${uid}`, two.workspace], { cwd: root, timeoutMs: 10_000 });
+  const currentCache = await manager.readCache(branch);
+  assert.ok(currentCache);
+  await manager.saveCache(branch, { ...currentCache, uid });
+  // B owns A's former port/UID. Preparing A must leave B's actual process alive.
+  const activeB = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+    cwd: two.workspace,
+    uid,
+    gid: uid,
+    stdio: "ignore",
+  });
+  try {
+    await once(activeB, "spawn");
+    await manager.ensure(branch, new AbortController().signal);
+    assert.equal(activeB.exitCode, null);
+    assert.equal(activeB.signalCode, null);
+    assert.ok(activeB.pid);
+    process.kill(activeB.pid, 0);
+  } finally {
+    if (activeB.pid && activeB.exitCode === null && activeB.signalCode === null) {
+      const exited = once(activeB, "exit");
+      activeB.kill("SIGKILL");
+      await exited;
+    }
+    await stopRuntimeProcesses(uid);
+  }
   await assert.rejects(
     run(
       [
