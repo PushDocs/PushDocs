@@ -1298,6 +1298,7 @@ __metadata:
   resolution: "@pushdocs/worker@workspace:apps/worker"
   dependencies:
     "@pushdocs/content": "workspace:*"
+    "@pushdocs/contracts": "workspace:*"
     "@pushdocs/db": "workspace:*"
     "@pushdocs/providers": "workspace:*"
     "@pushdocs/vpn": "workspace:*"

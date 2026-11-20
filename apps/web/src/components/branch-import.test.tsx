@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -14,16 +14,19 @@ vi.mock("@/app/actions", () => ({
   synchronizeBranchAction: mocks.sync,
 }));
 
-import { BranchImport } from "./branch-import";
+import { BranchImport, ProjectBranchImportProgress } from "./branch-import";
+import { branchImportStore } from "./branch-import-store";
 
 afterEach(() => {
   cleanup();
+  branchImportStore.clear();
   vi.useRealTimers();
   mocks.router.refresh.mockReset();
   mocks.status.mockReset();
   mocks.sync.mockReset();
 });
-it("polls the job without refreshing the route, then refreshes once when loading finishes", async () => {
+
+it("starts once in StrictMode, keeps a compact loader and refreshes once on completion", async () => {
   vi.useFakeTimers();
   mocks.sync.mockResolvedValue("job");
   mocks.status
@@ -31,119 +34,194 @@ it("polls the job without refreshing the route, then refreshes once when loading
     .mockResolvedValueOnce({ status: "done" });
   const view = render(
     <StrictMode>
+      <ProjectBranchImportProgress projectId="project" ownerId="user" hidden />
       <BranchImport projectId="project" branch="docs/fix #1" />
     </StrictMode>,
   );
-  await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(0));
   expect(mocks.sync).toHaveBeenCalledTimes(1);
   expect(Object.fromEntries(mocks.sync.mock.calls[0]?.[0] ?? [])).toEqual({
     projectId: "project",
     branch: "docs/fix #1",
   });
-  expect(screen.getByRole("status").getAttribute("aria-busy")).toBe("true");
   const progress = screen.getByRole("status", { name: "Загрузка файлов ветки" });
-  expect(progress.hasAttribute("aria-valuenow")).toBe(false);
+  expect(progress.getAttribute("aria-busy")).toBe("true");
+  expect(progress.querySelector("svg.spin")).toBeTruthy();
+  expect(view.container.querySelector(".section-skeleton")).toBeNull();
   expect(mocks.status).toHaveBeenCalledWith("project", "job");
   expect(mocks.router.refresh).not.toHaveBeenCalled();
-  await act(async () => {
-    vi.advanceTimersByTime(2000);
-  });
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
   expect(mocks.status).toHaveBeenCalledTimes(2);
   expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("status")).toBe(progress);
-  view.unmount();
-  expect(screen.queryByRole("status")).toBeNull();
-  await act(async () => {
-    vi.advanceTimersByTime(4000);
-  });
+});
+
+it.each([
+  { totalBytes: null, expected: "Получаем файлы… (загружено 12,5 МБ)" },
+  { totalBytes: 25_000_000, expected: "Получаем файлы… (загружено 12,5 из 25,0 МБ)" },
+])("updates downloaded MB from job polling: $expected", async ({ totalBytes, expected }) => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValue("job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 0, totalBytes: null },
+    })
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 12_500_000, totalBytes },
+    })
+    .mockResolvedValueOnce({ status: "queued" });
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => {});
+  const progress = screen.getByRole("status", { name: "Загрузка файлов ветки" });
+  expect(progress.textContent).toBe("Получаем файлы… (загружено 0,0 МБ)");
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(progress.textContent).toBe(expected);
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(progress.textContent).toBe("Ожидаем загрузку…");
+});
+
+it("keeps polling after leaving and immediately restores the latest amount on return", async () => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValue("job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 12_500_000, totalBytes: null },
+    })
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 18_000_000, totalBytes: null },
+    })
+    .mockResolvedValue({ status: "done" });
+  const first = render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => {});
+  first.unmount();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  expect(screen.getByRole("status").textContent).toBe("Получаем файлы… (загружено 18,0 МБ)");
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
   expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
 });
-it("offers a retry on failure and starts loading again", async () => {
+
+it("finishes away from the page and opens the completed import on return without scheduling work", async () => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValue("job");
+  mocks.status.mockResolvedValueOnce({ status: "running" }).mockResolvedValue({ status: "done" });
+  const first = render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => {});
+  first.unmount();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(mocks.router.refresh).not.toHaveBeenCalled();
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  expect(screen.getByRole("status").textContent).toBe("Открываем документы…");
+  expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+});
+
+it("restores the same pending start request after navigation", async () => {
+  let finish: ((jobId: string) => void) | undefined;
+  mocks.sync.mockReturnValue(
+    new Promise<string>((resolve) => {
+      finish = resolve;
+    }),
+  );
+  mocks.status.mockResolvedValue({ status: "running" });
+  const first = render(<BranchImport projectId="project" branch="docs/update" />);
+  first.unmount();
+  await act(async () => finish?.("job"));
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  expect(screen.getByRole("status").textContent).toBe("Получаем файлы…");
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+});
+
+it("shows progress in another section and hides completed tasks", async () => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValue("job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 12_500_000, totalBytes: null },
+    })
+    .mockResolvedValue({ status: "done" });
+  const view = render(
+    <>
+      <ProjectBranchImportProgress projectId="project" ownerId="user" hidden />
+      <BranchImport projectId="project" branch="docs/update" />
+    </>,
+  );
+  await act(async () => {});
+  view.rerender(<ProjectBranchImportProgress projectId="project" ownerId="user" />);
+  const background = screen.getByRole("complementary", { name: "Фоновые загрузки веток" });
+  expect(within(background).getByRole("status").textContent).toContain("12,5 МБ");
+  expect(
+    within(background).getByRole("link", { name: "Открыть документы" }).getAttribute("href"),
+  ).toBe("/projects/project/documents?branch=docs%2Fupdate");
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.queryByRole("complementary")).toBeNull();
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the server task after five minutes and retains MB while the network is unavailable", async () => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValue("job");
+  mocks.status.mockResolvedValue({
+    status: "running",
+    transferProgress: { receivedBytes: 12_500_000, totalBytes: null },
+  });
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => vi.advanceTimersByTimeAsync(300_000));
+  mocks.status.mockRejectedValueOnce(new Error("offline"));
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain("12,5 МБ");
+  expect(screen.getByText("Нет связи с сервером. Проверяем загрузку…")).toBeTruthy();
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(screen.queryByText("Нет связи с сервером. Проверяем загрузку…")).toBeNull();
+});
+
+it("clears the previous amount only after an explicit retry of a failed import", async () => {
+  vi.useFakeTimers();
+  mocks.sync.mockResolvedValueOnce("job").mockReturnValueOnce(new Promise(() => {}));
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "running",
+      transferProgress: { receivedBytes: 12_500_000, totalBytes: null },
+    })
+    .mockResolvedValueOnce({ status: "failed" });
+  const view = render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  view.unmount();
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку" }));
+  await act(async () => {});
+  expect(screen.getByRole("status").textContent).toBe("Подготавливаем загрузку…");
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+});
+
+it("opens an already imported branch without polling", async () => {
+  mocks.sync.mockResolvedValue(null);
+  render(<BranchImport projectId="project" branch="docs/update" />);
+  await act(async () => {});
+  expect(mocks.status).not.toHaveBeenCalled();
+  expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
+});
+
+it("offers an explicit retry when starting the job fails", async () => {
   mocks.sync.mockRejectedValueOnce(new Error("offline")).mockResolvedValue("job");
   mocks.status.mockResolvedValue({ status: "queued" });
   render(<BranchImport projectId="project" branch="docs/update" />);
   expect(await screen.findByRole("alert")).toBeTruthy();
-  expect(screen.queryByRole("status")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку" }));
   await act(async () => {});
   expect(mocks.sync).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("status", { name: "Загрузка файлов ветки" })).toBeTruthy();
-});
-it("stops polling and offers a retry when loading times out", async () => {
-  vi.useFakeTimers();
-  mocks.sync.mockResolvedValue("job");
-  mocks.status.mockResolvedValue({ status: "queued" });
-  render(<BranchImport projectId="project" branch="docs/update" />);
-  await act(async () => {});
-  await act(async () => {
-    vi.advanceTimersByTime(300_000);
-  });
-  expect(screen.getByRole("alert").textContent).toContain("ещё не загрузилась");
-  expect(screen.queryByRole("status")).toBeNull();
-  const count = mocks.status.mock.calls.length;
-  await act(async () => {
-    vi.advanceTimersByTime(4000);
-  });
-  expect(mocks.status).toHaveBeenCalledTimes(count);
-  expect(mocks.router.refresh).not.toHaveBeenCalled();
-});
-
-it("retries status errors but ignores late work after unmount", async () => {
-  vi.useFakeTimers();
-  let finishSync: ((job: string) => void) | undefined;
-  mocks.sync.mockImplementationOnce(
-    () =>
-      new Promise<string>((resolve) => {
-        finishSync = resolve;
-      }),
-  );
-  const first = render(<BranchImport projectId="project" branch="late" />);
-  first.unmount();
-  await act(async () => finishSync?.("job"));
-  expect(mocks.status).not.toHaveBeenCalled();
-
-  mocks.sync.mockResolvedValue("job-2");
-  mocks.status.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ status: "running" });
-  render(<BranchImport projectId="project" branch="retry" />);
-  await act(async () => {});
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(5000);
-  });
-  expect(mocks.status).toHaveBeenCalledTimes(2);
-});
-
-it("shows a terminal job failure and ignores a late poll result after unmount", async () => {
-  mocks.sync.mockResolvedValue("failed-job");
-  mocks.status.mockResolvedValue({ status: "failed" });
-  const failed = render(<BranchImport projectId="project" branch="failed" />);
-  expect((await screen.findByRole("alert")).textContent).toContain("Не удалось загрузить ветку");
-  failed.unmount();
-
-  let finish: ((value: { status: "done" }) => void) | undefined;
-  mocks.status.mockReturnValueOnce(
-    new Promise((resolve) => {
-      finish = resolve;
-    }),
-  );
-  const late = render(<BranchImport projectId="project" branch="late-status" />);
-  await act(async () => {});
-  late.unmount();
-  await act(async () => finish?.({ status: "done" }));
-  expect(mocks.router.refresh).not.toHaveBeenCalled();
-
-  let rejectStatus: ((error: Error) => void) | undefined;
-  mocks.status.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStatus = reject)));
-  const statusFailure = render(<BranchImport projectId="project" branch="late-failure" />);
-  await act(async () => {});
-  statusFailure.unmount();
-  await act(async () => rejectStatus?.(new Error("late")));
-
-  let rejectSync: ((error: Error) => void) | undefined;
-  mocks.sync.mockReturnValueOnce(new Promise((_resolve, reject) => (rejectSync = reject)));
-  const syncFailure = render(<BranchImport projectId="project" branch="late-start" />);
-  syncFailure.unmount();
-  await act(async () => rejectSync?.(new Error("late")));
 });
 
 it("explains a missing branch without exposing raw provider errors", async () => {
@@ -155,14 +233,37 @@ it("explains a missing branch without exposing raw provider errors", async () =>
   );
 });
 
-it("does not display arbitrary provider error bodies", async () => {
-  mocks.sync.mockResolvedValue("job");
-  mocks.status.mockResolvedValue({
-    status: "failed",
-    last_error: "Provider request failed with 403: private response",
-  });
-  render(<BranchImport projectId="project" branch="main" />);
-  const message = (await screen.findByRole("alert")).textContent;
-  expect(message).toContain("Проверьте доступ подключения PushDocs");
-  expect(message).not.toContain("private response");
-});
+it.each([
+  'Provider request failed with 401: {"error":"invalid_token","error_description":"Token was revoked. You have to re-authorize from the user."}',
+  "Provider request failed with 401: private response",
+])(
+  "explains a rejected repository token without exposing provider details: %s",
+  async (lastError) => {
+    mocks.sync.mockResolvedValue("job");
+    mocks.status.mockResolvedValue({ status: "failed", last_error: lastError });
+    render(<BranchImport projectId="project" branch="doc/814" />);
+    const message = (await screen.findByRole("alert")).textContent;
+    expect(message).toContain("токен доступа к репозиторию недействителен или отозван");
+    expect(message).toContain("Обновите access token в «Настройки → Подключения»");
+    expect(message).toContain("затем повторите загрузку");
+    expect(message).not.toContain(lastError);
+    expect(message).not.toContain("private response");
+    expect(screen.getByRole("button", { name: "Повторить загрузку" })).toBeTruthy();
+  },
+);
+
+it.each([403, 500])(
+  "does not display arbitrary provider error bodies for HTTP %s",
+  async (status) => {
+    mocks.sync.mockResolvedValue("job");
+    mocks.status.mockResolvedValue({
+      status: "failed",
+      last_error: `Provider request failed with ${status}: private response`,
+    });
+    render(<BranchImport projectId="project" branch="main" />);
+    const message = (await screen.findByRole("alert")).textContent;
+    expect(message).toContain("Проверьте доступ подключения PushDocs");
+    expect(message).not.toContain("токен");
+    expect(message).not.toContain("private response");
+  },
+);

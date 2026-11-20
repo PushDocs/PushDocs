@@ -3,6 +3,7 @@
 import { Columns2, List, UnfoldVertical } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { useDiffLayout } from "./diff-layout";
+import { useEditorWordWrap } from "./editor-preferences";
 import { MonacoDiff } from "./monaco-diff";
 import { useMonaco } from "./monaco-runtime";
 import { buildTextDiff, type DiffLine, foldDiff, pairDiffLines } from "./text-diff";
@@ -23,6 +24,7 @@ export function DiffViewer({
   diff?: ReturnType<typeof buildTextDiff>;
 }) {
   const monaco = useMonaco();
+  const [wordWrap] = useEditorWordWrap();
   const [layout, setLayout] = useDiffLayout();
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<{ before: string; after: string; ids: Set<number> }>({
@@ -68,7 +70,7 @@ export function DiffViewer({
         ));
 
   return (
-    <section className="wb-diff" aria-label="Сравнение изменений">
+    <section className="wb-diff" aria-label="Сравнение изменений" data-word-wrap={wordWrap}>
       <header className="wb-diff-toolbar">
         <div className="wb-diff-stats">
           <span role="img" data-kind="add" aria-label={`Добавлено строк: ${result.added}`}>

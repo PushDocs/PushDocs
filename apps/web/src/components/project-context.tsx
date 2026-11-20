@@ -1,5 +1,22 @@
 "use client";
-import { useEffect } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
+
+function subscribeProjectContext(listener: () => void) {
+  window.addEventListener("pushdocs:context", listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    window.removeEventListener("pushdocs:context", listener);
+    window.removeEventListener("storage", listener);
+  };
+}
+
+export function useProjectBranch(projectId: string, fallback: string) {
+  return useSyncExternalStore(
+    subscribeProjectContext,
+    useCallback(() => readProjectBranch(projectId, fallback), [projectId, fallback]),
+    () => fallback,
+  );
+}
 
 export function readProjectBranch(projectId: string, fallback: string) {
   try {

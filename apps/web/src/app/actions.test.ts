@@ -1,3 +1,4 @@
+import { BranchUpdateStrategy } from "@pushdocs/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -64,7 +65,9 @@ const mocks = vi.hoisted(() => {
       createDraftDocument: vi.fn(),
       deleteSession: vi.fn(),
       enqueueBranchSync: vi.fn(),
+      ensureBranchImport: vi.fn(),
       enqueueBranchMerge: vi.fn(),
+      queueReviewBranchUpdate: vi.fn(),
       enqueueBranchSyncIfStale: vi.fn(),
       enqueueReviewCreation: vi.fn(),
       getProjectJob: vi.fn(),
@@ -1234,13 +1237,21 @@ describe("document and review actions", () => {
     );
   });
 
-  it("queues branch synchronization after checking access", async () => {
-    mocks.repo.enqueueBranchSync.mockResolvedValueOnce("job");
+  it("starts or resumes branch import after checking access", async () => {
+    mocks.repo.ensureBranchImport.mockResolvedValueOnce("job");
     await expect(synchronizeBranchAction(form({ branch: "docs/update", projectId }))).resolves.toBe(
       "job",
     );
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
-    expect(mocks.repo.enqueueBranchSync).toHaveBeenCalledWith(projectId, "docs/update");
+    expect(mocks.repo.ensureBranchImport).toHaveBeenCalledWith(projectId, "docs/update");
+    expect(mocks.repo.enqueueBranchSync).not.toHaveBeenCalled();
+  });
+
+  it("opens documents without scheduling work when the branch finished importing", async () => {
+    mocks.repo.ensureBranchImport.mockResolvedValueOnce(null);
+    await expect(
+      synchronizeBranchAction(form({ branch: "docs/update", projectId })),
+    ).resolves.toBeNull();
   });
 
   it("uses the cached branch snapshot for a background refresh", async () => {
@@ -1258,6 +1269,7 @@ describe("document and review actions", () => {
         branch: "docs/update",
         changeSetId,
         message: "Update docs",
+        description: "  Тикет: https://tracker.test/DOC-123\nКомментарий  ",
         projectId,
       }),
     );
@@ -1268,6 +1280,7 @@ describe("document and review actions", () => {
       changeSetId,
       createReview: true,
       message: "Update docs",
+      description: "Тикет: https://tracker.test/DOC-123\nКомментарий",
       projectId,
     });
   });
@@ -1289,7 +1302,12 @@ describe("document and review actions", () => {
     );
   });
   it("checks review permission before creating a review and read permission before pulling", async () => {
-    await startGitOperationAction({ projectId, branch: "docs/update", title: "Review" });
+    await startGitOperationAction({
+      projectId,
+      branch: "docs/update",
+      title: "Review",
+      description: "  Тикет: https://tracker.test/DOC-123  ",
+    });
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith(
       "user",
       projectId,
@@ -1300,9 +1318,56 @@ describe("document and review actions", () => {
       "docs/update",
       "Review",
       "user",
+      { description: "Тикет: https://tracker.test/DOC-123" },
     );
     await startGitOperationAction({ projectId, branch: "docs/update" });
     expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+  });
+
+  it("queues updates by the server-side review and returns actionable blockers", async () => {
+    const reviewId = "28cfe5ea-afc0-4919-bdac-0ec67ad5cfc2";
+    mocks.repo.queueReviewBranchUpdate.mockResolvedValueOnce("update-job");
+    const input = {
+      projectId,
+      branch: "ignored-client-branch",
+      updateReview: {
+        reviewId,
+        expectedHeadSha: "head",
+        expectedStrategy: BranchUpdateStrategy.Merge,
+      },
+    };
+    expect(await startGitOperationAction(input)).toBe("update-job");
+    expect(mocks.repo.queueReviewBranchUpdate).toHaveBeenCalledWith({
+      projectId,
+      userId: "user",
+      reviewId,
+      expectedHeadSha: "head",
+      expectedStrategy: BranchUpdateStrategy.Merge,
+    });
+    expect(mocks.repo.enqueueBranchMerge).not.toHaveBeenCalled();
+    mocks.repo.queueReviewBranchUpdate.mockRejectedValueOnce(
+      Object.assign(new Error("Сначала завершите правки"), { code: "REVISION_CONFLICT" }),
+    );
+    expect(await startGitOperationAction(input)).toEqual({ error: "Сначала завершите правки" });
+  });
+  it("rejects oversized descriptions before queuing either review creation path", async () => {
+    const description = "x".repeat(30_001);
+    await expect(
+      submitChangeSetAction(
+        form({
+          branch: "docs/update",
+          changeSetId,
+          message: "Update docs",
+          projectId,
+          description,
+        }),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      startGitOperationAction({ projectId, branch: "docs/update", title: "Review", description }),
+    ).rejects.toThrow();
+    expect(mocks.repo.queueChangeSetSubmission).not.toHaveBeenCalled();
+    expect(mocks.repo.enqueueReviewCreation).not.toHaveBeenCalled();
   });
   it("scopes operation status to an accessible project", async () => {
     mocks.repo.getProjectJob.mockResolvedValue({ status: "done" });

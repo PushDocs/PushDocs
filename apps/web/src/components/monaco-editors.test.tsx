@@ -3,6 +3,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import type { languages } from "monaco-editor";
 import { createRef, StrictMode, useLayoutEffect, useRef, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
+import { editorPreferences } from "../lib/editor-settings";
 import { MonacoDiff } from "./monaco-diff";
 import { editorOptions, fileLanguage, type MonacoApi } from "./monaco-runtime";
 import { MonacoSourceEditor, type SourceEditorHandle } from "./source-editor";
@@ -10,6 +11,7 @@ import { MonacoSourceEditor, type SourceEditorHandle } from "./source-editor";
 afterEach(() => {
   cleanup();
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 function runtime() {
@@ -106,6 +108,8 @@ function runtime() {
 }
 
 it("uses faint indentation guides and chooses the actual file language", () => {
+  expect(editorOptions.wordWrap).toBe("on");
+  expect(editorOptions.wrappingIndent).toBe("same");
   expect(editorOptions.guides).toEqual({
     indentation: true,
     highlightActiveIndentation: true,
@@ -115,6 +119,46 @@ it("uses faint indentation guides and chooses the actual file language", () => {
   expect(fileLanguage("_category_.json")).toBe("json");
   expect(fileLanguage("config.yaml")).toBe("yaml");
   expect(fileLanguage("LICENSE")).toBe("plaintext");
+});
+
+it("updates wrapping in mounted source and diff editors without changing their models", () => {
+  const source = runtime();
+  const diff = runtime();
+  render(
+    <>
+      <MonacoSourceEditor
+        monaco={source.api}
+        value="unchanged"
+        inputRef={createRef<SourceEditorHandle>()}
+        readOnly
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onIndent={vi.fn()}
+      />
+      <MonacoDiff monaco={diff.api} before="before" after="after" split={false} showAll />
+    </>,
+  );
+  expect(source.api.editor.create).toHaveBeenCalledWith(
+    expect.any(HTMLElement),
+    expect.objectContaining({ wordWrap: "on" }),
+  );
+  expect(diff.api.editor.createDiffEditor).toHaveBeenCalledWith(
+    expect.any(HTMLElement),
+    expect.objectContaining({ wordWrap: "on", diffWordWrap: "on" }),
+  );
+  act(() => {
+    localStorage.setItem(editorPreferences.storageKey, "off");
+    window.dispatchEvent(new StorageEvent("storage", { key: editorPreferences.storageKey }));
+  });
+  expect(source.editor.updateOptions).toHaveBeenLastCalledWith({ wordWrap: "off" });
+  expect(diff.editor.updateOptions).toHaveBeenLastCalledWith({
+    wordWrap: "off",
+    diffWordWrap: "off",
+  });
+  expect(source.api.editor.create).toHaveBeenCalledTimes(1);
+  expect(diff.api.editor.createDiffEditor).toHaveBeenCalledTimes(1);
+  expect(source.editor.executeEdits).not.toHaveBeenCalled();
+  expect(source.model.getValue()).toBe("unchanged");
 });
 
 it("keeps path suggestions current, scoped to the model and disabled for readers", () => {
@@ -414,6 +458,7 @@ it("keeps both diff sides read-only, includes whitespace changes and releases ol
   );
   expect(rt.editor.updateOptions).toHaveBeenLastCalledWith({
     renderSideBySide: true,
+    wordWrapOverride2: "inherit",
     hideUnchangedRegions: { enabled: false, contextLineCount: 3 },
   });
   expect(rt.api.editor.createDiffEditor).toHaveBeenCalledTimes(1);

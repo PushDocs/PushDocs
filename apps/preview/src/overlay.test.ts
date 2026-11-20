@@ -10,6 +10,8 @@ import { createPreviewService } from "./service";
 import { workspaceKey } from "./workspaces";
 
 const launches = vi.hoisted(() => [] as string[][]);
+// Real Git subprocesses share CPU with the rest of the integration suite.
+const overlayTestTimeouts = { ready: 5_000, test: 30_000 } as const;
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -38,147 +40,54 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-it("updates only changed files, preserves dependencies across commits and reinstalls changed manifests", async () => {
-  launches.length = 0;
-  const root = await mkdtemp(path.join(tmpdir(), "pushdocs-overlay-"));
-  const id = "00000000-0000-4000-8000-000000000001";
-  const workspace = path.join(root, id);
-  const git = promisify(execFile);
-  const session = {
-    id,
-    project_id: "00000000-0000-4000-8000-000000000002",
-    branch: "stable",
-    port: 43000,
-    desired_state: "running",
-    status: "queued",
-    updated_at: new Date(),
-    log: "",
-  };
-  const sessions = [session];
-  const backgroundBranches: Array<{
-    project_id: string;
-    full_ref: string;
-    default_branch: string;
-    head_commit_sha: string;
-  }> = [];
-  let revision = 1;
-  let leaseExpired = false;
-  const logger = { error: vi.fn(), log: vi.fn() };
-  let preview: ReturnType<typeof createPreviewService> | undefined;
-  try {
-    await mkdir(path.join(workspace, ".pushdocs"), { recursive: true });
-    await writeFile(path.join(workspace, "base.txt"), "base");
-    await writeFile(
-      path.join(workspace, ".pushdocs/config.json"),
-      JSON.stringify({
-        version: 1,
-        preview: { install: ["fixture", "install"], start: ["fixture", "start"], output: "build" },
-      }),
-    );
-    await git("git", ["init", "--quiet", workspace]);
-    await git("git", ["-C", workspace, "add", "."]);
-    await git("git", [
-      "-C",
-      workspace,
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.test",
-      "commit",
-      "--quiet",
-      "-m",
-      "base",
-    ]);
-    let head = (await git("git", ["-C", workspace, "rev-parse", "HEAD"])).stdout.trim();
-    const remote = path.join(root, "remote.git");
-    await git("git", ["clone", "--bare", "--quiet", workspace, remote]);
-    await writeFile(
-      path.join(root, `${id}.json`),
-      JSON.stringify({ appliedPaths: [], headSha: head, installed: true, uid: 11000 }),
-    );
-    await writeFile(path.join(root, "attachment"), "image");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("ready")),
-    );
-    preview = createPreviewService({
-      workspaceRoot: root,
-      attachmentsRoot: root,
-      logger,
-      gitAccess: async () => ({ remote, env: process.env }),
-      repository: {
-        reconcilePreviewLeases: async () => {
-          if (leaseExpired) session.desired_state = "stopped";
-        },
-        listPreviewSessions: async () => sessions,
-        listPreviewWorkspaces: async () => backgroundBranches,
-        getProjectSyncTarget: async () => ({
-          root_path: ".",
-          clone_url: "https://example.test/repo.git",
-          base_url: "https://example.test",
-          kind: "github",
-          secret_encrypted: "token",
+it(
+  "updates only changed files, preserves dependencies across commits and reinstalls changed manifests",
+  async () => {
+    launches.length = 0;
+    const root = await mkdtemp(path.join(tmpdir(), "pushdocs-overlay-"));
+    const id = "00000000-0000-4000-8000-000000000001";
+    const workspace = path.join(root, id);
+    const git = promisify(execFile);
+    const session = {
+      id,
+      project_id: "00000000-0000-4000-8000-000000000002",
+      branch: "stable",
+      port: 43000,
+      desired_state: "running",
+      status: "queued",
+      updated_at: new Date(),
+      log: "",
+    };
+    const sessions = [session];
+    const backgroundBranches: Array<{
+      project_id: string;
+      full_ref: string;
+      default_branch: string;
+      head_commit_sha: string;
+    }> = [];
+    let revision = 1;
+    let leaseExpired = false;
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let preview: ReturnType<typeof createPreviewService> | undefined;
+    try {
+      await mkdir(path.join(workspace, ".pushdocs"), { recursive: true });
+      await writeFile(path.join(workspace, "base.txt"), "base");
+      await writeFile(
+        path.join(workspace, ".pushdocs/config.json"),
+        JSON.stringify({
+          version: 1,
+          preview: {
+            install: ["fixture", "install"],
+            start: ["fixture", "start"],
+            output: "build",
+          },
         }),
-        listChangedWorkingFiles: async () => ({
-          branch: { head_commit_sha: head },
-          changeSet: { revision },
-          files: [
-            { path: "docs/unchanged.md", content: "unchanged", status: "add" },
-            { path: "docs/edited.md", content: `revision ${revision}`, status: "add" },
-          ],
-        }),
-        listPreviewAttachments: async () => [
-          { repository_path: "static/new/folder/image.png", storage_key: "attachment" },
-        ],
-        updatePreviewSession: async (id: string, values: object) =>
-          Object.assign(sessions.find((item) => item.id === id) ?? {}, values),
-        completePreviewStartup: async (
-          id: string,
-          values: { headSha: string; revision: number },
-        ) => {
-          Object.assign(sessions.find((item) => item.id === id) ?? {}, {
-            status: "ready",
-            head_sha: values.headSha,
-            revision: values.revision,
-          });
-          return true;
-        },
-      } as never,
-      decryptSecret: (value) => value,
-    });
-    await preview.tick();
-    await vi.waitFor(() => expect(session.status).toBe("ready"));
-    // Locate the workspace through its article, also after migration to a stable branch path.
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(root, { recursive: true });
-    const article = entries.find((entry) => entry.endsWith("docs/unchanged.md"));
-    if (!article) throw new Error("Preview article is missing");
-    const currentWorkspace = path.dirname(path.dirname(path.join(root, article)));
-    await expect(stat(path.join(currentWorkspace, ".package-cache/yarn"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    const paths = ["docs/unchanged.md", "static/new/folder/image.png"].map((file) =>
-      path.join(currentWorkspace, file),
-    );
-    const oldTime = new Date("2020-01-01T00:00:00Z");
-    for (const file of paths) await utimes(file, oldTime, oldTime);
-    revision++;
-    await preview.tick();
-    expect(await readFile(path.join(currentWorkspace, "docs/edited.md"), "utf8")).toBe(
-      "revision 2",
-    );
-    for (const file of paths) expect((await stat(file)).mtimeMs).toBe(oldTime.getTime());
-
-    const installations = () =>
-      launches.filter((args) => args[0] === "fixture" && args.includes("install")).length;
-    expect(installations()).toBe(1);
-    await mkdir(path.join(currentWorkspace, "node_modules"));
-    await writeFile(path.join(currentWorkspace, "node_modules/installed"), "dependencies");
-    const advance = async () => {
-      await git("git", ["-C", currentWorkspace, "add", "base.txt", ".pushdocs/config.json"]);
+      );
+      await git("git", ["init", "--quiet", workspace]);
+      await git("git", ["-C", workspace, "add", "."]);
       await git("git", [
         "-C",
-        currentWorkspace,
+        workspace,
         "-c",
         "user.name=Test",
         "-c",
@@ -186,129 +95,244 @@ it("updates only changed files, preserves dependencies across commits and reinst
         "commit",
         "--quiet",
         "-m",
-        "next",
+        "base",
       ]);
-      await git("git", [
-        "-C",
-        currentWorkspace,
-        "push",
-        "--quiet",
-        remote,
-        "HEAD:refs/heads/fixture",
-      ]);
-      head = (await git("git", ["-C", currentWorkspace, "rev-parse", "HEAD"])).stdout.trim();
-      await preview?.tick();
-      expect(session.status).toBe("queued");
-      await preview?.tick();
-      await vi.waitFor(() => expect(session.status).toBe("ready"));
-    };
-    await writeFile(path.join(currentWorkspace, "base.txt"), "new base");
-    await advance();
-    expect(installations()).toBe(1);
-    expect(await readFile(path.join(currentWorkspace, "node_modules/installed"), "utf8")).toBe(
-      "dependencies",
-    );
-
-    await writeFile(
-      path.join(currentWorkspace, "package.json"),
-      JSON.stringify({ name: "fixture", dependencies: { changed: "1.0.0" } }),
-    );
-    await git("git", ["-C", currentWorkspace, "add", "package.json"]);
-    await advance();
-    expect(installations()).toBe(2);
-
-    // An explicit stop and restart must keep dependencies without reinstalling.
-    const webpackCache = path.join(currentWorkspace, ".cache/pushdocs-webpack");
-    await mkdir(webpackCache, { recursive: true });
-    await writeFile(path.join(webpackCache, "cache.pack"), "compiled modules");
-    await writeFile(path.join(currentWorkspace, ".cache/other"), "keep");
-    session.desired_state = "stopped";
-    await preview.tick();
-    await expect(stat(webpackCache)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readFile(path.join(currentWorkspace, ".cache/other"), "utf8")).toBe("keep");
-    expect(await readFile(path.join(currentWorkspace, "node_modules/installed"), "utf8")).toBe(
-      "dependencies",
-    );
-    session.desired_state = "running";
-    session.status = "queued";
-    await preview.tick();
-    await vi.waitFor(() => expect(session.status).toBe("ready"));
-    expect(installations()).toBe(2);
-
-    const queued = {
-      ...session,
-      id: "00000000-0000-4000-8000-000000000003",
-      branch: "docs/other",
-      port: 43001,
-      status: "queued",
-      log: "",
-    };
-    sessions.push(queued);
-    const starts = () =>
-      launches.filter((args) => args[0] === "fixture" && args.includes("start")).length;
-    const beforeQueue = starts();
-    await preview.tick();
-    expect(queued.status).toBe("queued");
-    expect(queued.log).toContain("Ожидаем свободное место");
-    expect(starts()).toBe(beforeQueue);
-    // Lease expiry uses the same stop path, even if cache cleanup fails.
-    await rm(path.join(currentWorkspace, ".cache"), { recursive: true });
-    await writeFile(path.join(currentWorkspace, ".cache"), "not a directory");
-    leaseExpired = true;
-    await preview.tick();
-    expect(session.status).toBe("stopped");
-    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("не является папкой"));
-    await rm(path.join(currentWorkspace, ".cache"));
-    leaseExpired = false;
-    await vi.waitFor(() => expect(queued.status).toBe("ready"));
-
-    queued.desired_state = "stopped";
-    backgroundBranches.push({
-      project_id: session.project_id,
-      full_ref: "docs/prepared",
-      default_branch: "docs/prepared",
-      head_commit_sha: head,
-    });
-    const beforePreparation = starts();
-    await preview.tick();
-    const preparedWorkspace = path.join(
-      root,
-      "worktrees",
-      workspaceKey({ projectId: session.project_id, branch: "docs/prepared" }),
-    );
-    await vi.waitFor(async () =>
-      expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
+      let head = (await git("git", ["-C", workspace, "rev-parse", "HEAD"])).stdout.trim();
+      const remote = path.join(root, "remote.git");
+      await git("git", ["clone", "--bare", "--quiet", workspace, remote]);
+      await writeFile(
+        path.join(root, `${id}.json`),
+        JSON.stringify({ appliedPaths: [], headSha: head, installed: true, uid: 11000 }),
+      );
+      await writeFile(path.join(root, "attachment"), "image");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("ready")),
+      );
+      preview = createPreviewService({
+        workspaceRoot: root,
+        attachmentsRoot: root,
+        logger,
+        gitAccess: async () => ({ remote, env: process.env }),
+        repository: {
+          reconcilePreviewLeases: async () => {
+            if (leaseExpired) session.desired_state = "stopped";
+          },
+          listPreviewSessions: async () => sessions,
+          listPreviewWorkspaces: async () => backgroundBranches,
+          getProjectSyncTarget: async () => ({
+            root_path: ".",
+            clone_url: "https://example.test/repo.git",
+            base_url: "https://example.test",
+            kind: "github",
+            secret_encrypted: "token",
+          }),
+          listChangedWorkingFiles: async () => ({
+            branch: { head_commit_sha: head },
+            changeSet: { revision },
+            files: [
+              { path: "docs/unchanged.md", content: "unchanged", status: "add" },
+              { path: "docs/edited.md", content: `revision ${revision}`, status: "add" },
+            ],
+          }),
+          listPreviewAttachments: async () => [
+            { repository_path: "static/new/folder/image.png", storage_key: "attachment" },
+          ],
+          updatePreviewSession: async (id: string, values: object) =>
+            Object.assign(sessions.find((item) => item.id === id) ?? {}, values),
+          completePreviewStartup: async (
+            id: string,
+            values: { headSha: string; revision: number },
+          ) => {
+            Object.assign(sessions.find((item) => item.id === id) ?? {}, {
+              status: "ready",
+              head_sha: values.headSha,
+              revision: values.revision,
+            });
+            return true;
+          },
+        } as never,
+        decryptSecret: (value) => value,
+      });
+      await preview.tick();
+      await vi.waitFor(() => expect(session.status).toBe("ready"), {
+        timeout: overlayTestTimeouts.ready,
+      });
+      // Locate the workspace through its article, also after migration to a stable branch path.
+      const { readdir } = await import("node:fs/promises");
+      const entries = await readdir(root, { recursive: true });
+      const article = entries.find((entry) => entry.endsWith("docs/unchanged.md"));
+      if (!article) throw new Error("Preview article is missing");
+      const currentWorkspace = path.dirname(path.dirname(path.join(root, article)));
+      await expect(stat(path.join(currentWorkspace, ".package-cache/yarn"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      const paths = ["docs/unchanged.md", "static/new/folder/image.png"].map((file) =>
+        path.join(currentWorkspace, file),
+      );
+      const oldTime = new Date("2020-01-01T00:00:00Z");
+      for (const file of paths) await utimes(file, oldTime, oldTime);
+      revision++;
+      await preview.tick();
+      expect(await readFile(path.join(currentWorkspace, "docs/edited.md"), "utf8")).toBe(
         "revision 2",
-      ),
-    );
-    expect(starts()).toBe(beforePreparation);
-    const preparedSession = {
-      ...session,
-      id: "00000000-0000-4000-8000-000000000004",
-      branch: "docs/prepared",
-      status: "queued",
-      desired_state: "running",
-    };
-    sessions.push(preparedSession);
-    const beforeFetch = launches.filter((args) => args.includes("fetch")).length;
-    await preview.tick();
-    await vi.waitFor(() => expect(preparedSession.status).toBe("ready"));
-    expect(launches.filter((args) => args.includes("fetch")).length).toBe(beforeFetch);
-    preparedSession.desired_state = "stopped";
-    await preview.tick();
-    const beforeReopen = installations();
-    sessions.splice(sessions.indexOf(preparedSession), 1, {
-      ...preparedSession,
-      id: "00000000-0000-4000-8000-000000000005",
-      desired_state: "running",
-      status: "queued",
-    });
-    await preview.tick();
-    await vi.waitFor(() => expect(sessions.at(-1)?.status).toBe("ready"));
-    expect(installations()).toBe(beforeReopen);
-  } finally {
-    await preview?.stopAll();
-    vi.unstubAllGlobals();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+      );
+      for (const file of paths) expect((await stat(file)).mtimeMs).toBe(oldTime.getTime());
+
+      const installations = () =>
+        launches.filter((args) => args[0] === "fixture" && args.includes("install")).length;
+      expect(installations()).toBe(1);
+      await mkdir(path.join(currentWorkspace, "node_modules"));
+      await writeFile(path.join(currentWorkspace, "node_modules/installed"), "dependencies");
+      const advance = async () => {
+        await git("git", ["-C", currentWorkspace, "add", "base.txt", ".pushdocs/config.json"]);
+        await git("git", [
+          "-C",
+          currentWorkspace,
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.test",
+          "commit",
+          "--quiet",
+          "-m",
+          "next",
+        ]);
+        await git("git", [
+          "-C",
+          currentWorkspace,
+          "push",
+          "--quiet",
+          remote,
+          "HEAD:refs/heads/fixture",
+        ]);
+        head = (await git("git", ["-C", currentWorkspace, "rev-parse", "HEAD"])).stdout.trim();
+        await preview?.tick();
+        expect(session.status).toBe("queued");
+        await preview?.tick();
+        await vi.waitFor(() => expect(session.status).toBe("ready"), {
+          timeout: overlayTestTimeouts.ready,
+        });
+      };
+      await writeFile(path.join(currentWorkspace, "base.txt"), "new base");
+      await advance();
+      expect(installations()).toBe(1);
+      expect(await readFile(path.join(currentWorkspace, "node_modules/installed"), "utf8")).toBe(
+        "dependencies",
+      );
+
+      await writeFile(
+        path.join(currentWorkspace, "package.json"),
+        JSON.stringify({ name: "fixture", dependencies: { changed: "1.0.0" } }),
+      );
+      await git("git", ["-C", currentWorkspace, "add", "package.json"]);
+      await advance();
+      expect(installations()).toBe(2);
+
+      // An explicit stop and restart must keep dependencies without reinstalling.
+      const webpackCache = path.join(currentWorkspace, ".cache/pushdocs-webpack");
+      await mkdir(webpackCache, { recursive: true });
+      await writeFile(path.join(webpackCache, "cache.pack"), "compiled modules");
+      await writeFile(path.join(currentWorkspace, ".cache/other"), "keep");
+      session.desired_state = "stopped";
+      await preview.tick();
+      await expect(stat(webpackCache)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(currentWorkspace, ".cache/other"), "utf8")).toBe("keep");
+      expect(await readFile(path.join(currentWorkspace, "node_modules/installed"), "utf8")).toBe(
+        "dependencies",
+      );
+      session.desired_state = "running";
+      session.status = "queued";
+      await preview.tick();
+      await vi.waitFor(() => expect(session.status).toBe("ready"), {
+        timeout: overlayTestTimeouts.ready,
+      });
+      expect(installations()).toBe(2);
+
+      const queued = {
+        ...session,
+        id: "00000000-0000-4000-8000-000000000003",
+        branch: "docs/other",
+        port: 43001,
+        status: "queued",
+        log: "",
+      };
+      sessions.push(queued);
+      const starts = () =>
+        launches.filter((args) => args[0] === "fixture" && args.includes("start")).length;
+      const beforeQueue = starts();
+      await preview.tick();
+      expect(queued.status).toBe("queued");
+      expect(queued.log).toContain("Ожидаем свободное место");
+      expect(starts()).toBe(beforeQueue);
+      // Lease expiry uses the same stop path, even if cache cleanup fails.
+      await rm(path.join(currentWorkspace, ".cache"), { recursive: true });
+      await writeFile(path.join(currentWorkspace, ".cache"), "not a directory");
+      leaseExpired = true;
+      await preview.tick();
+      expect(session.status).toBe("stopped");
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("не является папкой"));
+      await rm(path.join(currentWorkspace, ".cache"));
+      leaseExpired = false;
+      await vi.waitFor(() => expect(queued.status).toBe("ready"), {
+        timeout: overlayTestTimeouts.ready,
+      });
+
+      queued.desired_state = "stopped";
+      backgroundBranches.push({
+        project_id: session.project_id,
+        full_ref: "docs/prepared",
+        default_branch: "docs/prepared",
+        head_commit_sha: head,
+      });
+      const beforePreparation = starts();
+      await preview.tick();
+      const preparedWorkspace = path.join(
+        root,
+        "worktrees",
+        workspaceKey({ projectId: session.project_id, branch: "docs/prepared" }),
+      );
+      await vi.waitFor(
+        async () =>
+          expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
+            "revision 2",
+          ),
+        { timeout: overlayTestTimeouts.ready },
+      );
+      expect(starts()).toBe(beforePreparation);
+      const preparedSession = {
+        ...session,
+        id: "00000000-0000-4000-8000-000000000004",
+        branch: "docs/prepared",
+        status: "queued",
+        desired_state: "running",
+      };
+      sessions.push(preparedSession);
+      const beforeFetch = launches.filter((args) => args.includes("fetch")).length;
+      await preview.tick();
+      await vi.waitFor(() => expect(preparedSession.status).toBe("ready"), {
+        timeout: overlayTestTimeouts.ready,
+      });
+      expect(launches.filter((args) => args.includes("fetch")).length).toBe(beforeFetch);
+      preparedSession.desired_state = "stopped";
+      await preview.tick();
+      const beforeReopen = installations();
+      sessions.splice(sessions.indexOf(preparedSession), 1, {
+        ...preparedSession,
+        id: "00000000-0000-4000-8000-000000000005",
+        desired_state: "running",
+        status: "queued",
+      });
+      await preview.tick();
+      await vi.waitFor(() => expect(sessions.at(-1)?.status).toBe("ready"), {
+        timeout: overlayTestTimeouts.ready,
+      });
+      expect(installations()).toBe(beforeReopen);
+    } finally {
+      await preview?.stopAll();
+      vi.unstubAllGlobals();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  overlayTestTimeouts.test,
+);

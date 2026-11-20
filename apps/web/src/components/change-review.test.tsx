@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ChangeReview } from "./change-review";
 
@@ -82,11 +82,97 @@ it("compares the Git image with its replacement, and handles added and deleted i
   expect(screen.getByAltText("До изменения").getAttribute("src")).toContain("version=git");
   expect(screen.getByAltText("После изменения").getAttribute("src")).not.toContain("version=");
   fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
-  expect(screen.getByText("Файла не было")).toBeTruthy();
-  expect(screen.queryByAltText("До изменения")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
   expect(screen.getByText("Файл удалён")).toBeTruthy();
   expect(screen.queryByAltText("После изменения")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
+  expect(screen.getByText("Файла не было")).toBeTruthy();
+  expect(screen.queryByAltText("До изменения")).toBeNull();
+});
+
+const mixedFiles = [
+  { path: "static/banner.svg", binary: true },
+  { path: "docs/z.mdx", binary: false },
+  { path: ".pushdocs/config.json", binary: false },
+  { path: "static/a.PNG", binary: true },
+  { path: "docs/a.md", binary: false },
+  { path: "static/demo.mp4", binary: true },
+].map((file) => ({
+  ...file,
+  operation: "modify",
+  before: `Before ${file.path}`,
+  after: `After ${file.path}`,
+  existed: true,
+}));
+
+it("groups mixed files with counts and navigates in the displayed order", () => {
+  render(<ChangeReview projectId="p" branch="fix" files={mixedFiles} />);
+  const list = screen.getByRole("listbox");
+  expect(
+    within(list)
+      .getAllByRole("group")
+      .map((group) => group.textContent),
+  ).toEqual([
+    expect.stringMatching(/^Статьи2/),
+    expect.stringMatching(/^Изображения2/),
+    expect.stringMatching(/^Другие файлы2/),
+  ]);
+  for (const name of ["Статьи", "Изображения", "Другие файлы"]) {
+    expect(within(screen.getByRole("group", { name })).getByText("2")).toBeTruthy();
+  }
+  const paths = [
+    "docs/a.md",
+    "docs/z.mdx",
+    "static/a.PNG",
+    "static/banner.svg",
+    ".pushdocs/config.json",
+    "static/demo.mp4",
+  ];
+  expect(screen.getAllByRole("option").map((option) => option.getAttribute("title"))).toEqual(
+    paths,
+  );
+  for (const [index, path] of paths.entries()) {
+    expect(screen.getByRole("option", { name: `${path} M` }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("link", { name: "Открыть файл" }).getAttribute("href")).toContain(
+      new URLSearchParams({ path }).toString(),
+    );
+    if (index % 2 === 0) fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
+    else fireEvent.keyDown(list, { key: "ArrowDown" });
+  }
+  expect(screen.getByRole("button", { name: "Следующий файл" })).toHaveProperty("disabled", true);
+  fireEvent.keyDown(list, { key: "ArrowUp" });
+  expect(screen.getByText("After .pushdocs/config.json")).toBeTruthy();
+  fireEvent.keyDown(list, { key: "Home" });
+  expect(screen.getByText("After docs/a.md")).toBeTruthy();
+});
+
+it("filters group counts, hides empty groups and restores the selected image after searching", () => {
+  const view = render(<ChangeReview projectId="p" branch="fix" files={mixedFiles} />);
+  fireEvent.click(screen.getByRole("option", { name: "static/banner.svg M" }));
+  const search = screen.getByRole("searchbox");
+  fireEvent.change(search, { target: { value: "A." } });
+  expect(within(screen.getByRole("listbox")).getAllByRole("group")).toHaveLength(2);
+  expect(within(screen.getByRole("group", { name: "Статьи" })).getByText("1")).toBeTruthy();
+  expect(within(screen.getByRole("group", { name: "Изображения" })).getByText("1")).toBeTruthy();
+  expect(screen.queryByRole("group", { name: "Другие файлы" })).toBeNull();
+  fireEvent.change(search, { target: { value: "missing" } });
+  expect(screen.queryByRole("group")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("Файлы не найдены");
+  fireEvent.change(search, { target: { value: "" } });
+  view.rerender(<ChangeReview projectId="p" branch="fix" files={mixedFiles.toReversed()} />);
+  expect(
+    screen.getByRole("option", { name: "static/banner.svg M" }).getAttribute("aria-selected"),
+  ).toBe("true");
+  expect(screen.getByAltText("После изменения").getAttribute("src")).toContain("banner.svg");
+  view.rerender(
+    <ChangeReview
+      projectId="p"
+      branch="fix"
+      files={mixedFiles.filter((file) => file.path !== "static/banner.svg")}
+    />,
+  );
+  expect(screen.getByText("After docs/a.md")).toBeTruthy();
 });
 
 const manyFiles = Array.from({ length: 10_000 }, (_, index) => ({
@@ -134,6 +220,35 @@ it("navigates to unmounted files using the keyboard and reveals the selection", 
   fireEvent.keyDown(list, { key: "PageUp" });
   expect(screen.getByText("After file 0")).toBeTruthy();
   fireEvent.keyDown(list, { key: "ArrowUp" });
+  expect(screen.getByText("After file 0")).toBeTruthy();
+});
+
+it("virtualizes large groups and reveals files across group boundaries", () => {
+  const images = manyFiles.map((file, index) => ({
+    ...file,
+    path: `static/image-${index}.png`,
+    binary: true,
+  }));
+  render(<ChangeReview projectId="p" branch="fix" files={[...images, ...manyFiles]} />);
+  expect(screen.getAllByRole("option").length).toBeLessThan(30);
+  expect(screen.getByText("After file 0")).toBeTruthy();
+  const list = screen.getByRole("listbox");
+  fireEvent.scroll(list, { target: { scrollTop: 479_950 } });
+  expect(screen.getAllByRole("option").length).toBeLessThan(40);
+  fireEvent.click(screen.getByRole("option", { name: "docs/section-99/file-9999.md M" }));
+  fireEvent.keyDown(list, { key: "ArrowDown" });
+  const firstImage = screen.getByRole("option", { name: "static/image-0.png M" });
+  expect(firstImage.getAttribute("aria-selected")).toBe("true");
+  expect(list.getAttribute("aria-activedescendant")).toBe(firstImage.id);
+  expect(firstImage.getAttribute("aria-posinset")).toBe("10001");
+  expect(firstImage.getAttribute("aria-setsize")).toBe("20000");
+  fireEvent.keyDown(list, { key: "End" });
+  expect(
+    screen.getByRole("option", { name: "static/image-9999.png M" }).getAttribute("aria-selected"),
+  ).toBe("true");
+  expect(screen.getAllByRole("option").length).toBeLessThan(30);
+  fireEvent.keyDown(list, { key: "Home" });
+  expect(list.scrollTop).toBe(0);
   expect(screen.getByText("After file 0")).toBeTruthy();
 });
 

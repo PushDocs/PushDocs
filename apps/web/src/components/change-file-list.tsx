@@ -1,34 +1,75 @@
 "use client";
-import { FileText } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { File, FileText, Image } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ChangeFileGroup, ChangeFileKind } from "./change-file-groups";
 import type { ReviewFile } from "./change-review";
 
 const ROW_HEIGHT = 48;
+const GROUP_HEADER_HEIGHT = 40;
+const DEFAULT_VIEWPORT_HEIGHT = 480;
 const OVERSCAN = 6;
+const fileIcons = {
+  [ChangeFileKind.Article]: FileText,
+  [ChangeFileKind.Image]: Image,
+  [ChangeFileKind.Other]: File,
+};
 
 export function ChangeFileList({
-  files,
+  groups,
   selectedPath,
   onSelect,
 }: {
-  files: ReviewFile[];
+  groups: ChangeFileGroup<ReviewFile>[];
   selectedPath?: string;
   onSelect: (path: string) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const id = useId();
-  const [viewport, setViewport] = useState({ height: 480, top: 0 });
+  const [viewport, setViewport] = useState({ height: DEFAULT_VIEWPORT_HEIGHT, top: 0 });
+  const files = useMemo(() => groups.flatMap((group) => group.files), [groups]);
+  const layout = useMemo(() => {
+    let top = 0;
+    let index = 0;
+    return groups.map((group) => {
+      const height = GROUP_HEADER_HEIGHT + group.files.length * ROW_HEIGHT;
+      const position = { ...group, top, index, height };
+      top += height;
+      index += group.files.length;
+      return position;
+    });
+  }, [groups]);
+  const totalHeight = files.length * ROW_HEIGHT + groups.length * GROUP_HEADER_HEIGHT;
   const selectedIndex = files.findIndex((file) => file.path === selectedPath);
-  const maxTop = Math.max(0, files.length * ROW_HEIGHT - viewport.height);
+  const maxTop = Math.max(0, totalHeight - viewport.height);
   const top = Math.min(viewport.top, maxTop);
-  const start = Math.max(0, Math.floor(top / ROW_HEIGHT) - OVERSCAN);
-  const end = Math.min(files.length, Math.ceil((top + viewport.height) / ROW_HEIGHT) + OVERSCAN);
+  const ranges = layout.map((group) => {
+    const filesTop = group.top + GROUP_HEADER_HEIGHT;
+    return {
+      ...group,
+      start: Math.min(
+        group.files.length,
+        Math.max(0, Math.floor((top - filesTop) / ROW_HEIGHT) - OVERSCAN),
+      ),
+      end: Math.max(
+        0,
+        Math.min(
+          group.files.length,
+          Math.ceil((top + viewport.height - filesTop) / ROW_HEIGHT) + OVERSCAN,
+        ),
+      ),
+    };
+  });
+  const selectedMounted = ranges.some(
+    (group) =>
+      selectedIndex >= group.index + group.start && selectedIndex < group.index + group.end,
+  );
 
   useEffect(() => {
     const list = listRef.current;
     /* v8 ignore next -- the effect only runs after React attaches this rendered list ref. */
     if (!list) return;
-    const measure = () => setViewport({ height: list.clientHeight || 480, top: list.scrollTop });
+    const measure = () =>
+      setViewport({ height: list.clientHeight || DEFAULT_VIEWPORT_HEIGHT, top: list.scrollTop });
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
@@ -39,17 +80,22 @@ export function ChangeFileList({
   useEffect(() => {
     const list = listRef.current;
     if (!list || selectedIndex < 0) return;
-    const rowTop = selectedIndex * ROW_HEIGHT;
+    const group = layout.find(
+      (entry) => selectedIndex >= entry.index && selectedIndex < entry.index + entry.files.length,
+    );
+    if (!group) return;
+    const rowTop = group.top + GROUP_HEADER_HEIGHT + (selectedIndex - group.index) * ROW_HEIGHT;
+    const revealTop = selectedIndex === group.index ? group.top : rowTop;
     const height = list.clientHeight || viewport.height;
     const nextTop =
-      rowTop < list.scrollTop
-        ? rowTop
+      revealTop < list.scrollTop
+        ? revealTop
         : rowTop + ROW_HEIGHT > list.scrollTop + height
           ? rowTop + ROW_HEIGHT - height
           : list.scrollTop;
     list.scrollTop = nextTop;
     setViewport((value) => (value.top === nextTop ? value : { ...value, top: nextTop }));
-  }, [selectedIndex, viewport.height]);
+  }, [layout, selectedIndex, viewport.height]);
 
   return (
     <div
@@ -58,9 +104,7 @@ export function ChangeFileList({
       role="listbox"
       aria-label="Изменённые файлы"
       tabIndex={0}
-      aria-activedescendant={
-        selectedIndex >= start && selectedIndex < end ? `${id}-${selectedIndex}` : undefined
-      }
+      aria-activedescendant={selectedMounted ? `${id}-${selectedIndex}` : undefined}
       onScroll={(event) => {
         const scrollTop = event.currentTarget.scrollTop;
         setViewport((value) => ({ ...value, top: scrollTop }));
@@ -81,48 +125,71 @@ export function ChangeFileList({
         if (file) onSelect(file.path);
       }}
     >
-      <div className="change-file-list-space" style={{ height: files.length * ROW_HEIGHT }}>
-        {files.slice(start, end).map((file, offset) => {
-          const index = start + offset;
-          const separator = file.path.lastIndexOf("/");
-          const status = file.operation === "add" ? "A" : file.operation === "delete" ? "D" : "M";
+      <div className="change-file-list-space" role="presentation" style={{ height: totalHeight }}>
+        {ranges.map((group) => {
+          const Icon = fileIcons[group.kind];
           return (
-            <button
-              className="change-file-option"
-              type="button"
-              role="option"
-              id={`${id}-${index}`}
-              key={file.path}
-              tabIndex={-1}
-              aria-selected={file.path === selectedPath}
-              aria-label={`${file.path} ${status}`}
-              aria-posinset={index + 1}
-              aria-setsize={files.length}
-              title={file.path}
-              data-operation={file.operation}
-              style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT }}
-              onClick={() => {
-                onSelect(file.path);
-                listRef.current?.focus({ preventScroll: true });
-              }}
+            // biome-ignore lint/a11y/useSemanticElements: listbox option groups use ARIA group semantics.
+            <div
+              className="change-file-group"
+              key={group.kind}
+              role="group"
+              aria-labelledby={`${id}-${group.kind}`}
+              style={{ top: group.top, height: group.height }}
             >
-              <FileText aria-hidden size={16} />
-              <span>
-                <strong>{file.path.slice(separator + 1)}</strong>
-                {separator >= 0 ? <small>{file.path.slice(0, separator)}</small> : null}
-              </span>
-              <b
-                title={
-                  file.operation === "add"
-                    ? "Новый файл"
-                    : file.operation === "delete"
-                      ? "Удалён"
-                      : "Изменён"
-                }
-              >
-                {status}
-              </b>
-            </button>
+              <div className="change-file-group-heading" style={{ height: GROUP_HEADER_HEIGHT }}>
+                <strong id={`${id}-${group.kind}`}>{group.label}</strong>
+                <span>{group.files.length}</span>
+              </div>
+              {group.files.slice(group.start, group.end).map((file, offset) => {
+                const localIndex = group.start + offset;
+                const index = group.index + localIndex;
+                const separator = file.path.lastIndexOf("/");
+                const status =
+                  file.operation === "add" ? "A" : file.operation === "delete" ? "D" : "M";
+                return (
+                  <button
+                    className="change-file-option"
+                    type="button"
+                    role="option"
+                    id={`${id}-${index}`}
+                    key={file.path}
+                    tabIndex={-1}
+                    aria-selected={file.path === selectedPath}
+                    aria-label={`${file.path} ${status}`}
+                    aria-posinset={index + 1}
+                    aria-setsize={files.length}
+                    title={file.path}
+                    data-operation={file.operation}
+                    style={{
+                      top: GROUP_HEADER_HEIGHT + localIndex * ROW_HEIGHT,
+                      height: ROW_HEIGHT,
+                    }}
+                    onClick={() => {
+                      onSelect(file.path);
+                      listRef.current?.focus({ preventScroll: true });
+                    }}
+                  >
+                    <Icon aria-hidden size={16} />
+                    <span>
+                      <strong>{file.path.slice(separator + 1)}</strong>
+                      {separator >= 0 ? <small>{file.path.slice(0, separator)}</small> : null}
+                    </span>
+                    <b
+                      title={
+                        file.operation === "add"
+                          ? "Новый файл"
+                          : file.operation === "delete"
+                            ? "Удалён"
+                            : "Изменён"
+                      }
+                    >
+                      {status}
+                    </b>
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </div>

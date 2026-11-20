@@ -44,6 +44,56 @@ for (const small of [false, true]) {
   });
 }
 
+test("toggles system files and folders with the keyboard, restores the choice and fits every toolbar action at 200px", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1100, height: 640 });
+  await page.goto(`${fixture.url}/?workbench&system-folders`);
+  const toggle = page.getByRole("button", { name: "Показывать системные файлы и папки" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("treeitem", { name: ".pushdocs" })).toHaveCount(0);
+  await page.getByRole("treeitem", { name: "docs", exact: true }).click();
+  await expect(page.getByRole("treeitem", { name: "internal" })).toHaveCount(0);
+  await expect(page.getByRole("treeitem", { name: "public", exact: true })).toBeVisible();
+  await toggle.focus();
+  await toggle.press("Space");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("treeitem", { name: ".pushdocs" }).click();
+  await page.getByRole("treeitem", { name: "config.json" }).click();
+  await expect(page.locator(".wb-filebar")).toHaveText(".pushdocs/config.json");
+  await toggle.click();
+  await expect(page.getByRole("treeitem", { name: ".pushdocs" })).toHaveCount(0);
+  await expect(page.locator(".wb-filebar")).toHaveText(".pushdocs/config.json");
+  await toggle.click();
+  await page.getByRole("treeitem", { name: ".pushdocs" }).press("End");
+  await page.getByRole("treeitem", { name: "package.json", exact: true }).click();
+  await expect(page.locator(".wb-filebar")).toHaveText("package.json");
+  await toggle.click();
+  await expect(page.getByRole("treeitem", { name: "package.json", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("treeitem", { name: "package.json.backup", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".wb-filebar")).toHaveText("package.json");
+  await toggle.click();
+  await page.reload();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("treeitem", { name: ".pushdocs" })).toBeVisible();
+
+  const heading = page.locator(".wb-explorer-heading");
+  const headingBox = await heading.boundingBox();
+  expect((await page.locator(".wb-tree").boundingBox())?.width).toBe(200);
+  const buttons = heading.getByRole("button");
+  await expect(buttons).toHaveCount(6);
+  for (const button of await buttons.all()) {
+    const box = await button.boundingBox();
+    expect(box?.x).toBeGreaterThanOrEqual(headingBox?.x ?? 0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+      (headingBox?.x ?? 0) + (headingBox?.width ?? 0),
+    );
+  }
+  await page.screenshot({ path: testInfo.outputPath("system-folders-toolbar.png") });
+});
+
 for (const fallback of [false, true]) {
   test(`keeps ${fallback ? "fallback" : "Monaco"} scrolling after tab, mode and viewport changes`, async ({
     page,

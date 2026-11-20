@@ -1,25 +1,45 @@
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { z } from "zod";
 import { SettingsNavigation } from "@/components/settings-navigation";
+import { SettingsProjectPicker } from "@/components/settings-project-picker";
 import { mcpStore, resourceUri } from "@/lib/mcp/oauth";
-import { requireUser } from "@/lib/server";
+import { repository, requireUser } from "@/lib/server";
+import { settingsPath } from "@/lib/settings-path";
+import { settingsProjectChoices, settingsProjectId } from "@/lib/settings-project";
 
 async function revokeGrant(form: FormData) {
   "use server";
   const user = await requireUser();
   await mcpStore().revokeGrant(z.string().uuid().parse(form.get("grantId")), user.id);
-  revalidatePath("/settings/mcp");
+  revalidatePath(settingsPath("mcp"));
+  revalidatePath(settingsPath("mcp", "[projectId]"), "page");
 }
-export default async function McpSettingsPage() {
-  const user = await requireUser(),
-    endpoint = resourceUri(),
+export default async function McpSettingsPage({
+  params,
+}: {
+  params?: Promise<{ projectId?: string }>;
+} = {}) {
+  const user = await requireUser();
+  const projectId = (await params)?.projectId;
+  if (!projectId) {
+    const selected = await settingsProjectId(user);
+    if (selected) redirect(settingsPath("mcp", selected));
+  }
+  if (projectId) await repository().requireProjectAccess(user.id, projectId);
+  const endpoint = resourceUri(),
     grants = await mcpStore().grants(user.id);
   return (
     <section className="page narrow-page">
       <header className="page-header">
         <h1>MCP</h1>
       </header>
-      <SettingsNavigation active="mcp" canManageConnections={user.isInstanceOperator} />
+      <SettingsNavigation
+        projectId={projectId}
+        active="mcp"
+        canManageConnections={user.isInstanceOperator}
+      />
+      {!projectId ? <SettingsProjectPicker projects={await settingsProjectChoices(user)} /> : null}
       <p>
         Сервер доступен по адресу <code>{endpoint}</code>. Поддерживается MCP 2025-11-25 через
         Streamable HTTP.

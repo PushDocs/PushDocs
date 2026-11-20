@@ -422,7 +422,7 @@ test("review details keep labels, approval decisions and read-only comments with
 }, testInfo) => {
   await page.goto(`${baseURL}/?reviews`);
   await expect(page.getByRole("navigation", { name: "Список MR" })).toContainText(
-    "Не готов к слиянию",
+    "Нужны одобрения",
   );
   await expect(page.getByRole("region", { name: "Одобрения" })).toContainText(
     "Получено: 1 · Требуется: 2 · Осталось: 1",
@@ -495,6 +495,43 @@ test("unread badge updates live, clears when opened and remembers reads across r
   await second.close();
 });
 
+test("review creation uses a wide title input and adds links only to the description", async ({
+  page,
+}, testInfo) => {
+  await page.goto(`${baseURL}/?git-operation&create-review`);
+  const title = page.getByRole("textbox", { name: "Название MR", exact: true });
+  await title.fill("fix(sendsay-docs): update documentation and add detailed integration examples");
+  expect(await title.evaluate((field) => field.tagName)).toBe("INPUT");
+  const width = (await title.boundingBox())?.width ?? 0;
+  const viewportWidth = page.viewportSize()?.width ?? 0;
+  expect(width).toBeGreaterThanOrEqual(viewportWidth > 650 ? 700 : viewportWidth - 100);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    viewportWidth,
+  );
+  await expect(page.getByRole("button", { name: "Добавить ссылку" })).toHaveCount(1);
+  await page.getByRole("button", { name: "Добавить ссылку" }).click();
+  await expect(title).toHaveValue(
+    "fix(sendsay-docs): update documentation and add detailed integration examples",
+  );
+  await expect(page.getByRole("textbox", { name: "Описание MR (необязательно)" })).toHaveValue(
+    "[Текст]()",
+  );
+  const create = page.getByRole("button", { name: "Создать MR", exact: true });
+  const documents = page.getByRole("link", { name: "Открыть документы" });
+  await expect(documents).toHaveClass(/pd-button--secondary/);
+  const createBounds = await create.boundingBox();
+  const documentsBounds = await documents.boundingBox();
+  if (!createBounds || !documentsBounds) throw new Error("Review actions are not visible");
+  expect(createBounds.width).toBeLessThan(200);
+  expect(documentsBounds.width).toBeLessThan(200);
+  expect(documentsBounds.y).toBeCloseTo(createBounds.y);
+  expect(documentsBounds.x + documentsBounds.width).toBeLessThan(createBounds.x);
+  expect(createBounds.x + createBounds.width).toBeCloseTo(
+    await title.evaluate((field) => field.getBoundingClientRect().right),
+  );
+  await page.screenshot({ path: testInfo.outputPath("create-review-wide-title.png") });
+});
+
 test("submission opens from the branch toolbar and blocks duplicate sends while pending", async ({
   page,
 }, testInfo) => {
@@ -517,6 +554,15 @@ test("submission opens from the branch toolbar and blocks duplicate sends while 
   await page
     .getByRole("textbox", { name: "Название MR и сообщение коммита" })
     .fill("Update documentation");
+  const description = page.getByRole("textbox", { name: "Описание MR (необязательно)" });
+  await description.fill("Тикет: DOC-123\nКомментарий к изменениям");
+  await description.evaluate((field: HTMLTextAreaElement) => field.setSelectionRange(7, 14));
+  await page.getByRole("button", { name: "Добавить ссылку" }).click();
+  await expect(description).toBeFocused();
+  await page.keyboard.insertText("https://tracker.test/DOC-123");
+  await expect(description).toHaveValue(
+    "Тикет: [DOC-123](https://tracker.test/DOC-123)\nКомментарий к изменениям",
+  );
   await page.screenshot({ path: testInfo.outputPath("send-changes-dialog.png") });
   let release = () => {};
   const released = new Promise<void>((resolve) => {
@@ -535,9 +581,12 @@ test("submission opens from the branch toolbar and blocks duplicate sends while 
     createReview: "on",
     newBranch: "docs/update-12345678",
     message: "Update documentation",
+    description: "Тикет: [DOC-123](https://tracker.test/DOC-123)\nКомментарий к изменениям",
   });
   await expect(page.getByRole("button", { name: "Отправляем изменения…" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Закрыть", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Добавить ссылку" })).toBeDisabled();
+  await expect(description).toBeDisabled();
   release();
   await expect(page.getByRole("button", { name: "Отправить и создать MR" })).toBeEnabled();
 });

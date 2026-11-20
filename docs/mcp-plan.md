@@ -1,6 +1,6 @@
 # План MCP в PushDocs
 
-Обновлено 7 октября 2026 года. Обязательные клиенты: Codex и Claude Code.
+Обновлено 16 ноября 2026 года. Обязательные клиенты: Codex и Claude Code.
 
 ## Цель
 
@@ -90,6 +90,20 @@ Audit хранит пользователя через grant, OAuth client, tool
 
 Чтение: `list_projects`, `get_project`, `list_branches`, `list_documents`,
 `get_document`, `get_change_set`, `get_branch_changes`, `get_operation_status`.
+
+PR/MR: `list_open_reviews` читает живые открытые запросы с точным фильтром целевой
+ветки; `update_review_branch` обновляет одну проверенную ветку с немедленным push.
+Для массового запроса агент обходит все страницы, устраняет повторы веток и
+вызывает независимые идемпотентные операции, сохраняя индивидуальные результаты.
+
+Конфликты: `inspect_review_conflicts` ставит read-only проверку в очередь,
+`get_conflict_report` возвращает editorial/detailed evidence, ссылки по SHA,
+контекст и committer dates. `get_conflict_file` читает текстовые версии частями.
+Медиа в обоих режимах исключены из загрузки для анализа; проверяются идентичность,
+наличие и статические ссылки из ограниченного набора текстов обеих версий.
+`resolve_review_conflicts` собирает согласованные фрагменты поверх чистых секций
+и отправляет merge. `resume_conflict_resolution` возобновляет подготовленное
+решение после неопределённой отправки. Требуемый rebase этим решением не заменяется.
 
 Документы: `create_branch`, `create_document`, `update_document`,
 `plan_document_template`, `apply_document_template`.

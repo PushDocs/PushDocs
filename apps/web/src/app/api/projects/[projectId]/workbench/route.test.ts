@@ -228,7 +228,16 @@ it("validates new configuration before staging", async () => {
   };
   expect((await request(command)).status).toBe(400);
   expect(mocks.stage).not.toHaveBeenCalled();
-  command.files[0] = { path: ".pushdocs/config.json", content: '{"version":1}' };
+  command.files[0] = {
+    path: ".pushdocs/config.json",
+    content: '{"version":1,"fileExplorer":{"systemDirectories":["../secret"]}}',
+  };
+  expect((await request(command)).status).toBe(400);
+  expect(mocks.stage).not.toHaveBeenCalled();
+  command.files[0] = {
+    path: ".pushdocs/config.json",
+    content: '{"version":1,"fileExplorer":{"systemDirectories":[".pushdocs","src/theme"]}}',
+  };
   expect((await request(command)).status).toBe(200);
 });
 
@@ -369,6 +378,34 @@ it("searches article bodies only when the user asks for content search", async (
     ],
   });
   expect(mocks.provider).not.toHaveBeenCalled();
+});
+
+it("applies case-sensitive and whole-word search to unloaded article bodies", async () => {
+  const current = await mocks.context();
+  current.state.files = [
+    { path: "docs/lower.md", content: "письмо" },
+    { path: "docs/upper.md", content: "Письмо" },
+    { path: "docs/partial.md", content: "письмом" },
+  ];
+  mocks.context.mockResolvedValue(current);
+  for (const [options, paths] of [
+    ["", ["lower", "upper", "partial"]],
+    ["&wholeWord=true", ["lower", "upper"]],
+    ["&matchCase=true", ["lower", "partial"]],
+    ["&wholeWord=true&matchCase=true", ["lower"]],
+  ] as const) {
+    const response = await GET(
+      new Request(
+        `https://cms.test/api?branch=main&search=${encodeURIComponent("письмо")}${options}`,
+      ),
+      context,
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.results.map((item: { path: string }) => item.path)).toEqual(
+      paths.map((name) => `docs/${name}.md`),
+    );
+  }
 });
 
 it("returns no search results for blank or unmatched queries", async () => {
