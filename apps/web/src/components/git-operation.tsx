@@ -2,14 +2,19 @@
 import { Download, GitPullRequest, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
+import { GitCurrentStatus, GitFreshnessCheck, GitRemoteMissingStatus } from "./git-freshness";
 import { branchSyncLabels } from "./git-operation-labels";
 import { GitOperationKind } from "./git-operation-store";
 import { ReviewDescription } from "./review-description";
+import { useBranchFreshness } from "./use-branch-freshness";
 import { useGitOperation } from "./use-git-operation";
 
 export function GitOperation({
   projectId,
   branch,
+  headSha,
+  remoteHeadSha,
+  defaultBranch,
   reviewsOnly = false,
   createReview = false,
   reviewLabel = "PR / MR",
@@ -19,6 +24,9 @@ export function GitOperation({
   reviewsOnly?: boolean;
   projectId: string;
   branch: string;
+  headSha?: string;
+  remoteHeadSha?: string | null;
+  defaultBranch?: string;
   createReview?: boolean;
   reviewLabel?: string;
   disabled?: boolean;
@@ -42,6 +50,16 @@ export function GitOperation({
           ? `Состояние ${reviewLabel} обновлено`
           : `Ветка ${branch} обновлена из Git`,
   });
+  const freshness = useBranchFreshness({
+    projectId,
+    branch,
+    headSha,
+    remoteHeadSha,
+    defaultBranch,
+    enabled: !reviewsOnly && !createReview,
+  });
+  const upToDate = freshness.filesCurrent === true;
+  const isPull = !reviewsOnly && !createReview;
   const idleLabel = createReview
     ? `Создать ${reviewLabel}`
     : reviewsOnly
@@ -56,14 +74,16 @@ export function GitOperation({
     <button
       className={`pd-button pd-button--${createReview ? "primary" : "secondary"}`}
       type="submit"
-      disabled={busy || disabled}
+      disabled={busy || disabled || upToDate}
       aria-busy={busy}
       title={
         createReview
           ? undefined
           : reviewsOnly
             ? `Обновить статусы, проверки и обсуждения ${reviewLabel} из Git`
-            : `Получить свежую версию ${branch} из Git в PushDocs`
+            : upToDate
+              ? branchSyncLabels.current
+              : branchSyncLabels.description
       }
     >
       {busy ? (
@@ -84,7 +104,7 @@ export function GitOperation({
       className="git-operation"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (busy || disabled) return;
+        if (busy || disabled || (isPull && freshness.filesCurrent !== false)) return;
         await start({
           projectId,
           branch,
@@ -119,6 +139,16 @@ export function GitOperation({
           {children}
           {submitButton}
         </div>
+      ) : isPull && !busy && freshness.remoteMissing ? (
+        <GitRemoteMissingStatus />
+      ) : isPull && !busy && freshness.filesCurrent === null ? (
+        <GitFreshnessCheck
+          checking={freshness.checking}
+          disabled={disabled}
+          onCheck={freshness.refresh}
+        />
+      ) : isPull && !busy && upToDate ? (
+        <GitCurrentStatus branchCurrent={freshness.includesDefaultBranch === true} />
       ) : (
         submitButton
       )}
@@ -132,10 +162,10 @@ export function SubmissionRefresh({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return;
     const refresh = () => router.refresh();
-    const timer = setTimeout(refresh, 30_000);
+    const timer = setInterval(refresh, 30_000);
     window.addEventListener("online", refresh);
     return () => {
-      clearTimeout(timer);
+      clearInterval(timer);
       window.removeEventListener("online", refresh);
     };
   }, [active, router]);

@@ -24,6 +24,8 @@ export {
   type BranchUpdatePolicy,
   BranchUpdatePolicySource,
   BranchUpdateStrategy,
+  branchUpdateConflictOperationId,
+  branchUpdateConflictReference,
   branchUpdateJobKind,
   branchUpdateLimits,
   branchUpdateMessages,

@@ -5,7 +5,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { BranchConflictChoice, BranchUpdateStrategy } from "@pushdocs/contracts";
 import { afterEach, expect, it, vi } from "vitest";
-import { GitTransport, type GitTransportProgress, RebaseNeedsResolution } from "./git-transport";
+import {
+  GitTransport,
+  type GitTransportProgress,
+  MergeNeedsResolution,
+  RebaseNeedsResolution,
+} from "./git-transport";
 
 const exec = promisify(execFile);
 const directories: string[] = [];
@@ -384,6 +389,42 @@ async function conflictFixture(
   const snapshot = await transport.inspectConflicts({ branch: "docs/task", sourceBranch: "main" });
   return { ...data, transport, snapshot };
 }
+
+it(
+  "pauses a merge and reconstructs the same resolved commit after losing its Git cache",
+  async () => {
+    const data = await conflictFixture();
+    const input = {
+      branch: "docs/task",
+      sourceBranch: "main",
+      strategy: BranchUpdateStrategy.Merge,
+      createdAt: updateDate,
+      operationId: "merge-operation",
+    };
+    const paused = await data.transport.prepareUpdate(input).catch((error) => error);
+    expect(paused).toBeInstanceOf(MergeNeedsResolution);
+    if (!(paused instanceof MergeNeedsResolution)) throw new Error("Expected merge conflict");
+    const resolution = {
+      snapshot: paused.snapshot,
+      files: [{ path: "article.md", choice: BranchConflictChoice.Theirs }],
+    };
+    const prepared = await data.transport.prepareUpdate({ ...input, resolution });
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(paused.snapshot.parentSha);
+    const fresh = new GitTransport({
+      directory: path.join(data.directory, "fresh-merge"),
+      remote: data.remote,
+      allowLocal: true,
+    });
+    const recovered = await fresh.prepareUpdate({ ...input, prepared, resolution });
+    expect(recovered).toEqual(prepared);
+    expect(
+      await git(path.join(data.directory, "fresh-merge"), "show", `${recovered.sha}:article.md`),
+    ).toBe("# Theirs");
+    await fresh.publish(recovered);
+    expect(await git(data.remote, "rev-parse", "docs/task")).toBe(recovered.sha);
+  },
+  gitOperationTestTimeoutMs,
+);
 
 it(
   "counts received pack bytes, including lazy fetches, without exposing file contents",

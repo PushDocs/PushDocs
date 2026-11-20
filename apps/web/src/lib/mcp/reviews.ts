@@ -224,7 +224,9 @@ export class ReviewService {
         inspectionId: active.id,
         status: active.status,
         branch: live.review.sourceBranch,
-        comparisonKind: "rebase",
+        comparisonKind:
+          (active.payload as { strategy?: BranchUpdateStrategy } | undefined)?.strategy ??
+          branchUpdateStrategy(live.details),
         mediaPolicy: "metadata_only",
       };
     const operationId = await this.service.store.enqueueConflictInspection(
@@ -389,12 +391,23 @@ export class ReviewService {
       "branch:push",
     );
     const inspection = await this.inspection(input.projectId, input.inspectionId);
+    if (!inspection.externalReviewId)
+      throw new McpError(
+        "REVIEW_REQUIRED",
+        "Resolve this branch update in the PushDocs conflict editor.",
+      );
     const live = await this.liveReview(input.projectId, inspection.externalReviewId);
     const snapshot = inspection.snapshot;
     if (snapshot.rebase && input.conflictId !== snapshot.rebase.conflictId)
       throw new McpError(
         "REVISION_CONFLICT",
         "Read the current rebase report and pass its conflictId before resolving this commit.",
+        409,
+      );
+    if (snapshot.merge && input.conflictId !== snapshot.merge.conflictId)
+      throw new McpError(
+        "REVISION_CONFLICT",
+        "Read the current merge report and pass its conflictId before resolving.",
         409,
       );
     if (
@@ -426,13 +439,18 @@ export class ReviewService {
         409,
       );
     const files = branchConflictResolutionSchema.parse(conflictResolutions(snapshot, input.files));
-    if (snapshot.rebase)
+    if (snapshot.rebase || snapshot.merge) {
+      const conflict = snapshot.rebase ?? snapshot.merge;
+      if (!conflict) throw new McpError("REVISION_CONFLICT", "Conflict state is unavailable.", 409);
+      const continueUpdate = snapshot.rebase
+        ? this.service.store.continueRebaseUpdate.bind(this.service.store)
+        : this.service.store.continueMergeUpdate.bind(this.service.store);
       return {
         status: "queued",
-        operationId: await this.service.store.continueRebaseUpdate({
+        operationId: await continueUpdate({
           projectId: input.projectId,
           operationId: input.inspectionId,
-          conflictId: snapshot.rebase.conflictId,
+          conflictId: conflict.conflictId,
           files,
           userId: this.service.userId,
           oauthGrantId: this.grantId,
@@ -441,6 +459,7 @@ export class ReviewService {
         branch: snapshot.branch,
         affectedFiles: files.map((file) => file.path),
       };
+    }
     const result = await this.queueWithAdvice(input.projectId, snapshot.branch, () =>
       this.service.store.queueConflictMerge({
         projectId: input.projectId,

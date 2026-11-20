@@ -21,6 +21,7 @@ for (const merge of [false, true]) {
     });
     await page.route("**/fixture/git/status?*", (route) => route.fulfill({ json: { status } }));
     await page.goto(`${fixture.url}/?git-operation${merge ? "&merge" : ""}`);
+    await expect(page.getByRole("button", { name: "Обновить файлы", exact: true })).toBeVisible();
     const geometry = () =>
       page
         .locator(
@@ -34,10 +35,10 @@ for (const merge of [false, true]) {
         );
     const before = await geometry();
     if (merge) {
-      await page.getByText("Влить stable…").click();
-      await page.getByRole("button", { name: "Влить в docs/task" }).click();
+      await page.getByText("Обновить ветку…").click();
+      await page.getByRole("button", { name: "Обновить ветку" }).click();
     } else {
-      await page.getByRole("button", { name: "Обновить из Git", exact: true }).click();
+      await page.getByRole("button", { name: "Обновить файлы", exact: true }).click();
     }
     await expect(page.getByRole("button", { name: "Обновляем ветку…" })).toBeDisabled();
     expect(await geometry()).toEqual(before);
@@ -49,13 +50,110 @@ for (const merge of [false, true]) {
     expect(starts).toBe(1);
 
     status = "done";
-    await expect(page.getByRole("button", { name: "Обновить из Git", exact: true })).toBeEnabled();
-    await expect(page.getByRole("status")).toContainText(merge ? "влита" : "обновлена");
+    await expect(page.getByRole("button", { name: "Обновить файлы", exact: true })).toBeEnabled();
+    await expect(page.getByRole("status")).toContainText("обновлена");
     expect(await geometry()).toEqual(before);
     await page.getByRole("button", { name: "Закрыть уведомление" }).click();
     await expect(page.getByRole("status")).toHaveCount(0);
     expect(await geometry()).toEqual(before);
   });
+}
+
+test("uses an icon for unknown freshness, then shows status or only necessary actions", async ({
+  page,
+}, testInfo) => {
+  let data: { remoteSha: string | null; includesDefaultBranch: boolean | null } | null = null;
+  let starts = 0;
+  await page.route("**/api/projects/project/branch-freshness?*", (route) =>
+    route.fulfill(
+      data
+        ? {
+            json: {
+              ...data,
+              defaultBranch: "stable",
+              defaultHeadSha: "base-head",
+            },
+          }
+        : { status: 503 },
+    ),
+  );
+  await page.route("**/fixture/git/start", (route) => {
+    starts++;
+    return route.fulfill({ json: { id: "unexpected-job" } });
+  });
+  await page.goto(`${fixture.url}/?git-operation&merge`);
+  const check = page.getByRole("button", { name: "Проверить обновления" });
+  await expect(check).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Обновить файлы", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Обновить ветку…")).toHaveCount(0);
+  data = { remoteSha: "installed", includesDefaultBranch: true };
+  await check.click();
+  await expect(page.getByRole("status")).toHaveText("Ветка актуальна");
+  await expect(page.locator(".wb-branch-operations button")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("branch-current.png") });
+  data = { remoteSha: "installed", includesDefaultBranch: false };
+  await page.getByRole("button", { name: "Другой раздел" }).click();
+  await page.getByRole("button", { name: "Документы", exact: true }).click();
+  await expect(page.getByText("Обновить ветку…")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Обновить файлы", exact: true })).toHaveCount(0);
+  expect(starts).toBe(0);
+});
+
+for (const state of ["merged", "closed"]) {
+  for (const reviewsPage of [false, true]) {
+    test(`shows the ${state} MR on ${reviewsPage ? "Reviews" : "Changes"} without a creation prompt`, async ({
+      page,
+    }, testInfo) => {
+      let missing = false;
+      await page.route("**/api/projects/project/branch-freshness?*", (route) =>
+        route.fulfill(
+          missing
+            ? {
+                json: {
+                  remoteSha: null,
+                  defaultBranch: "stable",
+                  defaultHeadSha: "base",
+                  includesDefaultBranch: null,
+                },
+              }
+            : { status: 503 },
+        ),
+      );
+      await page.goto(
+        `${fixture.url}/?git-operation&completed-review=${state}${reviewsPage ? "&review-status" : ""}`,
+      );
+      const label = `MR ${state === "merged" ? "влит" : "закрыт"}`;
+      if (reviewsPage) {
+        const notice = page.getByRole("note", { name: "MR текущей ветки" });
+        await expect(notice).toContainText(
+          state === "merged" ? "влит в stable" : "закрыт без слияния",
+        );
+        await expect(notice.getByRole("link", { name: "К изменениям" })).toHaveCount(0);
+        if (state === "merged") await expect(notice).toHaveCSS("color", "rgb(22, 112, 76)");
+      } else {
+        await expect(page.getByRole("heading", { name: label })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Проверить обновления" })).toBeEnabled();
+        missing = true;
+        await page.getByRole("button", { name: "Проверить обновления" }).click();
+        await expect(page.getByRole("status")).toHaveText("Ветка удалена из Git");
+        await expect(page.getByRole("button", { name: "Проверить обновления" })).toHaveCount(0);
+        if (state === "merged")
+          await expect(page.locator(".empty-state > svg")).toHaveCSS("color", "rgb(22, 112, 76)");
+      }
+      await expect(page.getByRole("link", { name: "Открыть MR", exact: true })).toHaveAttribute(
+        "href",
+        "https://git.example/review/818",
+      );
+      await expect(page.getByRole("button", { name: "Создать MR" })).toHaveCount(0);
+      await expect(page.getByRole("textbox")).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        await page.evaluate(() => window.innerWidth),
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`${state}-${reviewsPage ? "reviews" : "changes"}.png`),
+      });
+    });
+  }
 }
 
 test("restores MR refresh after leaving while its start request is pending", async ({ page }) => {

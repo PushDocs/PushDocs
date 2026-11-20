@@ -1,0 +1,56 @@
+[
+  {
+    "width": 1280,
+    "before": {
+      "gap": 0,
+      "scrollWidth": 1280,
+      "width": 1280
+    },
+    "idle": {
+      "gap": 20,
+      "scrollWidth": 1280,
+      "width": 1280
+    },
+    "success": {
+      "gap": 20,
+      "scrollWidth": 1280,
+      "width": 1280
+    }
+  },
+  {
+    "width": 650,
+    "before": {
+      "gap": 0,
+      "scrollWidth": 650,
+      "width": 650
+    },
+    "idle": {
+      "gap": 20,
+      "scrollWidth": 650,
+      "width": 650
+    },
+    "success": {
+      "gap": 20,
+      "scrollWidth": 650,
+      "width": 650
+    }
+  },
+  {
+    "width": 390,
+    "before": {
+      "gap": 0,
+      "scrollWidth": 390,
+      "width": 390
+    },
+    "idle": {
+      "gap": 20,
+      "scrollWidth": 390,
+      "width": 390
+    },
+    "success": {
+      "gap": 20,
+      "scrollWidth": 390,
+      "width": 390
+    }
+  }
+]

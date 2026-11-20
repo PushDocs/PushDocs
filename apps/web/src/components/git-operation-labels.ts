@@ -1,6 +1,11 @@
 export const branchSyncLabels = {
-  idle: "Обновить из Git",
+  idle: "Обновить файлы",
   busy: "Обновляем ветку…",
+  current: "Файлы актуальны",
+  branchCurrent: "Ветка актуальна",
+  check: "Проверить обновления",
+  remoteMissing: "Ветка удалена из Git",
+  description: "Загрузить изменения текущей ветки",
 } as const;
 
 export function gitRetryMessage(attempt: number, maxAttempts: number, queued: boolean) {

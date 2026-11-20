@@ -93,6 +93,7 @@ function fixture() {
     enqueueConflictInspection: vi.fn().mockResolvedValue("inspection"),
     getActiveReviewBranchUpdate: vi.fn(),
     continueRebaseUpdate: vi.fn().mockResolvedValue("rebase-job"),
+    continueMergeUpdate: vi.fn().mockResolvedValue("merge-job"),
     queueConflictMerge: vi.fn().mockResolvedValue("resolve-job"),
     getBranchConflictBlockers: vi.fn().mockResolvedValue({ paths: [], busy: false }),
     getMcpConflictInspection: vi.fn().mockResolvedValue({
@@ -114,6 +115,62 @@ beforeEach(() => {
 });
 
 describe("live review operations", () => {
+  it("reports and continues a paused merge on the same operation with renewed OAuth", async () => {
+    const f = fixture();
+    const snapshot = {
+      ...f.snapshot,
+      merge: { operationId: "merge-job", conflictId: "merge-token" },
+    };
+    f.store.getMcpConflictInspection.mockResolvedValue({
+      status: "needs_resolution",
+      snapshot,
+      externalReviewId: "814",
+      targetKey: branchConflictRepositoryKey(target),
+    });
+    f.store.getActiveReviewBranchUpdate.mockResolvedValue({
+      id: "merge-job",
+      status: "needs_resolution",
+      payload: { strategy: "merge" },
+    } as never);
+    expect(
+      await f.service.inspect({ projectId: "project", reviewId: "814", refresh: true }),
+    ).toMatchObject({ operationId: "merge-job", comparisonKind: "merge" });
+    expect(
+      await f.service.report({
+        projectId: "project",
+        inspectionId: "merge-job",
+        mode: ConflictReportMode.Editorial,
+        offset: 0,
+        limit: 5,
+        fragmentOffset: 0,
+      }),
+    ).toMatchObject({ merge: snapshot.merge });
+    await expect(
+      f.service.resolve({
+        projectId: "project",
+        inspectionId: "merge-job",
+        files: [{ path: "docs/a.md", choice: "branch" }],
+      }),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(
+      await f.service.resolve({
+        projectId: "project",
+        inspectionId: "merge-job",
+        conflictId: "merge-token",
+        files: [{ path: "docs/a.md", choice: "branch" }],
+      }),
+    ).toMatchObject({ operationId: "merge-job" });
+    expect(f.store.continueMergeUpdate).toHaveBeenCalledWith({
+      projectId: "project",
+      operationId: "merge-job",
+      conflictId: "merge-token",
+      files: [{ path: "docs/a.md", choice: "ours" }],
+      userId: "user",
+      oauthGrantId: "grant",
+    });
+    expect(f.store.queueConflictMerge).not.toHaveBeenCalled();
+    expect(f.store.continueRebaseUpdate).not.toHaveBeenCalled();
+  });
   it("reports the actual paused commit and continues the same rebase using an exact conflict token", async () => {
     const f = fixture();
     const snapshot = {

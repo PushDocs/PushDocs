@@ -12,6 +12,7 @@ import { resolvedBranchUpdatePolicy } from "../../../tests/fixtures/branch-updat
 import {
   BranchMergeConflictError,
   type GitTransport,
+  MergeNeedsResolution,
   RebaseNeedsResolution,
 } from "./git-transport";
 import {
@@ -105,6 +106,7 @@ function repository(): WorkerRepository {
     savePreparedBranchMerge: vi.fn(),
     savePreparedBranchUpdate: vi.fn(),
     pauseRebaseUpdate: vi.fn(),
+    pauseMergeUpdate: vi.fn(),
     getActiveConflictMerge: vi.fn(),
     saveConflictInspection: vi.fn(),
     findConflictInspection: vi.fn(),
@@ -1746,6 +1748,7 @@ describe("job execution and review polling", () => {
         { name: "main", sha: "head" },
         { name: "docs/new", sha: "head" },
       ]);
+    vi.mocked(client.createBranch).mockResolvedValue({ name: "docs/new", sha: "head" });
     await createWorkerService({
       createProvider: () => client,
       decryptSecret: () => "token",
@@ -1772,6 +1775,45 @@ describe("job execution and review polling", () => {
     expect(vi.mocked(port.updateJobProgress).mock.invocationCallOrder[2]).toBeLessThan(
       vi.mocked(port.replaceImportedDocuments).mock.invocationCallOrder[0] ?? 0,
     );
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+  });
+
+  it("imports a created branch by its returned SHA while the branch list is stale", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob).mockResolvedValueOnce({
+      attempts: 1,
+      id: "job",
+      kind: "branch.create",
+      payload: {
+        branch: "docs/new",
+        projectId: "project",
+        sourceBranch: "main",
+        sourceSha: "head",
+        userId: "actor",
+      },
+    } as never);
+    vi.mocked(client.createBranch).mockResolvedValue({ name: "docs/new", sha: "head" });
+    vi.mocked(client.listFiles).mockResolvedValue(["docs/a.md"]);
+    await createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    }).runJob();
+    expect(client.listBranches).toHaveBeenCalledTimes(1);
+    expect(client.listFiles).toHaveBeenCalledWith("42", "head");
+    expect(client.readFile).toHaveBeenCalledWith("42", "head", "docs/a.md");
+    expect(port.ensureBranches).toHaveBeenCalledWith("project", [
+      { name: "docs/new", sha: "head" },
+    ]);
+    expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+      "project",
+      "docs/new",
+      "head",
+      [expect.objectContaining({ path: "docs/a.md", content: "# Document" })],
+      ["docs/a.md"],
+    );
+    expect(port.failJob).not.toHaveBeenCalled();
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
 
@@ -2323,6 +2365,145 @@ describe("MCP worker authorization and review metadata", () => {
 });
 
 describe("updating a review branch inside PushDocs", () => {
+  function branchOnlySetup(strategy: BranchUpdateStrategy) {
+    const f = setup(strategy);
+    Object.assign(f.payload, {
+      branchOnly: true,
+      reviewId: undefined,
+      externalReviewId: undefined,
+      sourceBranch: "main",
+      repositoryKey: branchConflictRepositoryKey(submissionTarget),
+      updatePolicy: resolvedBranchUpdatePolicy({ strategy, targetSha: "main-head" }),
+    });
+    Object.assign(f.prepared, { sourceBranch: "main", sourceSha: "main-head" });
+    vi.mocked(f.client.listChangeRequests).mockResolvedValue([]);
+    return f;
+  }
+
+  it.each([BranchUpdateStrategy.Merge, BranchUpdateStrategy.Rebase])(
+    "updates without a review using %s",
+    async (strategy) => {
+      const f = branchOnlySetup(strategy);
+      await f.service.runJob();
+      expect(f.transport.publish).toHaveBeenCalledExactlyOnceWith(f.prepared);
+      expect(f.port.completeJob).toHaveBeenCalledWith("update-job", 1);
+      expect(f.client.getChangeRequestDetails).not.toHaveBeenCalled();
+      expect(f.client.ensureChangeRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([BranchUpdateStrategy.Merge, BranchUpdateStrategy.Rebase])(
+    "pauses conflicts without a review using %s",
+    async (strategy) => {
+      const f = branchOnlySetup(strategy);
+      const snapshot: BranchConflictSnapshot = {
+        branch: "docs/task",
+        sourceBranch: "main",
+        parentSha: "task-head",
+        sourceSha: "main-head",
+        files: [
+          {
+            path: "docs/a.md",
+            kind: "text",
+            baseContent: "Base",
+            oursContent: "Ours",
+            theirsContent: "Theirs",
+            oursExists: true,
+            theirsExists: true,
+          },
+        ],
+      };
+      if (strategy === BranchUpdateStrategy.Merge) {
+        snapshot.merge = { operationId: "update-job", conflictId: "merge-token" };
+        f.transport.prepareUpdate.mockRejectedValueOnce(new MergeNeedsResolution(snapshot));
+      } else {
+        snapshot.rebase = {
+          operationId: "update-job",
+          conflictId: "rebase-token",
+          commitSha: "task-head",
+          currentParentSha: "main-head",
+          originalParentSha: "base",
+          index: 1,
+          total: 1,
+          title: "Edit",
+        };
+        f.transport.prepareUpdate.mockRejectedValueOnce(
+          new RebaseNeedsResolution(
+            {
+              version: branchUpdateLimits.version,
+              branch: "docs/task",
+              sourceBranch: "main",
+              parentSha: "task-head",
+              sourceSha: "main-head",
+              originals: ["task-head"],
+              commits: [],
+              resolutions: [],
+            },
+            snapshot,
+          ),
+        );
+      }
+      await f.service.runJob();
+      expect(
+        strategy === BranchUpdateStrategy.Merge
+          ? f.port.pauseMergeUpdate
+          : f.port.pauseRebaseUpdate,
+      ).toHaveBeenCalled();
+      expect(f.port.completeJob).not.toHaveBeenCalled();
+      expect(f.port.failJob).not.toHaveBeenCalled();
+      expect(f.transport.publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["head", "default", "repository", "policy", "access"])(
+    "rejects a branch-only update after %s changes",
+    async (change) => {
+      const f = branchOnlySetup(BranchUpdateStrategy.Merge);
+      if (change === "head")
+        vi.mocked(f.client.listBranches).mockResolvedValue([
+          { name: "main", sha: "main-head" },
+          { name: "docs/task", sha: "new-head" },
+        ]);
+      if (change === "default")
+        vi.mocked(f.port.getProjectSyncTarget).mockResolvedValue({
+          ...submissionTarget,
+          default_branch: "release",
+        } as never);
+      if (change === "repository") Object.assign(f.payload, { repositoryKey: "other" });
+      if (change === "policy")
+        vi.mocked(f.client.getRepository).mockResolvedValue({
+          defaultUpdateStrategy: BranchUpdateStrategy.Rebase,
+        } as never);
+      if (change === "access")
+        vi.mocked(f.port.requireProjectAccess).mockRejectedValue(new Error("Access denied"));
+      await f.service.runJob();
+      expect(f.transport.publish).not.toHaveBeenCalled();
+      expect(f.port.failJob).toHaveBeenCalled();
+    },
+  );
+
+  it("passes the accepted merge resolution when continuing without a review", async () => {
+    const f = branchOnlySetup(BranchUpdateStrategy.Merge);
+    const snapshot = {
+      branch: "docs/task",
+      sourceBranch: "main",
+      parentSha: "task-head",
+      sourceSha: "main-head",
+      files: [],
+    };
+    Object.assign(f.payload, {
+      targetKey: branchConflictRepositoryKey(submissionTarget),
+      resolutionSnapshot: snapshot,
+      resolutionFiles: [{ path: "docs/a.md", choice: "ours" }],
+    });
+    await f.service.runJob();
+    expect(f.transport.prepareUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resolution: { snapshot, files: [{ path: "docs/a.md", choice: "ours" }] },
+      }),
+    );
+    expect(f.transport.publish).toHaveBeenCalled();
+  });
   it("releases a paused rebase reservation when its target branch disappears before publication", async () => {
     const f = setup();
     Object.assign(f.payload, { targetKey: branchConflictRepositoryKey(submissionTarget) });

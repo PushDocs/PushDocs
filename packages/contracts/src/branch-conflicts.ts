@@ -119,6 +119,7 @@ export interface BranchConflictFile {
 }
 
 export interface BranchConflictSnapshot {
+  merge?: { operationId: string; conflictId: string };
   rebase?: {
     operationId: string;
     conflictId: string;

@@ -34,8 +34,11 @@ it("requires confirmation and leaves drafts unchanged on cancel", () => {
   writeDraft(key, "draft", "base");
   render(<RevertFile {...props} />);
   confirm();
-  expect(screen.getByRole("region", { name: "Подтверждение отката" }).textContent).toContain(
-    "docs/a.md",
+  expect(screen.getByRole("dialog", { name: "Подтверждение отката" }).textContent).toContain(
+    "Откатить весь файл?",
+  );
+  expect(screen.getByRole("dialog", { name: "Подтверждение отката" }).textContent).not.toContain(
+    props.path,
   );
   fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
   expect(mocks.fetch).not.toHaveBeenCalled();
@@ -113,7 +116,7 @@ it.each([
 ] as const)("explains the rollback for %s / %s", (existed, operation, message) => {
   render(<RevertFile {...props} existed={existed} operation={operation} />);
   confirm();
-  expect(screen.getByRole("region", { name: "Подтверждение отката" }).textContent).toContain(
+  expect(screen.getByRole("dialog", { name: "Подтверждение отката" }).textContent).toContain(
     message,
   );
 });

@@ -33,7 +33,8 @@ export default async function ReviewsPage({
   const store = repository();
   const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
-  const reviews = await store.listChangeRequests(projectId, "open");
+  const allReviews = await store.listChangeRequests(projectId);
+  const reviews = allReviews.filter((review) => review.state === "open");
   const selected =
     reviews.find((review) => review.id === query.review) ??
     reviews.find((review) => review.source_branch === query.branch) ??
@@ -116,15 +117,22 @@ export default async function ReviewsPage({
         projectId={projectId}
         defaultBranch={project.defaultBranch}
         reviewLabel={reviewLabel}
-        reviewBranches={reviews
-          .filter((review) => review.details?.source?.isFork !== true)
-          .map((review) => review.source_branch)}
+        branchReviews={allReviews.map((review) => ({
+          external_id: review.external_id,
+          source_branch: review.source_branch,
+          target_branch: review.target_branch,
+          state: review.state,
+          title: review.title,
+          provider_url: review.provider_url,
+          source_branch_is_local: review.source_branch_is_local,
+          details: review.details ? { source: review.details.source } : null,
+        }))}
       />
       {reviews.length === 0 ? (
         <section className="empty-state">
           <GitPullRequest aria-hidden />
           <h2>Нет открытых {reviewLabel}</h2>
-          <p>После создания {reviewLabel} здесь появятся его состояние и результаты проверок.</p>
+          <p>Здесь отображаются открытые {reviewLabel} проекта и результаты их проверок.</p>
         </section>
       ) : (
         <div className="reviews-layout">

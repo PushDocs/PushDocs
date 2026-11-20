@@ -55,7 +55,7 @@ beforeEach(() => {
     target: { provider_repository_id: "42" },
     provider: { createBranch: mocks.create },
     state: {
-      branch: { head_commit_sha: "sha", repository_paths: [] },
+      branch: { head_commit_sha: "sha", remote_head_sha: "remote-sha", repository_paths: [] },
       files: [],
       changeSet: { revision: 7, status: "open", id: "change" },
     },
@@ -78,7 +78,13 @@ it("returns branch state without caching or credentials", async () => {
   const response = await GET(new Request("https://cms.test/api?branch=main"), context);
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   const data = await response.json();
-  expect(data).toMatchObject({ revision: 7, changeSetId: "change", sha: "sha", role: "editor" });
+  expect(data).toMatchObject({
+    revision: 7,
+    changeSetId: "change",
+    sha: "sha",
+    remoteHeadSha: "remote-sha",
+    role: "editor",
+  });
   expect(data.provider).toBeUndefined();
   expect(data.uploads).toEqual([{ path: "static/img/new.png" }]);
 });
