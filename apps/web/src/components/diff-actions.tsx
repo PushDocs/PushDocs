@@ -1,8 +1,8 @@
 "use client";
 
-import { PencilLine, RotateCcw, Undo2 } from "lucide-react";
+import { PencilLine, Undo2 } from "lucide-react";
 import Link from "next/link";
-import { diffRevertLabels } from "./text-diff";
+import { type DiffRevertHandler, diffRevertLabels } from "./text-diff";
 
 export function DiffActions({
   lineIds,
@@ -14,7 +14,7 @@ export function DiffActions({
   lineIds: number[];
   hunkIds: number[];
   editHref?: string;
-  onRevert?: (ids: number[]) => void;
+  onRevert?: DiffRevertHandler;
   disabled?: boolean;
 }) {
   return (
@@ -34,20 +34,20 @@ export function DiffActions({
           title={diffRevertLabels.line}
           aria-label={diffRevertLabels.line}
           disabled={disabled}
-          onClick={() => onRevert(lineIds)}
+          onClick={(event) => onRevert(lineIds, event.currentTarget)}
         >
           <Undo2 size={14} aria-hidden />
         </button>
       ) : null}
-      {onRevert && hunkIds.length > lineIds.length ? (
+      {onRevert && !lineIds.length && hunkIds.length ? (
         <button
           type="button"
           title={diffRevertLabels.hunk}
           aria-label={diffRevertLabels.hunk}
           disabled={disabled}
-          onClick={() => onRevert(hunkIds)}
+          onClick={(event) => onRevert(hunkIds, event.currentTarget)}
         >
-          <RotateCcw size={14} aria-hidden />
+          <Undo2 size={14} aria-hidden />
         </button>
       ) : null}
     </fieldset>

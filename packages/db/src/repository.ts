@@ -3228,6 +3228,7 @@ export class PushDocsRepository extends SecurityRepository {
     userId: string;
     expectedRevision: number;
     expectedHeadSha?: string;
+    expectedChangeSetId?: string;
     files: Array<{ path: string; content?: string | null; revert?: boolean; createOnly?: boolean }>;
   }): Promise<{ changeSetId: string; revision: number }> {
     await this.requireProjectAccess(input.userId, input.projectId, "document:write");
@@ -3271,6 +3272,7 @@ export class PushDocsRepository extends SecurityRepository {
         .executeTakeFirst();
       if (
         (changeSet?.revision ?? 0) !== input.expectedRevision ||
+        (input.expectedChangeSetId !== undefined && changeSet?.id !== input.expectedChangeSetId) ||
         (changeSet && changeSet.status !== "open")
       )
         throw new RevisionConflictError("Набор изменений обновился. Перечитайте страницу.");

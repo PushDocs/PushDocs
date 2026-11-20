@@ -1,3 +1,19 @@
+.pd-popover-positioner {
+  z-index: 100;
+}
+.pd-popover {
+  width: min(var(--popover-width, 360px), calc(100vw - 16px));
+  max-height: var(--available-height);
+  overflow: auto;
+  padding: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
 .pd-button {
   align-items: center;
   border: 1px solid var(--line-strong);

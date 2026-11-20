@@ -26,8 +26,13 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
-const revert = () =>
+const choose = () =>
   fireEvent.click(screen.getAllByRole("button", { name: "Откатить строку" })[0] as HTMLElement);
+const confirm = () => fireEvent.click(screen.getByRole("button", { name: "Подтвердить откат" }));
+const revert = () => {
+  choose();
+  confirm();
+};
 
 it("saves only the clicked hunk, clears its matching recovery copy and refreshes", async () => {
   writeDraft(key, props.after, props.before);
@@ -73,7 +78,7 @@ it("keeps the diff and draft on failure and permits retry", async () => {
   expect((await screen.findByRole("alert")).textContent).toBe("Не удалось откатить строки.");
   expect(readDraft(key)?.text).toBe(props.after);
   expect(mocks.router.refresh).not.toHaveBeenCalled();
-  revert();
+  confirm();
   await screen.findByText("Фрагмент отменён.");
 });
 
@@ -91,8 +96,33 @@ it("blocks all hunk controls during the request and after a revision conflict", 
   }
   await act(async () => resolve(Response.json({ error: "conflict" }, { status: 409 })));
   expect((await screen.findByRole("alert")).textContent).toContain("Изменения обновились");
-  revert();
+  expect(screen.getAllByRole("button", { name: "Откатить строку" })[0]).toHaveProperty(
+    "disabled",
+    true,
+  );
   expect(mocks.fetch).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole("button", { name: "Обновить" }));
   expect(mocks.router.refresh).toHaveBeenCalledOnce();
 });
+
+it("requires a second click and cancels without changing the draft", () => {
+  writeDraft(key, props.after, props.before);
+  render(<RevertDiff {...props} />);
+  choose();
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+  expect(screen.queryByLabelText("Подтверждение отката")).toBeNull();
+  expect(readDraft(key)?.text).toBe(props.after);
+});
+
+it.each([{ revision: 8 }, { headSha: "updated-head" }])(
+  "invalidates an outdated confirmation: %j",
+  (update) => {
+    const view = render(<RevertDiff {...props} />);
+    choose();
+    view.rerender(<RevertDiff {...props} {...update} />);
+    expect(screen.queryByRole("button", { name: "Подтвердить откат" })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Изменения обновились");
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  },
+);

@@ -4028,6 +4028,38 @@ describe("working tree projection", () => {
       "Branch not found",
     );
   });
+  it("rejects a replaced change set even when its revision matches", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: "# Changed" }],
+    };
+    const saved = await repository.stageFiles(input);
+    await expect(
+      repository.stageFiles({
+        ...input,
+        expectedRevision: saved.revision,
+        expectedChangeSetId: "another-set",
+        files: [{ path: "docs/intro.md", content: "# Restored" }],
+      }),
+    ).rejects.toThrow(RevisionConflictError);
+    expect(
+      (await repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"))?.content,
+    ).toBe("# Changed");
+    await repository.stageFiles({
+      ...input,
+      expectedRevision: saved.revision,
+      expectedChangeSetId: saved.changeSetId,
+      files: [{ path: "docs/intro.md", content: "# Restored" }],
+    });
+    expect(
+      (await repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"))?.content,
+    ).toBe("# Restored");
+  });
+
   it("rejects malformed operations and collisions without partial application", async () => {
     const fixture = await synchronizedProject();
     const input = {

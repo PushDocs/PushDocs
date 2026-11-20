@@ -1540,6 +1540,8 @@
   max-height: 70vh;
 }
 .wb-diff-code {
+  --diff-action-left: 60px;
+  --diff-text-left: 120px;
   min-width: 100%;
   width: max-content;
   font:
@@ -1556,6 +1558,7 @@
 }
 .wb-diff-row,
 .wb-diff-pair,
+.wb-diff-hunk,
 .wb-monaco-diff {
   position: relative;
 }
@@ -1574,7 +1577,7 @@
 }
 .wb-diff-actions {
   position: absolute;
-  left: 0;
+  left: var(--diff-action-left, 0px);
   top: 0;
   z-index: 5;
   display: flex;
@@ -1589,8 +1592,9 @@
   opacity: 0;
   pointer-events: none;
 }
-.wb-diff-row:hover > .wb-diff-actions,
-.wb-diff-pair:hover > .wb-diff-actions,
+.wb-diff-hunk[data-active="true"] > .wb-diff-actions,
+.wb-diff-reverted-block:hover .wb-diff-actions,
+.wb-diff-reverted-block:focus-within .wb-diff-actions,
 .wb-diff-actions:focus-within,
 .wb-diff-hover-actions .wb-diff-actions {
   opacity: 1;
@@ -1600,9 +1604,49 @@
   position: absolute;
   left: 0;
   z-index: 10;
+  transform: translateX(calc(-100% - 4px));
 }
 .wb-diff-hover-actions .wb-diff-actions {
   position: static;
+}
+.wb-diff-reverted-block {
+  position: relative;
+  background: var(--surface-muted, #ececf0);
+}
+.wb-diff-reverted-line {
+  background: var(--surface-muted, #ececf0);
+}
+.wb-diff-reverted-empty {
+  z-index: 1;
+  pointer-events: auto;
+  background: var(--surface-muted, #ececf0);
+  color: var(--ink-muted);
+  padding: 0 8px;
+  font:
+    12px / 23px ui-monospace,
+    monospace;
+}
+.wb-reverted-actions {
+  position: absolute;
+  left: calc(var(--diff-text-left, 96px) - 34px);
+  top: 0;
+  z-index: 10;
+}
+.wb-diff-hover-actions > .wb-reverted-actions {
+  position: static;
+}
+.wb-diff-reverted-block .wb-diff-reverted-empty {
+  padding-left: var(--diff-text-left);
+}
+.wb-reverted-actions .wb-diff-actions {
+  position: static;
+}
+.wb-reverted-actions [role="alert"] {
+  max-width: 300px;
+  margin: 0;
+  padding: 8px;
+  background: var(--paper);
+  color: var(--danger);
 }
 .wb-diff-code[data-actions="true"] .wb-diff-cell:first-child {
   grid-template-columns: 72px 24px minmax(0, 1fr);
@@ -1687,6 +1731,8 @@
   background: #e8eef8;
 }
 .wb-diff-code[data-layout="split"] {
+  --diff-action-left: 36px;
+  --diff-text-left: 96px;
   width: 100%;
   min-width: 560px;
 }

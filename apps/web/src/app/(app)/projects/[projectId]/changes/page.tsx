@@ -21,6 +21,7 @@ import { BranchImport } from "@/components/branch-import";
 import { BranchNotice } from "@/components/branch-notice";
 import { ChangeReview } from "@/components/change-review";
 import { CompletedReviewStatus } from "@/components/completed-review-status";
+import { DiffRevertEmptyState, DiffRevertHistory } from "@/components/diff-revert-history";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
 import { PausedRebaseNotice } from "@/components/paused-rebase-notice";
 import { ProjectContext } from "@/components/project-context";
@@ -238,7 +239,7 @@ export default async function ChangesPage({
     </Link>
   );
 
-  return (
+  const content = (
     <div className="page changes-page">
       <ProjectContext projectId={projectId} branch={branch} />
       <SubmissionRefresh
@@ -405,91 +406,92 @@ export default async function ChangesPage({
         </div>
       ) : null}
       {fileCount === 0 ? (
-        !branchNeedsAttention && (review?.state === "merged" || review?.state === "closed") ? (
-          <CompletedReviewStatus
-            state={review.state}
-            title={review.title}
-            targetBranch={review.target_branch}
-            url={review.provider_url}
-            reviewLabel={reviewLabel}
-          >
-            {documentsLink}
-          </CompletedReviewStatus>
-        ) : (
-          <section className="empty-state">
-            <FileText aria-hidden />
-            <h2>{branchNeedsAttention ? "Нет локальных правок" : "Все изменения отправлены"}</h2>
-            {review && reviewUrl ? (
-              <Link
-                className={`pd-button pd-button--${branchNeedsAttention ? "secondary" : "primary"}`}
-                href={reviewUrl}
-                target={review.state === "open" ? undefined : "_blank"}
-                rel={review.state === "open" ? undefined : "noreferrer"}
-              >
-                Открыть {reviewLabel}
-              </Link>
-            ) : null}
-            {!review && branch !== project.defaultBranch ? (
-              <GitOperation
-                projectId={projectId}
-                branch={branch}
-                createReview
-                reviewLabel={reviewLabel}
-                disabled={access.role === "reader"}
-              >
-                {documentsLink}
-              </GitOperation>
-            ) : (
-              documentsLink
-            )}
-          </section>
-        )
-      ) : (
-        <div className="changes-layout">
-          <ChangeReview
-            key={branch}
-            initialPath={query.path}
-            initialQuery={query.search}
-            initialLine={parseLineNumber(query.line)}
-            revertContext={
-              access.role !== "reader" && working.changeSet?.status === "open"
-                ? {
-                    revision: working.changeSet.revision,
-                    headSha: working.branch.head_commit_sha,
-                    ownerId: user.id,
-                    canEditConfig: access.role === "admin",
-                  }
-                : undefined
-            }
-            projectId={projectId}
-            branch={branch}
-            files={[
-              ...drafts
-                .filter((draft) => !attachmentPaths.has(draft.path))
-                .map((draft) => {
-                  const file = workingByPath.get(draft.path);
-                  return {
-                    path: draft.path,
-                    operation: draft.operation,
-                    before: file?.baseContent ?? "",
-                    baseKnown: file?.baseContentKnown ?? false,
-                    after: draft.operation === "delete" ? "" : (file?.content ?? ""),
-                    binary: /\.(png|jpe?g|gif|webp|avif|svg|pdf|zip|mp4)$/i.test(draft.path),
-                    existed: repositoryPaths.has(draft.path),
-                  };
-                }),
-              ...attachments.map((file) => ({
-                path: file.repository_path,
-                operation: repositoryPaths.has(file.repository_path) ? "modify" : "add",
-                before: "",
-                after: "",
-                binary: true,
-                existed: repositoryPaths.has(file.repository_path),
-              })),
-            ]}
-          />
-        </div>
-      )}
+        <DiffRevertEmptyState>
+          {!branchNeedsAttention && (review?.state === "merged" || review?.state === "closed") ? (
+            <CompletedReviewStatus
+              state={review.state}
+              title={review.title}
+              targetBranch={review.target_branch}
+              url={review.provider_url}
+              reviewLabel={reviewLabel}
+            >
+              {documentsLink}
+            </CompletedReviewStatus>
+          ) : (
+            <section className="empty-state">
+              <FileText aria-hidden />
+              <h2>{branchNeedsAttention ? "Нет локальных правок" : "Все изменения отправлены"}</h2>
+              {review && reviewUrl ? (
+                <Link
+                  className={`pd-button pd-button--${branchNeedsAttention ? "secondary" : "primary"}`}
+                  href={reviewUrl}
+                  target={review.state === "open" ? undefined : "_blank"}
+                  rel={review.state === "open" ? undefined : "noreferrer"}
+                >
+                  Открыть {reviewLabel}
+                </Link>
+              ) : null}
+              {!review && branch !== project.defaultBranch ? (
+                <GitOperation
+                  projectId={projectId}
+                  branch={branch}
+                  createReview
+                  reviewLabel={reviewLabel}
+                  disabled={access.role === "reader"}
+                >
+                  {documentsLink}
+                </GitOperation>
+              ) : (
+                documentsLink
+              )}
+            </section>
+          )}
+        </DiffRevertEmptyState>
+      ) : null}
+      <div className="changes-layout">
+        <ChangeReview
+          key={branch}
+          initialPath={query.path}
+          initialQuery={query.search}
+          initialLine={parseLineNumber(query.line)}
+          revertContext={
+            access.role !== "reader" && working.changeSet?.status === "open"
+              ? {
+                  revision: working.changeSet.revision,
+                  headSha: working.branch.head_commit_sha,
+                  ownerId: user.id,
+                  canEditConfig: access.role === "admin",
+                }
+              : undefined
+          }
+          projectId={projectId}
+          branch={branch}
+          files={[
+            ...drafts
+              .filter((draft) => !attachmentPaths.has(draft.path))
+              .map((draft) => {
+                const file = workingByPath.get(draft.path);
+                return {
+                  path: draft.path,
+                  operation: draft.operation,
+                  before: file?.baseContent ?? "",
+                  baseKnown: file?.baseContentKnown ?? false,
+                  after: draft.operation === "delete" ? "" : (file?.content ?? ""),
+                  binary: /\.(png|jpe?g|gif|webp|avif|svg|pdf|zip|mp4)$/i.test(draft.path),
+                  existed: repositoryPaths.has(draft.path),
+                };
+              }),
+            ...attachments.map((file) => ({
+              path: file.repository_path,
+              operation: repositoryPaths.has(file.repository_path) ? "modify" : "add",
+              before: "",
+              after: "",
+              binary: true,
+              existed: repositoryPaths.has(file.repository_path),
+            })),
+          ]}
+        />
+      </div>
       {conflicts.length > 0 ? (
         <section className="conflicts-section">
           <header>
@@ -617,5 +619,15 @@ export default async function ChangesPage({
         </section>
       ) : null}
     </div>
+  );
+  return (
+    <DiffRevertHistory
+      key={`${projectId}:${branch}:${user.id}`}
+      projectId={projectId}
+      branch={branch}
+      canWrite={access.role !== "reader"}
+    >
+      {content}
+    </DiffRevertHistory>
   );
 }

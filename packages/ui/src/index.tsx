@@ -1,10 +1,72 @@
 "use client";
 
 import { Combobox } from "@base-ui/react/combobox";
+import { Popover } from "@base-ui/react/popover";
 import { Select as BaseSelect } from "@base-ui/react/select";
 import clsx from "clsx";
 import { Check, ChevronDown, Search } from "lucide-react";
-import { type ButtonHTMLAttributes, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+export type PopoverAnchor = HTMLElement | DOMRect;
+
+export function AnchoredPopover({
+  anchor,
+  className,
+  label,
+  pending = false,
+  onClose,
+  children,
+}: {
+  anchor: PopoverAnchor;
+  className?: string;
+  label: string;
+  pending?: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const positionAnchor = useMemo(
+    () => (anchor instanceof Element ? anchor : { getBoundingClientRect: () => anchor }),
+    [anchor],
+  );
+  return (
+    <Popover.Root
+      open
+      onOpenChange={(open, details) => {
+        if (open) return;
+        if (pending) details.cancel();
+        else onClose();
+      }}
+    >
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={positionAnchor}
+          positionMethod="fixed"
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          className="pd-popover-positioner"
+        >
+          <Popover.Popup
+            aria-label={label}
+            className={clsx("pd-popover", className)}
+            finalFocus={() =>
+              anchor instanceof HTMLElement && anchor.isConnected ? anchor : false
+            }
+          >
+            {children}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
 
 export function Button({
   className,

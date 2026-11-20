@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { projectDocumentLineHref } from "@/lib/project-paths";
 import { ChangeFileKind, changeFileKind, groupChangedFiles } from "./change-file-groups";
 import { ChangeFileList } from "./change-file-list";
+import { useDiffRevertHistory } from "./diff-revert-history";
 import { DiffViewer } from "./diff-viewer";
 import { RevertDiff } from "./revert-diff";
 import { RevertFile } from "./revert-file";
@@ -21,8 +22,8 @@ export interface ReviewFile {
 export function ChangeReview({
   projectId,
   branch,
-  files,
-  revertContext,
+  files: serverFiles,
+  revertContext: serverRevertContext,
   initialPath,
   initialQuery = "",
   initialLine,
@@ -35,6 +36,22 @@ export function ChangeReview({
   initialQuery?: string;
   initialLine?: number;
 }) {
+  const history = useDiffRevertHistory();
+  const currentSession =
+    history?.revision !== undefined &&
+    serverRevertContext &&
+    serverRevertContext.headSha === history.headSha &&
+    serverRevertContext.revision <= history.revision;
+  const revertContext =
+    currentSession && serverRevertContext && history?.revision !== undefined
+      ? { ...serverRevertContext, revision: history.revision }
+      : serverRevertContext;
+  const files = useMemo(() => {
+    const merged = new Map(serverFiles.map((file) => [file.path, file]));
+    if (currentSession && history)
+      for (const file of Object.values(history.working)) merged.set(file.path, file);
+    return [...merged.values()];
+  }, [serverFiles, currentSession, history]);
   const groups = useMemo(() => groupChangedFiles(files), [files]);
   const [selectedPath, setSelectedPath] = useState(() => initialPath ?? groups[0]?.files[0]?.path);
   const [query, setQuery] = useState(initialQuery);
@@ -131,7 +148,11 @@ export function ChangeReview({
                 <Link href={lineHref(initialPath === file.path ? (initialLine ?? 1) : 1)}>
                   Открыть файл
                 </Link>
-                {revertContext && canRevert ? (
+                {revertContext &&
+                canRevert &&
+                serverFiles.some((item) => item.path === file.path) &&
+                (file.before !== file.after ||
+                  !history?.entries.some((entry) => entry.path === file.path)) ? (
                   <RevertFile
                     key={`${branch}:${file.path}:${revertContext.revision}`}
                     projectId={projectId}
@@ -141,6 +162,7 @@ export function ChangeReview({
                     operation={file.operation}
                     revision={revertContext.revision}
                     ownerId={revertContext.ownerId}
+                    reviewFile={file}
                   />
                 ) : null}
               </div>
@@ -184,6 +206,7 @@ export function ChangeReview({
                 revision={revertContext.revision}
                 headSha={revertContext.headSha}
                 ownerId={revertContext.ownerId}
+                reviewFile={file}
                 lineHref={file.operation !== "delete" ? lineHref : undefined}
                 revealLine={initialPath === file.path ? initialLine : undefined}
               />

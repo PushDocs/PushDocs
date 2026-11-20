@@ -4033,8 +4033,7 @@ textarea:where(:not(.monaco-editor *)):focus {
   overflow-anchor: none;
 }
 .change-file-list:focus-visible {
-  outline: 2px solid var(--violet);
-  outline-offset: -2px;
+  outline: none;
 }
 .change-file-list-space {
   position: relative;
@@ -4274,13 +4273,11 @@ textarea:where(:not(.monaco-editor *)):focus {
   color: var(--violet);
 }
 
+.change-revert-popover {
+  --popover-width: 300px;
+}
 .change-revert-confirm {
-  background: var(--canvas);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  flex-basis: 100%;
   min-width: 0;
-  padding: 14px;
   overflow-wrap: anywhere;
 }
 .change-revert-confirm p {

@@ -8,6 +8,8 @@ export const diffRevertLabels = {
   failure: "Не удалось откатить строки.",
 } as const;
 
+export type DiffRevertHandler = (lineIds: number[], anchor?: HTMLElement | DOMRect) => void;
+
 export interface DiffLine {
   id: number;
   kind: "context" | "add" | "delete";

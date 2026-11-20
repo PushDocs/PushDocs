@@ -1,4 +1,8 @@
 export type ChangesLocation = { path?: string; line?: string; search?: string };
+export function projectChangesApiPath(projectId: string) {
+  return `/api/projects/${projectId}/changes`;
+}
+
 export function parseLineNumber(value?: string) {
   const line = Number(value);
   return Number.isSafeInteger(line) && line > 0 ? line : undefined;

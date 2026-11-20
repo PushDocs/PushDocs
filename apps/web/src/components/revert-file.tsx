@@ -2,7 +2,11 @@
 import { Undo2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { projectChangesApiPath } from "@/lib/project-paths";
+import type { ReviewFile } from "./change-review";
+import { useDiffRevertHistory } from "./diff-revert-history";
 import { clearDraft, draftKey } from "./draft-storage";
+import { RevertConfirmation } from "./revert-confirmation";
 
 export function RevertFile({
   projectId,
@@ -12,6 +16,7 @@ export function RevertFile({
   operation,
   revision,
   ownerId,
+  reviewFile,
 }: {
   projectId: string;
   branch: string;
@@ -20,8 +25,11 @@ export function RevertFile({
   operation: string;
   revision: number;
   ownerId: string;
+  reviewFile?: ReviewFile;
 }) {
   const router = useRouter();
+  const history = useDiffRevertHistory();
+  const trigger = useRef<HTMLButtonElement>(null);
   const [confirmation, setConfirmation] = useState<number>();
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
@@ -32,12 +40,19 @@ export function RevertFile({
 
   async function revert() {
     /* v8 ignore next -- confirmation controls are hidden or disabled for every guarded state. */
-    if (confirmation === undefined || stale || inFlight.current || done) return;
+    if (
+      confirmation === undefined ||
+      stale ||
+      inFlight.current ||
+      done ||
+      (history && !history.start())
+    )
+      return;
     inFlight.current = true;
     setPending(true);
     setError("");
     try {
-      const response = await fetch(`/api/projects/${projectId}/changes`, {
+      const response = await fetch(projectChangesApiPath(projectId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ branch, path, expectedRevision: confirmation }),
@@ -50,6 +65,20 @@ export function RevertFile({
         const result = await response.json().catch(() => null);
         throw new Error(result?.error || "Не удалось откатить файл. Повторите попытку.");
       }
+      const result = await response.json().catch(() => null);
+      if (result?.undoToken)
+        history?.record({
+          path,
+          token: result.undoToken,
+          headSha: result.undoHeadSha,
+          previousRevision: confirmation,
+          revision: result.revision,
+          file: {
+            ...(reviewFile ?? { path, before: "", existed, operation, binary: false }),
+            after: result.content ?? reviewFile?.before ?? "",
+          },
+          blocks: result.undoBlocks,
+        });
       clearDraft(draftKey(projectId, branch, path, ownerId));
       setDone(true);
       setConfirmation(undefined);
@@ -59,13 +88,15 @@ export function RevertFile({
     } finally {
       inFlight.current = false;
       setPending(false);
+      history?.finish();
     }
   }
   return (
     <>
       <button
         type="button"
-        disabled={pending || done}
+        ref={trigger}
+        disabled={pending || done || history?.pending}
         onClick={() => {
           setError("");
           setConflict(false);
@@ -75,50 +106,27 @@ export function RevertFile({
         <Undo2 aria-hidden size={14} />
         {done ? "Изменения отменены" : "Откатить изменения"}
       </button>
-      {confirmation !== undefined ? (
-        <section className="change-revert-confirm" aria-label="Подтверждение отката">
-          <p>
-            <strong>
-              Откатить <code>{path}</code>?
-            </strong>
-          </p>
+      {confirmation !== undefined && trigger.current ? (
+        <RevertConfirmation
+          anchor={trigger.current}
+          title="Откатить весь файл?"
+          pending={pending || !!history?.pending}
+          stale={stale}
+          error={error}
+          confirmLabel="Откатить файл"
+          onCancel={() => setConfirmation(undefined)}
+          onConfirm={() => void revert()}
+          onRefresh={() => {
+            setConfirmation(undefined);
+            router.refresh();
+          }}
+        >
           {!existed ? (
             <p>Новый файл будет удалён из изменений.</p>
           ) : operation === "delete" ? (
             <p>Удаление будет отменено. Файл восстановится из Git.</p>
           ) : null}
-          {error ? <p role="alert">{error}</p> : null}
-          {stale ? (
-            <p role="alert">
-              Изменения обновились. Обновите страницу и проверьте файл перед откатом.
-            </p>
-          ) : null}
-          <footer>
-            <button type="button" disabled={pending} onClick={() => setConfirmation(undefined)}>
-              Отмена
-            </button>
-            {stale ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmation(undefined);
-                  router.refresh();
-                }}
-              >
-                Обновить
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="pd-button pd-button--danger"
-                disabled={pending}
-                onClick={() => void revert()}
-              >
-                {pending ? "Откатываем…" : "Откатить файл"}
-              </button>
-            )}
-          </footer>
-        </section>
+        </RevertConfirmation>
       ) : null}
     </>
   );

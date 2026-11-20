@@ -1,15 +1,18 @@
 "use client";
 
 import { Columns2, List, UnfoldVertical } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { DiffActions } from "./diff-actions";
 import { useDiffLayout } from "./diff-layout";
+import type { ReviewRevertedBlock } from "./diff-revert-history";
 import { useEditorWordWrap } from "./editor-preferences";
 import { MonacoDiff } from "./monaco-diff";
 import { useMonaco } from "./monaco-runtime";
+import { RevertedDiffActions } from "./reverted-diff-actions";
 import {
   buildTextDiff,
   type DiffLine,
+  type DiffRevertHandler,
   diffLineTargets,
   foldDiff,
   pairDiffLines,
@@ -26,6 +29,8 @@ export function DiffViewer({
   revertDisabled = false,
   lineHref,
   revealLine,
+  revertedBlocks = [],
+  onUndo,
 }: {
   path?: string;
   before: string;
@@ -33,15 +38,18 @@ export function DiffViewer({
   beforeLabel?: string;
   afterLabel?: string;
   diff?: ReturnType<typeof buildTextDiff>;
-  onRevert?: (lineIds: number[]) => void;
+  onRevert?: DiffRevertHandler;
   revertDisabled?: boolean;
   lineHref?: (line: number) => string;
   revealLine?: number;
+  revertedBlocks?: ReviewRevertedBlock[];
+  onUndo?: (id: string) => void;
 }) {
   const monaco = useMonaco();
   const [wordWrap] = useEditorWordWrap();
   const [layout, setLayout] = useDiffLayout();
   const [showAll, setShowAll] = useState(!!revealLine);
+  const [activeLine, setActiveLine] = useState<number>();
   const scroll = useRef<HTMLElement>(null);
   const [expanded, setExpanded] = useState<{ before: string; after: string; ids: Set<number> }>({
     before,
@@ -64,7 +72,8 @@ export function DiffViewer({
     expanded.before === before && expanded.after === after ? expanded.ids : new Set<number>();
   if (!result)
     return <div className="wb-notice">Файл слишком большой для встроенного сравнения.</div>;
-  if (!result.added && !result.deleted) return <div className="wb-diff-empty">Нет изменений</div>;
+  if (!result.added && !result.deleted && !revertedBlocks.length)
+    return <div className="wb-diff-empty">Нет изменений</div>;
 
   const actions = (line?: DiffLine) => {
     if (!line || line.kind === "context" || (!onRevert && !lineHref)) return null;
@@ -80,7 +89,7 @@ export function DiffViewer({
       />
     );
   };
-  const renderLines = (lines: DiffLine[]) =>
+  const renderRawLines = (lines: DiffLine[]) =>
     layout === "unified"
       ? lines.map((line) => (
           <div
@@ -91,8 +100,7 @@ export function DiffViewer({
           >
             <span className="wb-diff-number">{line.oldNumber}</span>
             <span className="wb-diff-number">{line.newNumber}</span>
-            <LineContent line={line} />
-            {actions(line)}
+            <LineContent line={line} onHover={() => setActiveLine(line.id)} />
           </div>
         ))
       : pairDiffLines(lines).map(({ left, right }) => (
@@ -110,12 +118,90 @@ export function DiffViewer({
                 <span className="wb-diff-number">
                   {side === 0 ? line?.oldNumber : line?.newNumber}
                 </span>
-                {line ? <LineContent line={line} /> : <span />}
+                {line ? (
+                  <LineContent line={line} onHover={() => setActiveLine(line.id)} />
+                ) : (
+                  <span />
+                )}
               </div>
             ))}
-            {actions(right ?? left)}
+            {revertedBlocks
+              .filter((block) => block.start === block.end && !renderedEmpty.has(block.id))
+              .map(empty)}
           </div>
         ));
+
+  const offsets = [0];
+  for (let index = 0; index < after.length; index++)
+    if (after[index] === "\n") offsets.push(index + 1);
+  const renderedEmpty = new Set<string>();
+  const gray = (block: ReviewRevertedBlock, children: ReactNode) => (
+    <section
+      key={block.id}
+      className="wb-diff-reverted-block"
+      data-reverted-block={block.id}
+      aria-label="Отменённый фрагмент"
+    >
+      {children}
+      <RevertedDiffActions block={block} onUndo={onUndo} />
+    </section>
+  );
+  const empty = (block: ReviewRevertedBlock) => {
+    renderedEmpty.add(block.id);
+    return gray(block, <div className="wb-diff-reverted-empty">Строки удалены</div>);
+  };
+  const renderLines = (lines: DiffLine[]) => {
+    if (lines[0]?.kind !== "context")
+      return pairDiffLines(lines).map(({ left, right }) => (
+        // biome-ignore lint/a11y/noStaticElementInteractions: Clear pointer hover without changing keyboard access to actions.
+        <div
+          className="wb-diff-hunk"
+          data-active={
+            activeLine !== undefined && (activeLine === left?.id || activeLine === right?.id)
+          }
+          onMouseLeave={() => setActiveLine(undefined)}
+          key={`${left?.id}:${right?.id}`}
+        >
+          {renderRawLines([left, right].filter((line): line is DiffLine => !!line))}
+          {actions(right ?? left)}
+        </div>
+      ));
+    const rows = renderRawLines(lines);
+    const numbers =
+      layout === "unified"
+        ? lines.map((line) => line.newNumber)
+        : pairDiffLines(lines).map(({ right }) => right?.newNumber);
+    const rendered: ReactNode[] = [];
+    let active: ReviewRevertedBlock | undefined;
+    let children: ReactNode[] = [];
+    const flush = () => {
+      if (active) rendered.push(gray(active, children));
+      active = undefined;
+      children = [];
+    };
+    rows.forEach((row, index) => {
+      const number = numbers[index];
+      const offset = number === undefined ? undefined : offsets[number - 1];
+      for (const block of revertedBlocks.filter(
+        (block) =>
+          block.start === block.end && block.start === offset && !renderedEmpty.has(block.id),
+      )) {
+        flush();
+        rendered.push(empty(block));
+      }
+      const block =
+        offset === undefined
+          ? undefined
+          : revertedBlocks.find((block) => offset >= block.start && offset < block.end);
+      if (block?.id !== active?.id) flush();
+      if (block) {
+        active = block;
+        children.push(row);
+      } else rendered.push(row);
+    });
+    flush();
+    return rendered;
+  };
 
   return (
     <section className="wb-diff" aria-label="Сравнение изменений" data-word-wrap={wordWrap}>
@@ -129,7 +215,7 @@ export function DiffViewer({
           </span>
         </div>
         <div className="wb-diff-controls">
-          {blocks.some((block) => block.kind === "fold") && (
+          {!revertedBlocks.length && blocks.some((block) => block.kind === "fold") && (
             <button
               type="button"
               aria-pressed={showAll}
@@ -167,19 +253,28 @@ export function DiffViewer({
           <span>{afterLabel}</span>
         </div>
       ) : null}
-      {monaco && before.replace(/\r\n?/g, "\n") !== after.replace(/\r\n?/g, "\n") ? (
+      {monaco &&
+      (revertedBlocks.length > 0 ||
+        before.replace(/\r\n?/g, "\n") !== after.replace(/\r\n?/g, "\n")) ? (
         <MonacoDiff
           monaco={monaco}
           before={before}
           after={after}
           path={path}
           split={layout === "split"}
-          showAll={showAll}
+          showAll={showAll || revertedBlocks.length > 0}
+          revertedBlocks={revertedBlocks}
+          onUndo={onUndo}
           lines={result.lines}
           onRevert={onRevert}
           revertDisabled={revertDisabled}
           lineHref={lineHref}
-          revealLine={revealLine}
+          revealLine={
+            revealLine ??
+            (revertedBlocks.length
+              ? after.slice(0, revertedBlocks.at(-1)?.start).split("\n").length
+              : undefined)
+          }
         />
       ) : (
         /* biome-ignore lint/a11y/noNoninteractiveTabindex: The diff scroll region must support keyboard scrolling. */
@@ -191,7 +286,10 @@ export function DiffViewer({
           >
             {blocks.map((block) => (
               <Fragment key={block.lines[0]?.id}>
-                {block.kind === "fold" && !showAll && !expandedIds.has(block.id) ? (
+                {block.kind === "fold" &&
+                !showAll &&
+                !revertedBlocks.length &&
+                !expandedIds.has(block.id) ? (
                   <button
                     className="wb-diff-fold"
                     type="button"
@@ -207,6 +305,9 @@ export function DiffViewer({
                 )}
               </Fragment>
             ))}
+            {revertedBlocks
+              .filter((block) => block.start === block.end && !renderedEmpty.has(block.id))
+              .map(empty)}
           </div>
         </section>
       )}
@@ -214,7 +315,7 @@ export function DiffViewer({
   );
 }
 
-function LineContent({ line }: { line: DiffLine }) {
+function LineContent({ line, onHover }: { line: DiffLine; onHover?: () => void }) {
   return (
     <>
       <span
@@ -227,7 +328,7 @@ function LineContent({ line }: { line: DiffLine }) {
       >
         {line.kind === "add" ? "+" : line.kind === "delete" ? "−" : " "}
       </span>
-      <code className="wb-diff-text">
+      <code className="wb-diff-text" onMouseEnter={onHover}>
         {line.text || " "}
         {line.ending === "none" && (
           <span className="wb-diff-eol"> Нет перевода строки в конце файла</span>
