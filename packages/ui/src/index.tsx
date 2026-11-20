@@ -26,11 +26,14 @@ export function SearchableSelect({
   disabled,
   emptyText = "Ничего не найдено",
   fallbackLabel,
+  footer,
   label,
   leadingIcon,
   name,
+  onSearchChange,
   onValueChange,
   options,
+  renderOption,
   searchLabel = "Поиск",
   searchPlaceholder = "Начните вводить…",
   value,
@@ -39,11 +42,14 @@ export function SearchableSelect({
   disabled?: boolean;
   emptyText?: string;
   fallbackLabel?: string;
+  footer?: ReactNode;
   label: string;
   leadingIcon?: ReactNode;
   name?: string;
+  onSearchChange?: (value: string) => void;
   onValueChange?: (value: string) => void;
   options: SelectOption[];
+  renderOption?: (option: SelectOption) => ReactNode;
   searchLabel?: string;
   searchPlaceholder?: string;
   value?: string;
@@ -63,6 +69,10 @@ export function SearchableSelect({
       itemToStringLabel={(option) => option.label}
       itemToStringValue={(option) => option.value}
       name={name}
+      onInputValueChange={onSearchChange}
+      onOpenChange={(open) => {
+        if (!open) onSearchChange?.("");
+      }}
       value={selected}
       onValueChange={(option) => {
         if (option) onValueChange?.(option.value);
@@ -101,10 +111,11 @@ export function SearchableSelect({
                   <Combobox.ItemIndicator className="pd-select-check">
                     <Check aria-hidden size={14} />
                   </Combobox.ItemIndicator>
-                  <span>{option.label}</span>
+                  {renderOption ? renderOption(option) : <span>{option.label}</span>}
                 </Combobox.Item>
               )}
             </Combobox.List>
+            {footer ? <div className="pd-combobox-footer">{footer}</div> : null}
           </Combobox.Popup>
         </Combobox.Positioner>
       </Combobox.Portal>

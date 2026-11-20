@@ -9,26 +9,13 @@ import { z } from "zod";
 import { readJsonBody } from "@/lib/request-body";
 import { optionalUser, repository } from "@/lib/server";
 import { consentFailure, consentPage } from "./consent-page";
+import { publicOrigin } from "./origin";
 import { oauthResumeCookie } from "./resume";
+
+export { publicOrigin } from "./origin";
 
 export function mcpStore() {
   return new McpRepository(getDatabase());
-}
-export function publicOrigin() {
-  const value = process.env.PUSHDOCS_PUBLIC_ORIGIN;
-  if (!value) throw new Error("PUSHDOCS_PUBLIC_ORIGIN is required for MCP");
-  const url = new URL(value);
-  if (
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash ||
-    url.username ||
-    url.password ||
-    (url.protocol !== "https:" &&
-      !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
-  )
-    throw new Error("Invalid public origin");
-  return url.origin;
 }
 export function resourceUri() {
   return `${publicOrigin()}/mcp`;

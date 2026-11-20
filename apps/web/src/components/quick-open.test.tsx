@@ -64,6 +64,32 @@ it("searches article text with original line numbers and excludes configuration 
   expect(results[0]?.excerpt).toContain("Отправить письмо");
   expect(searchFiles(paths, files, " ", true)).toEqual([]);
 });
+
+it("applies case and whole-word controls to text results and their highlights", () => {
+  const article = {
+    path: "docs/test.md",
+    title: "Тест",
+    status: "clean",
+    content: "Письмо письмо письмом",
+  };
+  const { container } = render(
+    <QuickOpen paths={[article.path]} files={[article]} onOpen={vi.fn()} initialContent />,
+  );
+  fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "письмо" } });
+  expect(container.querySelectorAll("mark")).toHaveLength(3);
+  fireEvent.click(screen.getByRole("button", { name: "Учитывать регистр" }));
+  expect(container.querySelectorAll("mark")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "Слово целиком" }));
+  expect(container.querySelectorAll("mark")).toHaveLength(1);
+  fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "ПИСЬМО" } });
+  expect(screen.getByText("Совпадений в статьях не найдено.")).toBeTruthy();
+  expect(
+    searchFiles([article.path], [article], "Test", false, { matchCase: true, wholeWord: false }),
+  ).toEqual([]);
+  expect(
+    searchFiles([article.path], [article], "tes", false, { matchCase: false, wholeWord: true }),
+  ).toEqual([]);
+});
 it("opens the keyboard-selected search result at its matching line", () => {
   const open = vi.fn();
   render(<QuickOpen paths={paths} files={files} onOpen={open} initialContent />);
@@ -106,7 +132,10 @@ it("searches unloaded article bodies on the server and opens the returned line",
     await act(async () => {
       await vi.advanceTimersByTimeAsync(180);
     });
-    expect(remote).toHaveBeenCalledWith("искомая", expect.any(AbortSignal));
+    expect(remote).toHaveBeenCalledWith("искомая", expect.any(AbortSignal), {
+      matchCase: false,
+      wholeWord: false,
+    });
     expect(within(screen.getByRole("list")).getByRole("button").textContent).toContain(
       "искомая фраза",
     );
@@ -118,28 +147,97 @@ it("searches unloaded article bodies on the server and opens the returned line",
   }
 });
 
-it("shows a server-search error instead of an empty result state", async () => {
+it.each([false, true])(
+  "shows a server-search error and retains loaded matches: %s",
+  async (loaded) => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <QuickOpen
+          paths={paths}
+          files={files.map((file, index) =>
+            loaded && index === 0 ? file : { ...file, content: "", loaded: false },
+          )}
+          onOpen={vi.fn()}
+          onSearchContent={vi.fn().mockRejectedValue(new Error("offline"))}
+          initialContent
+        />,
+      );
+      fireEvent.change(screen.getByLabelText("Поиск файлов"), {
+        target: { value: "письмо" },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(180);
+      });
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Не удалось выполнить поиск. Повторите попытку.",
+      );
+      expect(screen.queryByText("Совпадений в статьях не найдено.")).toBeNull();
+      const results = within(screen.getByRole("list", { name: "Результаты поиска" }));
+      if (loaded) expect(results.getByRole("button").textContent).toContain("docs/start.mdx:3");
+      else expect(results.queryByRole("button")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("uses loaded buffers over server matches without restarting the remote search", async () => {
   vi.useFakeTimers();
   try {
-    render(
-      <QuickOpen
-        paths={paths}
-        files={files.map((file) => ({ ...file, content: "", loaded: false }))}
-        onOpen={vi.fn()}
-        onSearchContent={vi.fn().mockRejectedValue(new Error("offline"))}
-        initialContent
-      />,
+    const remote = vi.fn().mockResolvedValue([
+      { path: "docs/start.mdx", line: 90, excerpt: "письмо в старой версии" },
+      { path: "docs/archive.md", line: 27, excerpt: "письмо из Git" },
+      { path: "docs/deleted.md", line: 1, excerpt: "письмо удалено" },
+    ]);
+    const data = {
+      paths,
+      onOpen: vi.fn(),
+      onSearchContent: remote,
+      initialContent: true,
+    };
+    const partialFiles = files.map((file) =>
+      file.path === "docs/archive.md" ? { ...file, content: "", loaded: false } : file,
     );
-    fireEvent.change(screen.getByLabelText("Поиск файлов"), {
-      target: { value: "искомая" },
-    });
+    const view = render(<QuickOpen {...data} files={partialFiles} />);
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "письмо" } });
+    const list = screen.getByRole("list", { name: "Результаты поиска" });
+    expect(within(list).getByRole("button").textContent).toContain("docs/start.mdx:3");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(180);
     });
-    expect(screen.getByRole("alert").textContent).toBe(
-      "Не удалось выполнить поиск. Повторите попытку.",
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    expect(list.textContent).toContain("docs/archive.md:27");
+    expect(list.textContent).not.toContain("старой версии");
+    expect(list.textContent).not.toContain("deleted.md");
+
+    view.rerender(
+      <QuickOpen
+        {...data}
+        files={partialFiles.map((file) =>
+          file.path === "docs/start.mdx"
+            ? { ...file, content: "# Правка\n\n\nписьмо в буфере" }
+            : file,
+        )}
+      />,
     );
-    expect(screen.queryByText("Совпадений в статьях не найдено.")).toBeNull();
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    expect(list.textContent).toContain("docs/start.mdx:4");
+    expect(list.textContent).toContain("письмо в буфере");
+
+    view.rerender(
+      <QuickOpen
+        {...data}
+        files={partialFiles.map((file) =>
+          file.path === "docs/start.mdx" ? { ...file, content: "# Исправлено" } : file,
+        )}
+      />,
+    );
+    expect(within(list).getByRole("button").textContent).toContain("docs/archive.md:27");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(remote).toHaveBeenCalledTimes(1);
   } finally {
     vi.useRealTimers();
   }
@@ -236,6 +334,61 @@ it("does not restart a completed search when the parent recreates its callback",
     }
     expect(remote).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("refreshes server results after a saved revision and ignores an outdated response", async () => {
+  vi.useFakeTimers();
+  try {
+    let finishOld: ((results: Array<{ path: string; excerpt: string }>) => void) | undefined;
+    const remote = vi
+      .fn()
+      .mockResolvedValue([])
+      .mockResolvedValueOnce([{ path: "docs/start.mdx", excerpt: "письмо" }])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([{ path: "docs/archive.md", excerpt: "письмо" }]);
+    const data = {
+      paths,
+      files: files.map((file) => ({ ...file, loaded: false })),
+      onOpen: vi.fn(),
+      onSearchContent: remote,
+      initialContent: true,
+    };
+    const view = render(<QuickOpen {...data} revision={0} />);
+    fireEvent.change(screen.getByLabelText("Поиск файлов"), { target: { value: "письмо" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(screen.getByRole("list").textContent).toContain("start.mdx");
+    view.rerender(<QuickOpen {...data} revision={1} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    view.rerender(<QuickOpen {...data} revision={2} />);
+    expect(remote.mock.calls[1]?.[1].aborted).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    await act(async () => finishOld?.([{ path: "docs/start.mdx", excerpt: "письмо" }]));
+    expect(screen.getByRole("list").textContent).toContain("archive.md");
+    expect(screen.getByRole("list").textContent).not.toContain("start.mdx");
+    view.rerender(<QuickOpen {...data} revision={3} active={false} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(remote).toHaveBeenCalledTimes(3);
+    view.rerender(<QuickOpen {...data} revision={3} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(remote).toHaveBeenCalledTimes(4);
   } finally {
     vi.useRealTimers();
   }

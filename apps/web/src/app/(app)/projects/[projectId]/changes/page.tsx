@@ -1,3 +1,11 @@
+import {
+  type BranchConflictSnapshot,
+  BranchUpdateStrategy,
+  branchUpdateStrategy,
+  branchUpdateWaitingStatus,
+  hasBranchConflicts,
+  needsBranchUpdate,
+} from "@pushdocs/contracts";
 import { AlertTriangle, Check, FileText, GitBranch } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -6,10 +14,13 @@ import {
   retryChangeSetSubmissionAction,
   submitChangeSetAction,
 } from "@/app/actions";
+import { BranchConflictNotice, BranchConflictResolver } from "@/components/branch-conflicts";
 import { BranchImport } from "@/components/branch-import";
 import { ChangeReview } from "@/components/change-review";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
+import { PausedRebaseNotice } from "@/components/paused-rebase-notice";
 import { ProjectContext } from "@/components/project-context";
+import { ReviewBranchUpdate } from "@/components/review-branch-update";
 import { SubmitChanges } from "@/components/submit-changes";
 import { repository, requireUser } from "@/lib/server";
 
@@ -55,34 +66,95 @@ export default async function ChangesPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ branch?: string }>;
+  searchParams: Promise<{ branch?: string; resolve?: string; conflict?: string }>;
 }) {
   const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
   const store = repository();
   const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
+  const conflictReviewId = query.resolve ?? query.conflict;
+  const requestedReview = conflictReviewId
+    ? (await store.listChangeRequests(projectId, "open")).find(
+        (item) => item.id === conflictReviewId,
+      )
+    : undefined;
+  if (conflictReviewId && requestedReview?.details?.source?.isFork !== false)
+    return (
+      <div className="not-found-panel">
+        Исходная ветка PR / MR недоступна для разрешения конфликтов.
+      </div>
+    );
+  const resolver =
+    query.resolve && requestedReview ? (
+      <BranchConflictResolver
+        key={requestedReview.id}
+        projectId={projectId}
+        reviewId={requestedReview.id}
+        branch={requestedReview.source_branch}
+        targetBranch={requestedReview.target_branch}
+        defaultBranch={project.defaultBranch}
+        ownerId={user.id}
+        canWrite={project.role !== "reader"}
+        providerUrl={requestedReview.provider_url}
+        reviewLabel={project.provider === "gitlab" ? "MR" : "PR"}
+      />
+    ) : undefined;
   const access = { role: project.role };
-  const branch = query.branch ?? project.defaultBranch;
+  const branch =
+    (query.resolve ? requestedReview?.source_branch : query.branch) ?? project.defaultBranch;
   const branches = await store.listBranches(projectId);
   const localBranch = branches.find((item) => item.full_ref === branch);
-  if (!localBranch) return <BranchImport key={branch} projectId={projectId} branch={branch} />;
-  const [drafts, working, attachments, conflicts, submission, review] = await Promise.all([
-    store.listDraftFiles(projectId, branch),
-    store.listChangedWorkingFiles(projectId, branch),
-    store.listAttachmentsForBranch(projectId, branch),
-    store.listConflicts(projectId, branch),
-    store.getSubmissionStatus(projectId, branch),
-    store.findOpenChangeRequestByBranch(projectId, branch),
-  ]);
+  if (!localBranch)
+    return resolver ?? <BranchImport key={branch} projectId={projectId} branch={branch} />;
+  const [drafts, working, attachments, conflicts, submission, openReview, activeUpdate] =
+    await Promise.all([
+      store.listDraftFiles(projectId, branch),
+      store.listChangedWorkingFiles(projectId, branch),
+      store.listAttachmentsForBranch(projectId, branch),
+      store.listConflicts(projectId, branch),
+      store.getSubmissionStatus(projectId, branch),
+      store.findOpenChangeRequestByBranch(projectId, branch),
+      store.getActiveReviewBranchUpdate(projectId, branch),
+    ]);
+  const activePayload = activeUpdate?.payload as
+    | {
+        reviewId: string;
+        strategy: BranchUpdateStrategy;
+        expectedHeadSha: string;
+        conflictSnapshot?: BranchConflictSnapshot;
+      }
+    | undefined;
+  const review = activePayload
+    ? openReview?.id === activePayload.reviewId
+      ? openReview
+      : (await store.listChangeRequests(projectId)).find(
+          (item) => item.id === activePayload.reviewId,
+        )
+    : openReview;
+  const pausedRebase =
+    activeUpdate?.status === branchUpdateWaitingStatus
+      ? activePayload?.conflictSnapshot?.rebase
+      : undefined;
   if (
+    !activeUpdate &&
     working.branch.repository_paths.length === 0 &&
     working.files.length === 0 &&
     drafts.length === 0 &&
     attachments.length === 0 &&
     !(await store.hasImportedBranch(localBranch.id))
   )
-    return <BranchImport key={branch} projectId={projectId} branch={branch} />;
+    return resolver ?? <BranchImport key={branch} projectId={projectId} branch={branch} />;
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
+  const conflictReview = requestedReview ?? review;
+  const branchHasConflicts = hasBranchConflicts(conflictReview?.details?.readiness.reason);
+  const rebaseRequired =
+    branchUpdateStrategy(conflictReview?.details) === BranchUpdateStrategy.Rebase;
+  const branchNeedsUpdate = Boolean(activeUpdate || (review && needsBranchUpdate(review.details)));
+  const branchNeedsAttention = branchHasConflicts || branchNeedsUpdate;
+  const reviewUrl =
+    review?.state === "open"
+      ? `/projects/${projectId}/reviews?${new URLSearchParams({ review: review.id })}`
+      : review?.provider_url;
   const changeSetId = drafts[0]?.change_set_id ?? attachments[0]?.change_set_id;
   const changeSet = drafts[0];
   const changeSetStatus = changeSet?.status ?? attachments[0]?.change_set_status;
@@ -92,6 +164,9 @@ export default async function ChangesPage({
     ...drafts.map((file) => file.path),
     ...attachments.map((file) => file.repository_path),
   ]).size;
+  const hasPendingChanges =
+    fileCount > 0 || changeSetStatus === "submitting" || changeSetStatus === "conflicted";
+  if (resolver && fileCount === 0) return resolver;
   const files = fileCountText(fileCount);
   const workingByPath = new Map(working.files.map((file) => [file.path, file]));
   const repositoryPaths = new Set(working.branch.repository_paths);
@@ -104,6 +179,15 @@ export default async function ChangesPage({
         : review || (branch !== project.defaultBranch && submission?.status === "done")
           ? 3
           : 1;
+
+  const documentsLink = (
+    <Link
+      className="pd-button pd-button--secondary"
+      href={`/projects/${projectId}/documents?branch=${encodeURIComponent(branch)}`}
+    >
+      Открыть документы
+    </Link>
+  );
 
   return (
     <div className="page changes-page">
@@ -131,60 +215,112 @@ export default async function ChangesPage({
 
       <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
 
-      <div className="branch-git-actions">
-        <GitOperation
+      {pausedRebase && activeUpdate && activePayload ? (
+        <PausedRebaseNotice
+          key={`${activeUpdate.id}:${pausedRebase.conflictId}`}
           projectId={projectId}
+          reviewId={activePayload.reviewId}
           branch={branch}
-          reviewLabel={reviewLabel}
-          disabled={changeSetStatus === "submitting"}
+          operationId={activeUpdate.id}
+          conflictId={pausedRebase.conflictId}
+          canResolve={review?.state === "open" && review.details?.source?.isFork === false}
+          canWrite={project.role !== "reader"}
         />
-        {review ? (
-          <Link
-            className="pd-button pd-button--secondary"
-            href={`/projects/${projectId}/reviews?review=${review.id}`}
-          >
-            Открыть {reviewLabel}: {review.title}
-          </Link>
-        ) : null}
-        {fileCount > 0 ? (
-          <SubmitChanges
-            action={submitChangeSetAction}
-            retryAction={
-              submissionNeedsRecovery && access.role !== "reader"
-                ? retryChangeSetSubmissionAction
-                : undefined
-            }
+      ) : review && branchNeedsUpdate && (activeUpdate || !branchHasConflicts || rebaseRequired) ? (
+        <ReviewBranchUpdate
+          waitingForResolution={activeUpdate?.status === branchUpdateWaitingStatus}
+          review={review}
+          provider={project.provider}
+          projectId={projectId}
+          ownerId={user.id}
+          canWrite={project.role !== "reader"}
+          activeStrategy={activePayload?.strategy}
+          activeHeadSha={activePayload?.expectedHeadSha}
+          hasPendingChanges={hasPendingChanges}
+        />
+      ) : branchHasConflicts && conflictReview ? (
+        <BranchConflictNotice
+          projectId={projectId}
+          reviewId={conflictReview.id}
+          branch={conflictReview.source_branch}
+          targetBranch={conflictReview.target_branch}
+          currentBranch={branch}
+          ownerId={user.id}
+          hasPendingChanges={hasPendingChanges}
+          canWrite={conflictReview.details?.source?.isFork === false && access.role !== "reader"}
+          providerUrl={conflictReview.provider_url}
+          reviewLabel={reviewLabel}
+        />
+      ) : null}
+
+      {fileCount > 0 || !branchNeedsAttention ? (
+        <div className="branch-git-actions">
+          <GitOperation
             projectId={projectId}
-            changeSetId={changeSetId ?? ""}
             branch={branch}
-            defaultBranch={project.defaultBranch}
-            reviewTitle={review?.title}
             reviewLabel={reviewLabel}
-            submitting={changeSetStatus === "submitting"}
-            disabled={
-              access.role === "reader" ||
-              !changeSetId ||
-              changeSetStatus === "submitting" ||
-              conflicts.length > 0
-            }
-          >
-            {changeSetStatus === "submitting" && submission && submission.status !== "done" ? (
-              <div role="status" className="panel-note">
-                <p>
-                  {submission.status === "failed"
-                    ? "Отправка остановлена. Результат записи в Git будет проверен при повторе."
-                    : "Отправка в очереди или выполняется. Черновики сохранены."}
-                </p>
-                {submission.last_error ? <p>{submission.last_error}</p> : null}
-              </div>
-            ) : null}
-          </SubmitChanges>
-        ) : null}
-      </div>
+            disabled={changeSetStatus === "submitting"}
+          />
+          {review && reviewUrl && fileCount > 0 ? (
+            <Link
+              className="pd-button pd-button--secondary"
+              href={reviewUrl}
+              target={review.state === "open" ? undefined : "_blank"}
+              rel={review.state === "open" ? undefined : "noreferrer"}
+            >
+              Открыть {reviewLabel}: {review.title}
+            </Link>
+          ) : null}
+          {fileCount > 0 ? (
+            <SubmitChanges
+              action={submitChangeSetAction}
+              retryAction={
+                submissionNeedsRecovery && access.role !== "reader"
+                  ? retryChangeSetSubmissionAction
+                  : undefined
+              }
+              projectId={projectId}
+              changeSetId={changeSetId ?? ""}
+              branch={branch}
+              defaultBranch={project.defaultBranch}
+              reviewTitle={review?.title}
+              reviewLabel={reviewLabel}
+              submitting={changeSetStatus === "submitting"}
+              disabled={
+                access.role === "reader" ||
+                !changeSetId ||
+                changeSetStatus === "submitting" ||
+                conflicts.length > 0
+              }
+            >
+              {changeSetStatus === "submitting" && submission && submission.status !== "done" ? (
+                <div role="status" className="panel-note">
+                  <p>
+                    {submission.status === "failed"
+                      ? "Отправка остановлена. Результат записи в Git будет проверен при повторе."
+                      : "Отправка в очереди или выполняется. Черновики сохранены."}
+                  </p>
+                  {submission.last_error ? <p>{submission.last_error}</p> : null}
+                </div>
+              ) : null}
+            </SubmitChanges>
+          ) : null}
+        </div>
+      ) : null}
       {fileCount === 0 ? (
         <section className="empty-state">
           <FileText aria-hidden />
-          <h2>Все изменения отправлены</h2>
+          <h2>{branchNeedsAttention ? "Нет локальных правок" : "Все изменения отправлены"}</h2>
+          {review && reviewUrl ? (
+            <Link
+              className={`pd-button pd-button--${branchNeedsAttention ? "secondary" : "primary"}`}
+              href={reviewUrl}
+              target={review.state === "open" ? undefined : "_blank"}
+              rel={review.state === "open" ? undefined : "noreferrer"}
+            >
+              Открыть {reviewLabel}
+            </Link>
+          ) : null}
           {!review && branch !== project.defaultBranch ? (
             <GitOperation
               projectId={projectId}
@@ -192,15 +328,12 @@ export default async function ChangesPage({
               createReview
               reviewLabel={reviewLabel}
               disabled={access.role === "reader"}
-            />
-          ) : null}
-
-          <Link
-            className="pd-button pd-button--primary"
-            href={`/projects/${projectId}/documents?branch=${encodeURIComponent(branch)}`}
-          >
-            Открыть документы
-          </Link>
+            >
+              {documentsLink}
+            </GitOperation>
+          ) : (
+            documentsLink
+          )}
         </section>
       ) : (
         <div className="changes-layout">

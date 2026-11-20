@@ -114,7 +114,7 @@ it("keeps plain text usable for large files and does not indent read-only files"
     />,
   );
   expect(screen.getByTestId("source-highlight").textContent).toBe(source);
-  expect(screen.getByTestId("source-highlight").querySelector("span")).toBeNull();
+  expect(screen.getByTestId("source-highlight").querySelector(".source-token")).toBeNull();
   fireEvent.keyDown(screen.getByLabelText("Исходник документа"), { key: "Tab" });
   expect(indent).not.toHaveBeenCalled();
   expect((screen.getByLabelText("Исходник документа") as HTMLTextAreaElement).readOnly).toBe(true);

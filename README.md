@@ -18,7 +18,7 @@ The repository contains a working MVP:
 - PushDocs does not send email. Administrators share invitation links through a messenger. Each link is bound to one email address, can be accepted once and expires within 24 hours.
 - A GitLab connection can store an encrypted inline OpenVPN profile when VPN support is enabled for the installation. Provider requests and Git HTTPS traffic then pass through an isolated VPN gateway. The installation supports four active VPN profiles.
 - One installation can import and manage several projects. Each project has its own members and roles.
-- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header offers **Обновить из Git** to refresh the selected branch, including the default branch. Editors can use **Влить <default branch>…** on an unprotected task branch before or after creating a PR or MR. This fetches both branches, merges and pushes with an exact branch lease, then reloads the imported documents. Drafts remain in PushDocs. Conflicting Git branches are left unchanged and must be resolved in Git before retrying.
+- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header offers **Обновить из Git** to refresh the selected branch, including the default branch. Editors can use **Влить <default branch>…** on an unprotected task branch before or after creating a PR or MR when the project update policy selects merge. This fetches both branches, merges and pushes with an exact branch lease, then reloads the imported documents. Drafts remain in PushDocs. Conflicting Git branches are left unchanged and must be resolved in Git before retrying.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
 - Editors can upload images, MP4, PDF, ZIP, CSV and TXT files. PushDocs includes documents and attachments in one commit.
 - Readers can comment on documents. Comment and status updates reach open pages through server-sent events.
@@ -37,6 +37,10 @@ The Documents page can also start a local Docusaurus preview for a trusted proje
 
 The local preview executes repository JavaScript. Enable it only for repositories whose code is trusted by the installation operator. Caddy automatically publishes and proxies the fixed HTTP range `43000` to `43019`; the preview runner itself is reachable only inside the Compose network. Preview endpoints do not use PushDocs session authentication.
 
+## Git workflow
+
+[ADR-0011](docs/adr/0011-branch-updates-and-squash.md#этапы-работы-с-git) describes branch updates and conflict resolution for merge and rebase, including where repository settings come from. Review status determines whether an update is needed; repository settings and the target branch’s `git.updateStrategy` choose the strategy. Updating a branch keeps its PR/MR open; accepting it happens separately in GitHub or GitLab. See the [configuration reference](docs/configuration.md#обновление-веток) for configuration examples.
+
 ## Current limits
 
 - PushDocs displays provider checks, but merging still happens in GitHub or GitLab.
@@ -44,7 +48,7 @@ The local preview executes repository JavaScript. Enable it only for repositorie
 - Comments are stored in PushDocs and are not copied to provider discussions.
 - Review state is refreshed every 30 seconds. Provider webhooks are not implemented yet.
 - The write path has real local Git and PostgreSQL integration tests. Live provider acceptance requires separately agreed test repositories. Tests never push to sendsay-docs.
-- The updated development plan is only partially implemented. Rebase, provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
+- The updated development plan is only partially implemented. Linear branches can be rebased with conflict resolution in the shared editor; provider discussions, structural conflicts, navigation editing and component property forms remain open. Binary conflicts currently offer the Git version or the saved upload, not a third replacement upload.
 - A CI preview link becomes available only after the `preview:deploy` check succeeds for the current PR or MR commit.
 
 ## Run

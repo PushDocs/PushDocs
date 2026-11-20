@@ -338,6 +338,16 @@ export class McpRepository {
         "An idempotencyKey of 1 to 200 characters is required.",
       );
     const digest = tokenDigest(canonicalJson({ tool, input }));
+    const auditInput = (result: unknown) => {
+      const branch =
+        result &&
+        typeof result === "object" &&
+        "branch" in result &&
+        typeof result.branch === "string"
+          ? result.branch
+          : null;
+      return { ...input, branch: input.branch ?? input.branchName ?? branch };
+    };
     return this.transaction(async (tx) => {
       // Serialize retries of this key, without serializing unrelated calls.
       await sql`select pg_advisory_xact_lock(hashtextextended(${`${principal.grantId}:${key}`},0))`.execute(
@@ -360,7 +370,9 @@ export class McpRepository {
             "Use a new key for different arguments.",
             409,
           );
-        await new McpRepository(tx).audit(principal, tool, input, { status: "replayed" });
+        await new McpRepository(tx).audit(principal, tool, auditInput(old.result), {
+          status: "replayed",
+        });
         return old.result;
       }
       const result = await run(tx);
@@ -392,13 +404,13 @@ export class McpRepository {
               ),
             )
           : {};
-      await new McpRepository(tx).audit(principal, tool, input, {
+      await new McpRepository(tx).audit(principal, tool, auditInput(result), {
         status: "succeeded",
         affectedFiles,
         ...summary,
       });
       await sql`insert into mcp_calls(grant_id,request_key,digest,tool,project_id,branch,result)
-        values(${principal.grantId},${key},${digest},${tool},${input.projectId ?? null},${input.branch ?? null},${JSON.stringify(result)}::jsonb)`.execute(
+        values(${principal.grantId},${key},${digest},${tool},${input.projectId ?? null},${auditInput(result).branch},${JSON.stringify(result)}::jsonb)`.execute(
         tx,
       );
       return result;

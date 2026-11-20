@@ -1,5 +1,6 @@
 import type * as Monaco from "monaco-editor";
 import { useEffect, useState } from "react";
+import { editorPreferences } from "../lib/editor-settings";
 
 export type MonacoApi = typeof Monaco;
 const assetRoot = "/monaco/0.56.0";
@@ -120,6 +121,8 @@ export function fileLanguage(path = "document.mdx") {
 export const editorOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
   theme: "pushdocs",
   automaticLayout: true,
+  wordWrap: editorPreferences.defaultWordWrap,
+  wrappingIndent: "same",
   fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
   fontSize: 13,
   lineHeight: 24,

@@ -1,11 +1,20 @@
 "use client";
 import { applyEditorInput } from "@pushdocs/content/editing";
-import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  Fragment,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 
+import { EditorWordWrap } from "../lib/editor-settings";
+import { useEditorWordWrap } from "./editor-preferences";
 import type { SourceEditorHandle } from "./source-editor";
 
 function highlighted(source: string) {
-  if (source.length > 200_000) return source;
   const pattern =
     /^#{1,6} .*$|^---$|<\/?[A-Za-z][^>\n]*>|`[^`\n]*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\b(?:import|from|export|default|const|true|false|null)\b/gm;
   const spans = [];
@@ -49,6 +58,7 @@ export function FallbackSourceEditor({
   storageKey?: string;
   jump?: { line: number; token: number };
 }) {
+  const [wordWrap] = useEditorWordWrap();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const attachInput = useCallback(
     (element: HTMLTextAreaElement | null) => {
@@ -58,7 +68,18 @@ export function FallbackSourceEditor({
     [handleRef],
   );
   const display = value.replace(/\r\n?/g, "\n");
-  const tokens = useMemo(() => highlighted(display), [display]);
+  const lines = useMemo(
+    () => display.split("\n").map((text, index) => ({ number: index + 1, text })),
+    [display],
+  );
+  const tokens = useMemo(
+    () =>
+      lines.map((line) => ({
+        number: line.number,
+        content: display.length > 200_000 ? line.text : highlighted(line.text),
+      })),
+    [display, lines],
+  );
   const highlight = useRef<HTMLPreElement>(null);
   const numbers = useRef<HTMLPreElement>(null);
   const syncScroll = useCallback((input: HTMLTextAreaElement) => {
@@ -66,6 +87,26 @@ export function FallbackSourceEditor({
       highlight.current.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
     if (numbers.current) numbers.current.style.transform = `translateY(${-input.scrollTop}px)`;
   }, []);
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    const mirror = highlight.current;
+    const gutter = numbers.current;
+    if (!input || !mirror || !gutter || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      mirror.style.width = `${wordWrap === EditorWordWrap.On ? input.clientWidth : input.scrollWidth}px`;
+      const numbers = gutter.querySelectorAll<HTMLElement>(".source-line-number");
+      const lines = mirror.querySelectorAll<HTMLElement>(".source-line");
+      for (let index = 0; index < tokens.length; index++) {
+        const number = numbers[index];
+        if (number) number.style.height = `${lines[index]?.getBoundingClientRect().height}px`;
+      }
+      syncScroll(input);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [tokens, wordWrap, syncScroll]);
   function rememberPosition(input: HTMLTextAreaElement) {
     if (!storageKey) return;
     try {
@@ -101,20 +142,27 @@ export function FallbackSourceEditor({
       .reduce((sum, line) => sum + line.length + 1, 0);
     input.focus();
     input.setSelectionRange(offset, offset);
+    const target =
+      highlight.current?.querySelectorAll<HTMLElement>(".source-line")[
+        Math.min(Math.max(0, jump.line - 1), lines.length - 1)
+      ];
+    const lineHeight = Number.parseFloat(getComputedStyle(input).lineHeight) || 22;
     input.scrollTop = Math.max(
       0,
-      (jump.line - 3) * (Number.parseFloat(getComputedStyle(input).lineHeight) || 22),
+      target ? target.offsetTop - 2 * lineHeight : (jump.line - 3) * lineHeight,
     );
     syncScroll(input);
   }, [jump, syncScroll]);
   return (
-    <div className="source-editor">
+    <div className="source-editor" data-word-wrap={wordWrap}>
       <div className="source-gutter" aria-hidden="true">
         <pre ref={numbers} data-testid="source-lines">
-          {display
-            .split("\n")
-            .map((_line, index) => index + 1)
-            .join("\n")}
+          {lines.map((line) => (
+            <Fragment key={line.number}>
+              {line.number > 1 ? "\n" : null}
+              <span className="source-line-number">{line.number}</span>
+            </Fragment>
+          ))}
         </pre>
       </div>
       <div className="source-input">
@@ -124,13 +172,18 @@ export function FallbackSourceEditor({
           ref={highlight}
           aria-hidden="true"
         >
-          {tokens}
+          {tokens.map((line) => (
+            <Fragment key={line.number}>
+              {line.number > 1 ? "\n" : null}
+              <span className="source-line">{line.content}</span>
+            </Fragment>
+          ))}
         </pre>
         <textarea
           ref={attachInput}
           className="wb-source source-overlay"
           aria-label="Исходник документа"
-          wrap="off"
+          wrap={wordWrap === EditorWordWrap.On ? "soft" : "off"}
           value={display}
           readOnly={readOnly}
           spellCheck={false}

@@ -1,0 +1,8 @@
+{
+  "checks": [
+    "desktop: submission sends title and multiline description; pending state blocks resubmission",
+    "desktop: standalone MR creation sends description and completes without browser errors",
+    "mobile: submission sends title and multiline description; pending state blocks resubmission",
+    "mobile: standalone MR creation sends description and completes without browser errors"
+  ]
+}

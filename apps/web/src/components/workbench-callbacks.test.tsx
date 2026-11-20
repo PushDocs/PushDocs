@@ -3,6 +3,7 @@
 import { parseProjectConfig } from "@pushdocs/content";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { gitOperationStore } from "./git-operation-store";
 
 const mocks = vi.hoisted(() => ({
   explorer: {} as Record<string, (...args: never[]) => unknown>,
@@ -115,6 +116,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  gitOperationStore.clear();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -153,10 +155,18 @@ it("routes preview errors, formatting, remote search, and failed remote opens", 
   fireEvent.click(screen.getByRole("button", { name: "Файл и просмотр рядом" }));
   await act(async () => mocks.preview.onErrorLine?.(8 as never));
 
-  fireEvent.click(screen.getByRole("button", { name: /Найти файл/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Поиск" }));
   await expect(
     mocks.quickOpen.onSearchContent?.("needle" as never, new AbortController().signal as never),
   ).resolves.toEqual([]);
+  await mocks.quickOpen.onSearchContent?.(
+    "needle" as never,
+    new AbortController().signal as never,
+    { matchCase: true, wholeWord: true } as never,
+  );
+  expect(String(vi.mocked(fetch).mock.calls.at(-1)?.[0])).toContain(
+    "matchCase=true&wholeWord=true",
+  );
   vi.mocked(fetch).mockResolvedValueOnce(
     Response.json({ error: "search failed" }, { status: 500 }),
   );

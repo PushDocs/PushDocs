@@ -1,12 +1,10 @@
 "use client";
 
-import type { ProjectSummary } from "@pushdocs/contracts";
-import { SearchableSelect } from "@pushdocs/ui";
+import type { BranchSummary, ProjectSummary } from "@pushdocs/contracts";
 import {
   BookOpenText,
   ChevronDown,
   FolderGit2,
-  GitBranch,
   GitPullRequest,
   LogOut,
   Monitor,
@@ -20,10 +18,15 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { logoutAction } from "@/app/actions";
+import { projectChangesHref } from "@/lib/project-paths";
 import type { CurrentUser } from "@/lib/server";
+import { ProjectConflictProgress } from "./branch-conflicts";
+import { ProjectBranchImportProgress } from "./branch-import";
+import { branchConflictLabels } from "./git-operation-labels";
 import { documentHref, readProjectBranch, rememberProjectBranch } from "./project-context";
 import { PushDocsLogo } from "./pushdocs-logo";
 import { RealtimeRefresh } from "./realtime-refresh";
+import { SidebarBranchPicker } from "./sidebar-branch-picker";
 
 const projectNavigation = [
   { icon: BookOpenText, label: "Документы", segment: "documents" },
@@ -37,11 +40,13 @@ export function AppShell({
   children,
   projects,
   branchesByProject = {},
+  branchAttentionByProject = {},
   user,
 }: {
   children: ReactNode;
   projects: ProjectSummary[];
-  branchesByProject?: Record<string, Array<{ full_ref: string }>>;
+  branchesByProject?: Record<string, BranchSummary[]>;
+  branchAttentionByProject?: Record<string, string[]>;
   user: CurrentUser;
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -166,23 +171,18 @@ export function AppShell({
               title={`Текущая ветка: ${currentBranch || activeProject.defaultBranch}`}
             >
               <small>Текущая ветка</small>
-              <SearchableSelect
-                className="sidebar-branch-picker"
-                label="Выбрать текущую ветку"
-                leadingIcon={<GitBranch aria-hidden size={16} />}
+              <SidebarBranchPicker
+                key={activeProject.id}
+                projectId={activeProject.id}
+                ownerId={user.id}
+                provider={activeProject.provider}
+                defaultBranch={activeProject.defaultBranch}
+                branches={branchesByProject[activeProject.id] ?? []}
                 value={currentBranch || activeProject.defaultBranch}
-                fallbackLabel={currentBranch || activeProject.defaultBranch}
-                options={(branchesByProject[activeProject.id] ?? []).map((item) => ({
-                  label: item.full_ref,
-                  value: item.full_ref,
-                }))}
-                searchLabel="Поиск по веткам"
-                searchPlaceholder="Найти ветку…"
-                emptyText="Ветки не найдены"
                 onValueChange={(branch) => {
                   if (branch === (currentBranch || activeProject.defaultBranch)) return;
                   const href = pathname.endsWith("/changes")
-                    ? `/projects/${activeProject.id}/changes?${new URLSearchParams({ branch })}`
+                    ? projectChangesHref(activeProject.id, branch)
                     : documentHref(activeProject.id, branch);
                   const event = new CustomEvent("pushdocs:branch-switch", {
                     cancelable: true,
@@ -253,6 +253,15 @@ export function AppShell({
                   >
                     <Icon aria-hidden size={18} />
                     {label}
+                    {item.segment === "changes" &&
+                    branchAttentionByProject[activeProject.id]?.includes(branch) ? (
+                      <span
+                        className="sidebar-attention-dot"
+                        role="img"
+                        aria-label="Ветка требует внимания"
+                        title={branchConflictLabels.noticeTitle}
+                      />
+                    ) : null}
                   </Link>
                 );
               })}
@@ -286,7 +295,19 @@ export function AppShell({
           </form>
         </div>
       </aside>
-      <main className="app-main">{children}</main>
+      <main className="app-main">
+        <ProjectBranchImportProgress
+          projectId={activeProject?.id}
+          ownerId={user.id}
+          hidden={/\/(documents|changes)$/.test(pathname)}
+        />
+        <ProjectConflictProgress
+          projectId={activeProject?.id}
+          ownerId={user.id}
+          hidden={pathname === `/projects/${projectId}/documents`}
+        />
+        {children}
+      </main>
     </div>
   );
 }

@@ -1,6 +1,17 @@
-import type { ChangeRequestDetails, CheckRunSummary, ProviderKind } from "@pushdocs/contracts";
+import {
+  BranchUpdateStrategy,
+  type ChangeRequestDetails,
+  type CheckRunSummary,
+  type ProviderKind,
+} from "@pushdocs/contracts";
+import { ProviderHttpError } from "./errors";
+
+export { loadBranchUpdatePolicy } from "./branch-update-policy";
+export { ProviderHttpError } from "./errors";
 
 export interface ProviderRepository {
+  /** Default for auto mode; merge methods do not constrain direct source-branch pushes. */
+  defaultUpdateStrategy: BranchUpdateStrategy | null;
   cloneUrl: string;
   defaultBranch: string;
   fullName: string;
@@ -12,12 +23,14 @@ export interface ProviderBranch {
   name: string;
   sha: string;
   protected?: boolean;
+  lastCommitAt?: string | null;
 }
 
 export interface ProviderChangeRequest {
-  headSha: string;
+  headSha: string | null;
   id: string;
   sourceBranch: string;
+  sourceBranchIsLocal?: boolean | null;
   state: "open" | "merged" | "closed";
   targetBranch: string;
   title: string;
@@ -118,7 +131,10 @@ async function paginate<T>(
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(`Provider request failed with ${response.status}: ${detail.slice(0, 500)}`);
+    throw new ProviderHttpError(
+      response.status,
+      `Provider request failed with ${response.status}: ${detail.slice(0, 500)}`,
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -274,7 +290,7 @@ export class GitLabProvider implements GitProvider {
     if (existing) return existing;
     const row = await readJson<{
       iid: number;
-      sha: string;
+      sha?: string | null;
       source_branch: string;
       state: "opened" | "locked" | "merged" | "closed";
       target_branch: string;
@@ -292,7 +308,7 @@ export class GitLabProvider implements GitProvider {
       }),
     );
     return {
-      headSha: row.sha,
+      headSha: row.sha || null,
       id: String(row.iid),
       sourceBranch: row.source_branch,
       state: row.state === "opened" || row.state === "locked" ? "open" : row.state,
@@ -304,6 +320,7 @@ export class GitLabProvider implements GitProvider {
 
   async getRepository(repositoryId: string): Promise<ProviderRepository> {
     const row = await readJson<{
+      merge_method?: string;
       default_branch: string;
       http_url_to_repo: string;
       id: number;
@@ -311,6 +328,12 @@ export class GitLabProvider implements GitProvider {
       web_url: string;
     }>(await this.request(`projects/${encodeURIComponent(repositoryId)}`));
     return {
+      defaultUpdateStrategy:
+        row.merge_method === "merge"
+          ? BranchUpdateStrategy.Merge
+          : row.merge_method === "ff" || row.merge_method === "rebase_merge"
+            ? BranchUpdateStrategy.Rebase
+            : null,
       cloneUrl: row.http_url_to_repo,
       defaultBranch: row.default_branch,
       fullName: row.path_with_namespace,
@@ -320,13 +343,18 @@ export class GitLabProvider implements GitProvider {
   }
 
   async listBranches(repositoryId: string): Promise<ProviderBranch[]> {
-    const rows = await paginate<{ commit: { id: string }; name: string; protected?: boolean }>(
+    const rows = await paginate<{
+      commit: { id: string; committed_date?: string | null };
+      name: string;
+      protected?: boolean;
+    }>(
       (url) => this.request(url),
       `projects/${encodeURIComponent(repositoryId)}/repository/branches?per_page=100`,
     );
     return rows.map((row) => ({
       name: row.name,
       sha: row.commit.id,
+      ...(row.commit.committed_date ? { lastCommitAt: row.commit.committed_date } : {}),
       ...(typeof row.protected === "boolean" ? { protected: row.protected } : {}),
     }));
   }
@@ -349,8 +377,10 @@ export class GitLabProvider implements GitProvider {
     const rows = await readPages<{
       iid: number;
       merge_status: string;
-      sha: string;
+      sha?: string | null;
       source_branch: string;
+      source_project_id?: number | null;
+      target_project_id?: number;
       state: "opened" | "locked" | "merged" | "closed";
       target_branch: string;
       title: string;
@@ -361,9 +391,12 @@ export class GitLabProvider implements GitProvider {
       ),
     );
     return rows.map((row) => ({
-      headSha: row.sha,
+      headSha: row.sha || null,
       id: String(row.iid),
       sourceBranch: row.source_branch,
+      ...(row.source_project_id != null && row.target_project_id != null
+        ? { sourceBranchIsLocal: row.source_project_id === row.target_project_id }
+        : {}),
       state: row.state === "opened" || row.state === "locked" ? "open" : row.state,
       targetBranch: row.target_branch,
       title: row.title,
@@ -384,7 +417,7 @@ export class GitLabProvider implements GitProvider {
       available(() =>
         this.request(`${path}?with_labels_details=true`).then(
           readJson<{
-            sha: string;
+            sha?: string | null;
             source_project_id?: number | null;
             target_project_id?: number;
             source_branch?: string;
@@ -451,7 +484,13 @@ export class GitLabProvider implements GitProvider {
     }
     return {
       source,
-      headSha: review?.sha ?? null,
+      updateRequired: review?.has_conflicts
+        ? true
+        : review?.detailed_merge_status &&
+            !["checking", "unchecked", "preparing"].includes(review.detailed_merge_status)
+          ? ["need_rebase", "conflict"].includes(review.detailed_merge_status)
+          : null,
+      headSha: review?.sha || null,
       readiness: { state, reason },
       labels:
         review?.labels.map((label) =>
@@ -551,7 +590,10 @@ export class GitLabProvider implements GitProvider {
       `projects/${encodeURIComponent(repositoryId)}/repository/files/${encodeURIComponent(filePath)}/raw?${query.toString()}`,
     );
     if (!response.ok) {
-      throw new Error(`GitLab file request failed with ${response.status}`);
+      throw new ProviderHttpError(
+        response.status,
+        `GitLab file request failed with ${response.status}`,
+      );
     }
     return response.text();
   }
@@ -726,6 +768,9 @@ export class GitHubProvider implements GitProvider {
 
   async getRepository(repositoryId: string): Promise<ProviderRepository> {
     const row = await readJson<{
+      allow_merge_commit?: boolean;
+      allow_rebase_merge?: boolean;
+      allow_squash_merge?: boolean;
       clone_url: string;
       default_branch: string;
       full_name: string;
@@ -733,6 +778,12 @@ export class GitHubProvider implements GitProvider {
       id: number;
     }>(await this.request(`repos/${repositoryId}`));
     return {
+      defaultUpdateStrategy:
+        row.allow_merge_commit === true || row.allow_squash_merge === true
+          ? BranchUpdateStrategy.Merge
+          : row.allow_rebase_merge === true
+            ? BranchUpdateStrategy.Rebase
+            : null,
       cloneUrl: row.clone_url,
       defaultBranch: row.default_branch,
       fullName: row.full_name,
@@ -769,12 +820,12 @@ export class GitHubProvider implements GitProvider {
     state: "open" | "all" = "open",
   ): Promise<ProviderChangeRequest[]> {
     const rows = await readPages<{
-      head: { ref: string; sha: string };
+      head: { ref: string; sha: string; repo?: { id: number } | null };
       html_url: string;
       merged_at: string | null;
       number: number;
       state: "open" | "closed";
-      base: { ref: string };
+      base: { ref: string; repo?: { id: number } | null };
       title: string;
     }>((page) =>
       this.request(`repos/${repositoryId}/pulls?state=${state}&per_page=100&page=${page}`),
@@ -783,6 +834,9 @@ export class GitHubProvider implements GitProvider {
       headSha: row.head.sha,
       id: String(row.number),
       sourceBranch: row.head.ref,
+      ...(row.head.repo?.id != null && row.base.repo?.id != null
+        ? { sourceBranchIsLocal: row.head.repo.id === row.base.repo.id }
+        : {}),
       state: row.merged_at ? "merged" : row.state,
       targetBranch: row.base.ref,
       title: row.title,
@@ -890,6 +944,12 @@ export class GitHubProvider implements GitProvider {
         })),
     ];
     return {
+      updateRequired:
+        review?.mergeable === false
+          ? true
+          : review?.mergeable_state && review.mergeable_state !== "unknown"
+            ? ["behind", "dirty"].includes(review.mergeable_state)
+            : null,
       source: review?.base
         ? {
             repositoryId: review.head.repo?.full_name ?? null,

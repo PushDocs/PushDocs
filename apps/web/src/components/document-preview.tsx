@@ -3,17 +3,50 @@
 import {
   Children,
   Component,
+  createContext,
   isValidElement,
   type ReactNode,
+  useContext,
   useId,
   useMemo,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkDirective from "remark-directive";
 import remarkGfm from "remark-gfm";
 import remarkMdx from "remark-mdx";
 import { type PreviewContext, preparePreviewSource, previewPlugin } from "./preview-markdown";
+
+const PreviewLinkContext = createContext<ReactNode>(null);
+
+// Stable renderers preserve interactive preview state when the workbench updates.
+const previewComponents: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  span: function PreviewSpan({ node: _node, children, className, ...props }) {
+    const previewLink = useContext(PreviewLinkContext);
+    return (
+      <span className={className} {...props}>
+        {children}
+        {className === "wb-preview-component" ? previewLink : null}
+      </span>
+    );
+  },
+  div: function PreviewDiv({ node: _node, children, className, ...props }) {
+    const previewLink = useContext(PreviewLinkContext);
+    return className === "wb-preview-component" ? (
+      <div className={className} {...props}>
+        {children}
+        {previewLink}
+      </div>
+    ) : className === "wb-preview-tabs" ? (
+      <TabsPreview>{children}</TabsPreview>
+    ) : (
+      <div className={className} {...props}>
+        {children}
+      </div>
+    );
+  },
+};
 
 export function DocumentPreview({
   source,
@@ -51,35 +84,14 @@ export function DocumentPreview({
   return (
     <article className="wb-markdown">
       <PreviewBoundary key={source} onErrorLine={onErrorLine} lineMap={prepared.lines}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMdx, remarkDirective, plugin]}
-          components={{
-            a: ({ node: _node, ...props }) => (
-              <a {...props} target="_blank" rel="noopener noreferrer" />
-            ),
-            span: ({ node: _node, children, className, ...props }) => (
-              <span className={className} {...props}>
-                {children}
-                {className === "wb-preview-component" ? previewLink : null}
-              </span>
-            ),
-            div: ({ node: _node, children, className, ...props }) =>
-              className === "wb-preview-component" ? (
-                <div className={className} {...props}>
-                  {children}
-                  {previewLink}
-                </div>
-              ) : className === "wb-preview-tabs" ? (
-                <TabsPreview>{children}</TabsPreview>
-              ) : (
-                <div className={className} {...props}>
-                  {children}
-                </div>
-              ),
-          }}
-        >
-          {prepared.source}
-        </ReactMarkdown>
+        <PreviewLinkContext value={previewLink}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMdx, remarkDirective, plugin]}
+            components={previewComponents}
+          >
+            {prepared.source}
+          </ReactMarkdown>
+        </PreviewLinkContext>
       </PreviewBoundary>
     </article>
   );

@@ -7,6 +7,8 @@ import { AuthPanel } from "@/components/auth-panel";
 import { CopyTwoFactorSecret } from "@/components/copy-two-factor-secret";
 import { authenticationSession } from "@/lib/two-factor";
 
+const twoFactorFormId = "two-factor-confirmation";
+
 export default async function TwoFactorPage({
   searchParams,
 }: {
@@ -110,18 +112,15 @@ export default async function TwoFactorPage({
         </div>
       ) : null}
       {setup && !secret ? (
-        <form action={beginTwoFactorAction} className="auth-form">
+        <form id={twoFactorFormId} action={beginTwoFactorAction} className="auth-form">
           <p>Настройка истекла. Подтвердите пароль, чтобы начать снова.</p>
           <label>
             Пароль
             <input name="password" type="password" required autoComplete="current-password" />
           </label>
-          <button type="submit" className="pd-button pd-button--primary">
-            Начать заново
-          </button>
         </form>
       ) : secret ? null : (
-        <form action={verifyTwoFactorAction} className="auth-form">
+        <form id={twoFactorFormId} action={verifyTwoFactorAction} className="auth-form">
           <label>
             Код 2FA
             <input
@@ -134,16 +133,20 @@ export default async function TwoFactorPage({
               required
             />
           </label>
-          <button className="pd-button pd-button--primary" type="submit">
-            {setup ? "Включить 2FA" : "Подтвердить вход"}
-          </button>
         </form>
       )}
-      <form action={logoutAction} className={secret ? "two-factor-exit" : undefined}>
-        <button type="submit" className="pd-button pd-button--secondary">
-          Выйти
-        </button>
-      </form>
+      <div className={secret ? "two-factor-exit" : "form-actions"}>
+        <form action={logoutAction}>
+          <button type="submit" className="pd-button pd-button--secondary">
+            Выйти
+          </button>
+        </form>
+        {!secret ? (
+          <button form={twoFactorFormId} type="submit" className="pd-button pd-button--primary">
+            {setup ? "Начать заново" : "Подтвердить вход"}
+          </button>
+        ) : null}
+      </div>
     </AuthPanel>
   );
 }
