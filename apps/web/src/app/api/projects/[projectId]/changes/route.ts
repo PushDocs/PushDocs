@@ -1,5 +1,8 @@
-import { safePath } from "@pushdocs/content";
+import { parseProjectConfig, safePath } from "@pushdocs/content";
+import { projectConfigPaths } from "@pushdocs/contracts";
+import { RevisionConflictError } from "@pushdocs/db";
 import { z } from "zod";
+import { revertDiffLines, textDiffLimits } from "@/components/text-diff";
 import { readJsonBody } from "@/lib/request-body";
 import { repository, requireUser } from "@/lib/server";
 import { apiError, assertSameOrigin } from "@/lib/workbench";
@@ -8,6 +11,8 @@ const command = z.object({
   branch: z.string().min(1),
   path: z.string().min(1),
   expectedRevision: z.number().int().nonnegative(),
+  expectedHeadSha: z.string().min(1).optional(),
+  lineIds: z.array(z.number().int().nonnegative()).min(1).max(textDiffLimits.lines).optional(),
 });
 
 export async function POST(request: Request, context: { params: Promise<{ projectId: string }> }) {
@@ -19,9 +24,9 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     const path = safePath(input.path);
     const store = repository();
     const access = await store.requireProjectAccess(user.id, projectId, "document:write");
-    if (path === ".pushdocs/config.json" && access.role !== "admin")
+    if (path === projectConfigPaths.config && access.role !== "admin")
       throw new Error("Конфигурацию изменяет администратор");
-    const { changeSet } = await store.getBranchState(projectId, input.branch);
+    const { branch, changeSet } = await store.getBranchState(projectId, input.branch);
     if (!changeSet) throw new Error("В этой ветке нет неотправленных изменений");
     const drafts = await store.listDraftFiles(projectId, input.branch);
     const uploads = await store.listAttachments(projectId);
@@ -30,14 +35,35 @@ export async function POST(request: Request, context: { params: Promise<{ projec
       !uploads.some((file) => file.repository_path === path && file.change_set_id === changeSet.id)
     )
       throw new Error("У файла нет неотправленных изменений");
-    await store.stageFiles({
+    let content: string | undefined;
+    let reverted = true;
+    if (input.lineIds) {
+      if (
+        changeSet.revision !== input.expectedRevision ||
+        changeSet.status !== "open" ||
+        branch.head_commit_sha !== input.expectedHeadSha
+      )
+        throw new RevisionConflictError("Изменения обновились. Обновите страницу.");
+      if (
+        uploads.some((file) => file.repository_path === path && file.change_set_id === changeSet.id)
+      )
+        throw new Error("Для этого файла доступен только полный откат");
+      const file = await store.getWorkingFile(projectId, input.branch, path);
+      if (!file?.baseContentKnown)
+        throw new Error("Исходная версия недоступна для построчного отката");
+      content = revertDiffLines(file.baseContent, file.content, input.lineIds);
+      reverted = content === file.baseContent;
+      if (!reverted && path === projectConfigPaths.config) parseProjectConfig(content);
+    }
+    const saved = await store.stageFiles({
       projectId,
       branch: input.branch,
       userId: user.id,
       expectedRevision: input.expectedRevision,
-      files: [{ path, revert: true }],
+      ...(input.lineIds ? { expectedHeadSha: input.expectedHeadSha } : {}),
+      files: [reverted ? { path, revert: true } : { path, content }],
     });
-    return Response.json({ reverted: true });
+    return Response.json({ reverted, ...saved, ...(content !== undefined ? { content } : {}) });
   } catch (error) {
     return apiError(error);
   }

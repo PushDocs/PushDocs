@@ -52,6 +52,8 @@ export type ProviderRequest = (input: string | URL, init?: RequestInit) => Promi
 
 export interface GitProvider {
   compareFiles?(repositoryId: string, base: string, head: string): Promise<ProviderFileStatus[]>;
+  /** Compare immutable commit SHAs rather than mutable branch names. */
+  isAncestor?(repositoryId: string, ancestor: string, head: string): Promise<boolean>;
   readonly kind: ProviderKind;
   createBranch(repositoryId: string, name: string, ref: string): Promise<ProviderBranch>;
   commitFiles(input: {
@@ -139,6 +141,16 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function mergeBaseIncludes(mergeBase: unknown, ancestor: string) {
+  if (typeof mergeBase !== "string" || !mergeBase)
+    throw new Error("Provider did not return a merge base");
+  return mergeBase === ancestor;
+}
+
+function githubComparisonPath(repositoryId: string, base: string, head: string) {
+  return `repos/${repositoryId}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`;
+}
+
 async function readBytes(response: Response, limit = 64 * 1024 * 1024): Promise<Uint8Array> {
   if (!response.ok) throw new Error(`Provider file request failed with ${response.status}`);
   if (!response.body || Number(response.headers.get("content-length")) > limit)
@@ -162,6 +174,18 @@ async function readBytes(response: Response, limit = 64 * 1024 * 1024): Promise<
 
 export class GitLabProvider implements GitProvider {
   readonly kind = "gitlab" as const;
+  async isAncestor(repositoryId: string, ancestor: string, head: string): Promise<boolean> {
+    const refs = new URLSearchParams([
+      ["refs[]", ancestor],
+      ["refs[]", head],
+    ]);
+    const result = await readJson<{ id?: string }>(
+      await this.request(
+        `projects/${encodeURIComponent(repositoryId)}/repository/merge_base?${refs}`,
+      ),
+    );
+    return mergeBaseIncludes(result.id, ancestor);
+  }
   async readBinary(repositoryId: string, ref: string, filePath: string): Promise<Uint8Array> {
     return readBytes(
       await this.request(
@@ -601,6 +625,12 @@ export class GitLabProvider implements GitProvider {
 
 export class GitHubProvider implements GitProvider {
   readonly kind = "github" as const;
+  async isAncestor(repositoryId: string, ancestor: string, head: string): Promise<boolean> {
+    const result = await readJson<{ merge_base_commit?: { sha?: string } }>(
+      await this.request(githubComparisonPath(repositoryId, ancestor, head)),
+    );
+    return mergeBaseIncludes(result.merge_base_commit?.sha, ancestor);
+  }
   async readBinary(repositoryId: string, ref: string, filePath: string): Promise<Uint8Array> {
     return readBytes(
       await this.request(
@@ -616,11 +646,7 @@ export class GitHubProvider implements GitProvider {
   ): Promise<ProviderFileStatus[]> {
     const result = await readJson<{
       files: Array<{ filename: string; previous_filename?: string; status: string }>;
-    }>(
-      await this.request(
-        `repos/${repositoryId}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
-      ),
-    );
+    }>(await this.request(githubComparisonPath(repositoryId, base, head)));
     if (result.files.length >= 300) throw new Error("GitHub ограничил список изменений ветки");
     return result.files.flatMap((file): ProviderFileStatus[] =>
       file.status === "renamed" && file.previous_filename

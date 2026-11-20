@@ -331,7 +331,14 @@ function App() {
         <ReviewMissingBranchNotice
           projectId="project"
           defaultBranch="stable"
-          reviewBranches={[branch]}
+          branchReviews={[
+            {
+              ...review,
+              external_id: "7",
+              state: "open",
+              title: "Documentation",
+            },
+          ]}
           reviewLabel="MR"
         />
         <div className="reviews-layout">

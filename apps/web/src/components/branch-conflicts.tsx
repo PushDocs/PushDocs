@@ -167,12 +167,13 @@ export function ReviewConflictFiles({
 
 type ConflictReviewProps = {
   projectId: string;
+  /** Review ID or a namespaced reference to a branch update operation. */
   reviewId: string;
   branch: string;
   targetBranch: string;
   ownerId: string;
   canWrite: boolean;
-  providerUrl: string;
+  providerUrl?: string;
   reviewLabel: string;
 };
 
@@ -340,6 +341,8 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
     (phase === ResolutionPhase.Submitting ||
       phase === ResolutionPhase.Sending ||
       phase === ResolutionPhase.Retrying);
+  const sending = phase === ResolutionPhase.Submitting || phase === ResolutionPhase.Sending;
+  const sendingLabel = `Отправляем решение в ${branch}…`;
   return (
     <div className="page branch-conflict-page">
       <header className="page-header">
@@ -352,16 +355,20 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
         </div>
         <Link
           className="pd-button pd-button--secondary"
-          href={`/projects/${projectId}/reviews?${new URLSearchParams({ review: reviewId })}`}
+          href={
+            providerUrl
+              ? `/projects/${projectId}/reviews?${new URLSearchParams({ review: reviewId })}`
+              : projectChangesHref(projectId, branch)
+          }
         >
-          Вернуться к {reviewLabel}
+          {providerUrl ? `Вернуться к ${reviewLabel}` : "Вернуться к изменениям"}
         </Link>
       </header>
       {phase === ResolutionPhase.Done ? (
         <section className="empty-state">
           <GitMerge aria-hidden />
           <h2>Решение отправлено в {branch}</h2>
-          <p>{reviewLabel} обновится после синхронизации с Git.</p>
+          {providerUrl ? <p>{reviewLabel} обновится после синхронизации с Git.</p> : null}
         </section>
       ) : (
         <>
@@ -449,28 +456,34 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
                     className="pd-button pd-button--primary"
                     type="button"
                     disabled={!canSubmit}
+                    aria-busy={sending}
                     onClick={() => void submit()}
                   >
-                    {snapshot.rebase
-                      ? "Сохранить и продолжить"
-                      : `Отправить исправления в ${branch}`}
+                    {sending ? <LoaderCircle className="spin" aria-hidden size={16} /> : null}
+                    {sending
+                      ? sendingLabel
+                      : snapshot.rebase
+                        ? "Сохранить и продолжить"
+                        : `Отправить исправления в ${branch}`}
                   </button>
                 ) : null}
-                {snapshot.rebase && phase === ResolutionPhase.Editing && canWrite ? (
+                {(snapshot.rebase || snapshot.merge) &&
+                phase === ResolutionPhase.Editing &&
+                canWrite ? (
                   <button
                     className="pd-button pd-button--secondary"
                     type="button"
                     onClick={() => void cancelRebase()}
                   >
-                    {rebaseCancelLabels.idle}
+                    {snapshot.rebase ? rebaseCancelLabels.idle : "Отменить обновление"}
                   </button>
                 ) : null}
               </div>
             </>
           ) : null}
-          {phase === ResolutionPhase.Sending && !updatingBranch ? (
+          {phase === ResolutionPhase.Sending && !updatingBranch && !snapshot ? (
             <p role="status">
-              <LoaderCircle className="spin" aria-hidden size={16} /> Отправляем решение в {branch}…
+              <LoaderCircle className="spin" aria-hidden size={16} /> {sendingLabel}
             </p>
           ) : null}
           {error ? <p role="alert">{error}</p> : null}
@@ -491,11 +504,13 @@ function ConflictResolverContent(props: ConflictReviewProps & { defaultBranch: s
           ) : null}
         </>
       )}
-      <p>
-        <a href={providerUrl} target="_blank" rel="noreferrer">
-          Открыть {reviewLabel}
-        </a>
-      </p>
+      {providerUrl ? (
+        <p>
+          <a href={providerUrl} target="_blank" rel="noreferrer">
+            Открыть {reviewLabel}
+          </a>
+        </p>
+      ) : null}
     </div>
   );
 }

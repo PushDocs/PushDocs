@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTextDiff, foldDiff, pairDiffLines } from "./text-diff";
+import { buildTextDiff, diffHunks, foldDiff, pairDiffLines, revertDiffLines } from "./text-diff";
 
 describe("text diff", () => {
   it("numbers insertions and deletions independently and aligns replacements", () => {
@@ -67,4 +67,31 @@ describe("text diff", () => {
   it("bounds the amount of work for very large files", () => {
     expect(buildTextDiff("", "line\n".repeat(20001))).toBeNull();
   });
+
+  it("reverts a replacement without touching other changes or mixed line endings", () => {
+    const before = "start\r\nold\nkeep\r\nlast";
+    const after = "start\r\nnew\nkeep\r\nchanged";
+    const hunks = diffHunks(buildTextDiff(before, after)?.lines ?? []);
+    expect(hunks.map((hunk) => hunk.modifiedLine)).toEqual([2, 4]);
+    expect(revertDiffLines(before, after, hunks[0]?.lines.map((line) => line.id) ?? [])).toBe(
+      "start\r\nold\nkeep\r\nchanged",
+    );
+  });
+
+  it.each([
+    ["", "new\nfile", [0, 1], ""],
+    ["deleted\r\nfile", "", [0], "deleted\r\n"],
+    ["old\n", "new\n", [0, 1], "old\n"],
+    ["a\r\n", "a\n", [0, 1], "a\r\n"],
+    ["a\n", "a", [0, 1], "a\n"],
+  ])("reverts added/deleted lines and EOF changes: %j → %j", (before, after, ids, expected) => {
+    expect(revertDiffLines(before, after, ids)).toBe(expected);
+  });
+
+  it.each([[], [0], [1, 1], [99]])(
+    "rejects empty, context, duplicate or missing IDs: %j",
+    (...ids) => {
+      expect(() => revertDiffLines("same\nold\n", "same\nnew\n", ids)).toThrow();
+    },
+  );
 });

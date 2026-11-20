@@ -70,6 +70,23 @@ it("starts loading a branch absent from the local catalog", async () => {
   expect(view.props.branch).toBe("docs/fix");
   expect(mocks.context).toHaveBeenCalledWith("project", "docs/fix", { id: "user" });
 });
+
+it("passes the requested editor line and changes return context", async () => {
+  mocks.imported.mockResolvedValue(true);
+  const view = await DocumentsPage({
+    params: Promise.resolve({ projectId: "project" }),
+    searchParams: Promise.resolve({
+      branch: "docs/fix",
+      path: "docs/a.md",
+      line: "25",
+      from: "changes",
+      search: "docs/",
+    }),
+  });
+  expect(view.type).toBe(Workbench);
+  expect(view.props.initialLine).toBe(25);
+  expect(view.props.returnToChanges).toEqual({ path: "docs/a.md", line: "25", search: "docs/" });
+});
 it("loads a catalog-only branch instead of opening an empty editor", async () => {
   expect((await page()).type).toBe(BranchImport);
   expect(mocks.context).toHaveBeenCalledWith("project", "docs/fix", { id: "user" });
@@ -77,6 +94,14 @@ it("loads a catalog-only branch instead of opening an empty editor", async () =>
 it("opens a successfully imported empty repository", async () => {
   mocks.imported.mockResolvedValue(true);
   expect((await page()).type).toBe(Workbench);
+});
+
+it("passes the known Git head to the editor", async () => {
+  mocks.imported.mockResolvedValue(true);
+  const context = await mocks.context();
+  context.state.branch.remote_head_sha = "remote-head";
+  const view = await page();
+  expect(view.props.initial).toMatchObject({ sha: "sha", remoteHeadSha: "remote-head" });
 });
 
 it.each(["conflict", "dirty", "need_rebase", "behind"])(

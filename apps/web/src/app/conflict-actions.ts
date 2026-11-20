@@ -3,6 +3,7 @@
 import {
   branchConflictRepositoryKey,
   branchConflictResolutionSchema,
+  branchUpdateConflictOperationId,
   branchUpdateLimits,
   branchUpdateWaitingStatus,
 } from "@pushdocs/contracts";
@@ -11,16 +12,41 @@ import { z } from "zod";
 import { providerForConnection } from "@/lib/provider";
 import { repository, requireUser } from "@/lib/server";
 
-async function conflictReview(projectId: string, reviewId: string) {
+async function conflictContext(projectId: string, reference: string) {
   const user = await requireUser();
   const store = repository();
   await store.requireProjectAccess(user.id, projectId, "project:read");
+  const operationId = branchUpdateConflictOperationId(reference);
+  if (operationId !== undefined) {
+    const operation = await store.getBranchUpdateOperation(
+      projectId,
+      z.string().uuid().parse(operationId),
+    );
+    const payload = operation?.payload as { branch?: string; sourceBranch?: string } | undefined;
+    if (!operation || !payload?.branch || !payload.sourceBranch)
+      throw new Error("Операция обновления ветки недоступна.");
+    return {
+      user,
+      store,
+      operation,
+      review: undefined,
+      branch: payload.branch,
+      sourceBranch: payload.sourceBranch,
+    };
+  }
   const review = (await store.listChangeRequests(projectId, "open")).find(
-    (item) => item.id === reviewId,
+    (item) => item.id === reference,
   );
   if (review?.details?.source?.isFork !== false)
     throw new Error("Исходная ветка PR / MR недоступна для разрешения конфликтов.");
-  return { user, store, review };
+  return {
+    user,
+    store,
+    review,
+    operation: undefined,
+    branch: review.source_branch,
+    sourceBranch: review.target_branch,
+  };
 }
 
 export async function prepareConflictResolutionAction(
@@ -28,10 +54,8 @@ export async function prepareConflictResolutionAction(
   reviewId: string,
   currentBranch: string,
 ) {
-  const { store, review } = await conflictReview(projectId, reviewId);
-  const branches = [
-    ...new Set([review.source_branch, z.string().min(1).max(255).parse(currentBranch)]),
-  ];
+  const { store, branch } = await conflictContext(projectId, reviewId);
+  const branches = [...new Set([branch, z.string().min(1).max(255).parse(currentBranch)])];
   return Promise.all(branches.map((branch) => store.getBranchConflictBlockers(projectId, branch)));
 }
 
@@ -40,7 +64,14 @@ export async function inspectReviewConflictsAction(
   reviewId: string,
   refresh = false,
 ) {
-  const { user, store, review } = await conflictReview(projectId, reviewId);
+  const context = await conflictContext(projectId, reviewId);
+  const { user, store, review } = context;
+  if (context.operation) {
+    if ([branchUpdateWaitingStatus, "queued", "running"].includes(context.operation.status))
+      return context.operation.id;
+    throw new Error("Операция больше не ожидает разрешения конфликтов. Обновите страницу.");
+  }
+  if (!review) throw new Error("PR / MR недоступен");
   const active = await store.getActiveReviewBranchUpdate(projectId, review.source_branch);
   if (active?.status === branchUpdateWaitingStatus) return active.id;
   const target = await store.getProjectSyncTarget(projectId);
@@ -79,8 +110,17 @@ export async function submitConflictResolutionAction(
   inspectionId: string,
   files: unknown,
   conflictId?: string,
+  mergeConflictId?: string,
 ) {
   const user = await requireUser();
+  if (mergeConflictId)
+    return repository().continueMergeUpdate({
+      projectId,
+      operationId: inspectionId,
+      conflictId: z.string().min(1).max(branchUpdateLimits.conflictIdChars).parse(mergeConflictId),
+      files: branchConflictResolutionSchema.parse(files),
+      userId: user.id,
+    });
   if (conflictId)
     return repository().continueRebaseUpdate({
       projectId,

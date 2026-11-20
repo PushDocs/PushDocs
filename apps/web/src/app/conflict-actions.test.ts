@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   provider: vi.fn(),
   branches: vi.fn(),
+  operation: vi.fn(),
+  blockers: vi.fn(),
+  continueMerge: vi.fn(),
 }));
 vi.mock("@/lib/server", () => ({
   requireUser: async () => ({ id: "user" }),
@@ -29,6 +32,9 @@ vi.mock("@/lib/server", () => ({
     retryReviewBranchUpdate: mocks.retryUpdate,
     retryConflictMerge: mocks.retryMerge,
     cancelRebaseUpdate: mocks.cancel,
+    getBranchUpdateOperation: mocks.operation,
+    getBranchConflictBlockers: mocks.blockers,
+    continueMergeUpdate: mocks.continueMerge,
   }),
 }));
 vi.mock("@/lib/provider", () => ({ providerForConnection: mocks.provider }));
@@ -36,6 +42,7 @@ vi.mock("@/lib/provider", () => ({ providerForConnection: mocks.provider }));
 import {
   cancelRebaseUpdateAction,
   inspectReviewConflictsAction,
+  prepareConflictResolutionAction,
   retryConflictResolutionAction,
   submitConflictResolutionAction,
 } from "./conflict-actions";
@@ -86,6 +93,52 @@ it("validates both live heads before using a cached result", async () => {
       updatePolicy: resolvedBranchUpdatePolicy({ configPath: "docs/.pushdocs/config.json" }),
     },
   );
+});
+
+it("opens an operation-backed conflict without loading or requiring a review", async () => {
+  const operationId = "00000000-0000-4000-8000-000000000001";
+  const reference = `branch-update:${operationId}`;
+  mocks.operation.mockResolvedValue({
+    id: operationId,
+    status: "needs_resolution",
+    payload: { branch: "task", sourceBranch: "main" },
+  });
+  mocks.blockers.mockImplementation(async (_project, branch) => ({
+    branch,
+    paths: [],
+    busy: true,
+    mergeJobId: operationId,
+  }));
+  expect(await inspectReviewConflictsAction("project", reference)).toBe(operationId);
+  expect(await prepareConflictResolutionAction("project", reference, "main")).toHaveLength(2);
+  expect(mocks.operation).toHaveBeenCalledWith("project", operationId);
+  expect(mocks.reviews).not.toHaveBeenCalled();
+  expect(mocks.provider).not.toHaveBeenCalled();
+  mocks.operation.mockResolvedValue(undefined);
+  await expect(inspectReviewConflictsAction("another-project", reference)).rejects.toThrow(
+    "недоступна",
+  );
+});
+
+it("continues a merge on the same operation using its exact snapshot token", async () => {
+  mocks.continueMerge.mockResolvedValue("merge-operation");
+  expect(
+    await submitConflictResolutionAction(
+      "project",
+      "merge-operation",
+      [{ path: "docs/a.md", choice: "ours" }],
+      undefined,
+      "merge-token",
+    ),
+  ).toBe("merge-operation");
+  expect(mocks.continueMerge).toHaveBeenCalledWith({
+    projectId: "project",
+    operationId: "merge-operation",
+    conflictId: "merge-token",
+    files: [{ path: "docs/a.md", choice: "ours" }],
+    userId: "user",
+  });
+  expect(mocks.continueRebase).not.toHaveBeenCalled();
 });
 
 it("opens and continues the same paused rebase with the exact conflict token", async () => {

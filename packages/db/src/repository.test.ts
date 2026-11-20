@@ -211,6 +211,168 @@ async function reviewUpdateFixture() {
   return { ...fixture, review, input, prepared };
 }
 
+async function branchOnlyUpdateFixture(strategy = BranchUpdateStrategy.Merge) {
+  const f = await synchronizedProject();
+  await repository.replaceImportedDocuments(f.projectId, "docs/task", "task-head", [
+    {
+      path: "docs/intro.md",
+      content: "# Task",
+      contentHash: "task",
+      title: "Task",
+      locale: "default",
+      version: "current",
+    },
+  ]);
+  const input = {
+    projectId: f.projectId,
+    branch: "docs/task",
+    sourceBranch: "main",
+    expectedHeadSha: "task-head",
+    updatePolicy: resolvedBranchUpdatePolicy({ strategy, targetSha: "head-1" }),
+    repositoryKey: "repository-key",
+    userId: f.operatorId,
+  };
+  return { ...f, input };
+}
+
+it.each([BranchUpdateStrategy.Merge, BranchUpdateStrategy.Rebase])(
+  "queues one branch-only %s operation without a review",
+  async (strategy) => {
+    const f = await branchOnlyUpdateFixture(strategy);
+    const id = await repository.queueBranchUpdate(f.input);
+    expect(await repository.queueBranchUpdate(f.input)).toBe(id);
+    expect(await repository.listChangeRequests(f.projectId)).toEqual([]);
+    const operation = await repository.getBranchUpdateOperation(f.projectId, id);
+    expect(operation?.payload).toMatchObject({
+      branchOnly: true,
+      strategy,
+      expectedHeadSha: "task-head",
+      repositoryKey: "repository-key",
+    });
+    await expect(
+      repository.queueBranchUpdate({ ...f.input, expectedHeadSha: "new-head" }),
+    ).rejects.toThrow("уже обновляется");
+  },
+);
+
+it("persists and continues a branch-only merge with idempotent decisions and recovery", async () => {
+  const f = await branchOnlyUpdateFixture();
+  const id = await repository.queueBranchUpdate(f.input);
+  expect(await repository.getBranchUpdateOperation(f.projectId, "not-a-uuid")).toBeUndefined();
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 1 })
+    .where("id", "=", id)
+    .execute();
+  const snapshot: BranchConflictSnapshot = {
+    branch: "docs/task",
+    sourceBranch: "main",
+    parentSha: "task-head",
+    sourceSha: "head-1",
+    updatePolicy: f.input.updatePolicy,
+    merge: { operationId: id, conflictId: "merge-token" },
+    files: [
+      {
+        path: "docs/intro.md",
+        kind: "text",
+        baseContent: "Base",
+        oursContent: "Ours",
+        theirsContent: "Theirs",
+        oursExists: true,
+        theirsExists: true,
+      },
+    ],
+  };
+  await repository.pauseMergeUpdate(id, 1, snapshot, "repository-key");
+  expect(await repository.listBranchesNeedingAttention(f.projectId)).toContain("docs/task");
+  expect(await repository.getMcpOperation(f.projectId, id)).toMatchObject({
+    result: { needsConflictResolution: true, comparisonKind: "merge" },
+  });
+  expect(
+    (await repository.getMcpConflictInspection(f.projectId, id))?.externalReviewId,
+  ).toBeUndefined();
+  const continuation = {
+    projectId: f.projectId,
+    operationId: id,
+    conflictId: "merge-token",
+    userId: f.operatorId,
+    files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Ours }],
+  };
+  await expect(
+    repository.continueMergeUpdate({ ...continuation, conflictId: "stale" }),
+  ).rejects.toThrow("изменился");
+  expect(await repository.continueMergeUpdate(continuation)).toBe(id);
+  expect(await repository.continueMergeUpdate(continuation)).toBe(id);
+  await expect(
+    repository.continueMergeUpdate({
+      ...continuation,
+      files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Theirs }],
+    }),
+  ).rejects.toThrow("другое решение");
+  await database.updateTable("jobs").set({ status: "failed" }).where("id", "=", id).execute();
+  expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toMatchObject({
+    id,
+  });
+  expect(await repository.retryReviewBranchUpdate(f.projectId, id, f.operatorId)).toBe(id);
+  expect((await repository.getBranchUpdateOperation(f.projectId, id))?.payload).toMatchObject({
+    resolutionSnapshot: snapshot,
+    resolutionFiles: continuation.files,
+  });
+});
+
+it("cancels a paused branch-only merge and releases its attention and reservation", async () => {
+  const f = await branchOnlyUpdateFixture();
+  const id = await repository.queueBranchUpdate(f.input);
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 1 })
+    .where("id", "=", id)
+    .execute();
+  await repository.pauseMergeUpdate(
+    id,
+    1,
+    {
+      branch: "docs/task",
+      sourceBranch: "main",
+      parentSha: "task-head",
+      sourceSha: "head-1",
+      files: [],
+      updatePolicy: f.input.updatePolicy,
+      merge: { operationId: id, conflictId: "token" },
+    },
+    "repository-key",
+  );
+  await repository.cancelRebaseUpdate(f.projectId, id, "token", f.operatorId);
+  expect(await repository.listBranchesNeedingAttention(f.projectId)).toEqual([]);
+  expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toBeUndefined();
+  expect(await repository.getBranchUpdateOperation(f.projectId, id)).toBeUndefined();
+});
+
+it("blocks branch-only updates for saved drafts and protected branches", async () => {
+  const f = await branchOnlyUpdateFixture();
+  await database
+    .updateTable("branch_contexts")
+    .set({ is_protected: true })
+    .where("project_id", "=", f.projectId)
+    .where("full_ref", "=", "docs/task")
+    .execute();
+  await expect(repository.queueBranchUpdate(f.input)).rejects.toThrow("недоступны");
+  await database
+    .updateTable("branch_contexts")
+    .set({ is_protected: false })
+    .where("project_id", "=", f.projectId)
+    .where("full_ref", "=", "docs/task")
+    .execute();
+  await repository.createDraftDocument({
+    projectId: f.projectId,
+    branch: "docs/task",
+    path: "docs/new.md",
+    content: "# Draft",
+    userId: f.operatorId,
+  });
+  await expect(repository.queueBranchUpdate(f.input)).rejects.toThrow("текущие изменения");
+});
+
 async function failedReviewUpdateFixture(state: "closed" | "merged" = "merged") {
   const fixture = await reviewUpdateFixture();
   const id = await repository.queueReviewBranchUpdate(fixture.input);

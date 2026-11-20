@@ -22,6 +22,19 @@ export async function startFixtureServer() {
   const shared = new Y.Doc();
   shared.getText("source").insert(0, "abc");
   const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/api/projects/project/branch-freshness")) {
+      const query = new URL(request.url, "http://fixture.test").searchParams;
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          remoteSha: "remote",
+          defaultBranch: "stable",
+          defaultHeadSha: "remote",
+          includesDefaultBranch: query.get("branch") === "stable",
+        }),
+      );
+      return;
+    }
     if (request.url?.startsWith("/events")) {
       response.setHeader("Content-Type", "text/event-stream");
       response.write(": connected\n\n");

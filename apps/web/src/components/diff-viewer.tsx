@@ -1,12 +1,19 @@
 "use client";
 
 import { Columns2, List, UnfoldVertical } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { DiffActions } from "./diff-actions";
 import { useDiffLayout } from "./diff-layout";
 import { useEditorWordWrap } from "./editor-preferences";
 import { MonacoDiff } from "./monaco-diff";
 import { useMonaco } from "./monaco-runtime";
-import { buildTextDiff, type DiffLine, foldDiff, pairDiffLines } from "./text-diff";
+import {
+  buildTextDiff,
+  type DiffLine,
+  diffLineTargets,
+  foldDiff,
+  pairDiffLines,
+} from "./text-diff";
 
 export function DiffViewer({
   before,
@@ -15,6 +22,10 @@ export function DiffViewer({
   afterLabel = "Ваши изменения",
   diff,
   path,
+  onRevert,
+  revertDisabled = false,
+  lineHref,
+  revealLine,
 }: {
   path?: string;
   before: string;
@@ -22,11 +33,16 @@ export function DiffViewer({
   beforeLabel?: string;
   afterLabel?: string;
   diff?: ReturnType<typeof buildTextDiff>;
+  onRevert?: (lineIds: number[]) => void;
+  revertDisabled?: boolean;
+  lineHref?: (line: number) => string;
+  revealLine?: number;
 }) {
   const monaco = useMonaco();
   const [wordWrap] = useEditorWordWrap();
   const [layout, setLayout] = useDiffLayout();
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useState(!!revealLine);
+  const scroll = useRef<HTMLElement>(null);
   const [expanded, setExpanded] = useState<{ before: string; after: string; ids: Set<number> }>({
     before,
     after,
@@ -37,23 +53,54 @@ export function DiffViewer({
     [before, after, diff],
   );
   const blocks = useMemo(() => foldDiff(result?.lines ?? []), [result]);
+  const targets = useMemo(() => diffLineTargets(result?.lines ?? []), [result]);
+  useEffect(() => {
+    if (!revealLine) return;
+    scroll.current
+      ?.querySelector(`[data-new-number="${revealLine}"]`)
+      ?.scrollIntoView?.({ block: "center" });
+  }, [revealLine]);
   const expandedIds =
     expanded.before === before && expanded.after === after ? expanded.ids : new Set<number>();
   if (!result)
     return <div className="wb-notice">Файл слишком большой для встроенного сравнения.</div>;
   if (!result.added && !result.deleted) return <div className="wb-diff-empty">Нет изменений</div>;
 
+  const actions = (line?: DiffLine) => {
+    if (!line || line.kind === "context" || (!onRevert && !lineHref)) return null;
+    const target = targets.get(line.id);
+    if (!target) return null;
+    return (
+      <DiffActions
+        lineIds={target.lineIds}
+        hunkIds={target.hunkIds}
+        editHref={lineHref?.(target.line)}
+        onRevert={onRevert}
+        disabled={revertDisabled}
+      />
+    );
+  };
   const renderLines = (lines: DiffLine[]) =>
     layout === "unified"
       ? lines.map((line) => (
-          <div className="wb-diff-row" data-kind={line.kind} key={line.id}>
+          <div
+            className="wb-diff-row"
+            data-kind={line.kind}
+            data-new-number={line.newNumber}
+            key={line.id}
+          >
             <span className="wb-diff-number">{line.oldNumber}</span>
             <span className="wb-diff-number">{line.newNumber}</span>
             <LineContent line={line} />
+            {actions(line)}
           </div>
         ))
       : pairDiffLines(lines).map(({ left, right }) => (
-          <div className="wb-diff-pair" key={`${left?.id ?? ""}:${right?.id ?? ""}`}>
+          <div
+            className="wb-diff-pair"
+            data-new-number={right?.newNumber}
+            key={`${left?.id ?? ""}:${right?.id ?? ""}`}
+          >
             {[left, right].map((line, side) => (
               <div
                 className="wb-diff-cell"
@@ -66,6 +113,7 @@ export function DiffViewer({
                 {line ? <LineContent line={line} /> : <span />}
               </div>
             ))}
+            {actions(right ?? left)}
           </div>
         ));
 
@@ -127,11 +175,20 @@ export function DiffViewer({
           path={path}
           split={layout === "split"}
           showAll={showAll}
+          lines={result.lines}
+          onRevert={onRevert}
+          revertDisabled={revertDisabled}
+          lineHref={lineHref}
+          revealLine={revealLine}
         />
       ) : (
         /* biome-ignore lint/a11y/noNoninteractiveTabindex: The diff scroll region must support keyboard scrolling. */
-        <section className="wb-diff-scroll" tabIndex={0} aria-label="Строки изменений">
-          <div className="wb-diff-code" data-layout={layout}>
+        <section className="wb-diff-scroll" ref={scroll} tabIndex={0} aria-label="Строки изменений">
+          <div
+            className="wb-diff-code"
+            data-layout={layout}
+            data-actions={!!onRevert || !!lineHref}
+          >
             {blocks.map((block) => (
               <Fragment key={block.lines[0]?.id}>
                 {block.kind === "fold" && !showAll && !expandedIds.has(block.id) ? (

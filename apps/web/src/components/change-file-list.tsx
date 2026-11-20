@@ -1,18 +1,13 @@
 "use client";
-import { File, FileText, Image } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { type ChangeFileGroup, ChangeFileKind } from "./change-file-groups";
+import type { ChangeFileGroup } from "./change-file-groups";
 import type { ReviewFile } from "./change-review";
+import { ExplorerFileIcon } from "./file-explorer";
 
 const ROW_HEIGHT = 48;
 const GROUP_HEADER_HEIGHT = 40;
 const DEFAULT_VIEWPORT_HEIGHT = 480;
 const OVERSCAN = 6;
-const fileIcons = {
-  [ChangeFileKind.Article]: FileText,
-  [ChangeFileKind.Image]: Image,
-  [ChangeFileKind.Other]: File,
-};
 
 export function ChangeFileList({
   groups,
@@ -127,7 +122,6 @@ export function ChangeFileList({
     >
       <div className="change-file-list-space" role="presentation" style={{ height: totalHeight }}>
         {ranges.map((group) => {
-          const Icon = fileIcons[group.kind];
           return (
             // biome-ignore lint/a11y/useSemanticElements: listbox option groups use ARIA group semantics.
             <div
@@ -170,7 +164,7 @@ export function ChangeFileList({
                       listRef.current?.focus({ preventScroll: true });
                     }}
                   >
-                    <Icon aria-hidden size={16} />
+                    <ExplorerFileIcon path={file.path} />
                     <span>
                       <strong>{file.path.slice(separator + 1)}</strong>
                       {separator >= 0 ? <small>{file.path.slice(0, separator)}</small> : null}

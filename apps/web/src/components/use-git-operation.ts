@@ -69,7 +69,7 @@ export function useGitOperation({
           if (!error) {
             try {
               if (task.phase === branchUpdateWaitingStatus)
-                await callbacks.current.onNeedsResolution?.();
+                await (callbacks.current.onNeedsResolution ?? callbacks.current.onComplete)();
               else await callbacks.current.onComplete();
             } catch {
               error = true;

@@ -1,8 +1,9 @@
 "use client";
 
-import { GitBranch, GitPullRequest } from "lucide-react";
+import { GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed } from "lucide-react";
 import Link from "next/link";
 import { Fragment, type ReactNode } from "react";
+import { type BranchReview, findBranchReview } from "@/lib/branch-review";
 import { projectChangesHref } from "@/lib/project-paths";
 import { useProjectBranch } from "./project-context";
 
@@ -51,16 +52,44 @@ export function ReviewBranchList({
 export function ReviewMissingBranchNotice({
   projectId,
   defaultBranch,
-  reviewBranches,
+  branchReviews,
   reviewLabel,
 }: {
   projectId: string;
   defaultBranch: string;
-  reviewBranches: string[];
+  branchReviews: BranchReview[];
   reviewLabel: string;
 }) {
   const current = useProjectBranch(projectId, defaultBranch);
-  if (current === defaultBranch || reviewBranches.includes(current)) return null;
+  const review = findBranchReview(branchReviews, current);
+  if (current === defaultBranch || review?.state === "open") return null;
+  if (review)
+    return (
+      <div
+        className={`review-missing-branch${review.state === "merged" ? " review-missing-branch--merged" : ""}`}
+        role="note"
+        aria-label={`${reviewLabel} текущей ветки`}
+      >
+        {review.state === "merged" ? (
+          <GitMerge aria-hidden size={17} />
+        ) : (
+          <GitPullRequestClosed aria-hidden size={17} />
+        )}
+        <p>
+          {reviewLabel} текущей ветки <strong title={current}>{current}</strong>{" "}
+          {review.state === "merged" ? (
+            <>
+              влит в <strong>{review.target_branch}</strong>.
+            </>
+          ) : (
+            <>закрыт без слияния.</>
+          )}{" "}
+          <a href={review.provider_url} target="_blank" rel="noreferrer">
+            Открыть {reviewLabel}
+          </a>
+        </p>
+      </div>
+    );
   return (
     <div className="review-missing-branch" role="note" aria-label={`${reviewLabel} текущей ветки`}>
       <GitPullRequest aria-hidden size={17} />

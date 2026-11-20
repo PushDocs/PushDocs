@@ -963,6 +963,15 @@ textarea:where(:not(.monaco-editor *)):focus {
   margin-bottom: 7px;
 }
 
+.empty-state--merged > svg {
+  background: var(--success-wash);
+  color: var(--success);
+}
+
+.empty-state--merged h2 {
+  color: var(--success);
+}
+
 .empty-state p {
   color: var(--ink-muted);
   line-height: 1.5;
@@ -3812,6 +3821,19 @@ textarea:where(:not(.monaco-editor *)):focus {
   gap: 8px;
   justify-content: flex-end;
 }
+.git-current-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.git-freshness-check {
+  width: 42px;
+  padding: 0;
+}
 .git-operation-actions .pd-button {
   margin: 0;
 }
@@ -3910,6 +3932,11 @@ textarea:where(:not(.monaco-editor *)):focus {
 .changes-page {
   max-width: none;
   padding: 28px 24px;
+}
+.changes-page
+  > :is(.review-branch-action, .branch-action-message)
+  + :is(.branch-git-actions, .empty-state, .changes-layout) {
+  margin-top: 20px;
 }
 .changes-header-actions {
   display: flex;
@@ -4699,6 +4726,11 @@ progress::-moz-progress-bar {
 .review-missing-branch > svg {
   flex-shrink: 0;
   margin-top: 2px;
+}
+.review-missing-branch--merged {
+  background: var(--success-wash);
+  border-color: color-mix(in srgb, var(--success) 25%, var(--line));
+  color: var(--success);
 }
 .review-missing-branch p {
   flex: 1;

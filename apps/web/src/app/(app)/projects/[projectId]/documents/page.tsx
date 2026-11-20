@@ -4,6 +4,7 @@ import { BranchImport } from "@/components/branch-import";
 import { LivePreviewButton } from "@/components/live-preview-button";
 import { Workbench } from "@/components/workbench";
 import { projectComponentCatalog } from "@/lib/project-components";
+import { parseLineNumber } from "@/lib/project-paths";
 import { repository, requireUser } from "@/lib/server";
 import { localWorkbenchIndexContext } from "@/lib/workbench";
 
@@ -14,7 +15,14 @@ export default async function DocumentsPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ branch?: string; path?: string; panel?: string }>;
+  searchParams: Promise<{
+    branch?: string;
+    path?: string;
+    panel?: string;
+    line?: string;
+    from?: string;
+    search?: string;
+  }>;
 }) {
   const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
   const store = repository();
@@ -77,6 +85,12 @@ export default async function DocumentsPage({
       components={catalog.insertableComponents}
       branch={branch}
       initialPath={query.path ?? initialFilePath}
+      initialLine={parseLineNumber(query.line)}
+      returnToChanges={
+        query.from === "changes"
+          ? { path: query.path, line: query.line, search: query.search }
+          : undefined
+      }
       initialPanel={
         query.panel === "files" ? "media" : query.panel === "branch" ? "branch" : undefined
       }
@@ -91,6 +105,7 @@ export default async function DocumentsPage({
         revision: state.changeSet?.revision ?? 0,
         status: state.changeSet?.status ?? "open",
         sha: state.branch.head_commit_sha,
+        remoteHeadSha: state.branch.remote_head_sha,
         repositoryPaths: state.branch.repository_paths,
         branches,
         role: access.role,

@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
       enqueueBranchSync: vi.fn(),
       ensureBranchImport: vi.fn(),
       enqueueBranchMerge: vi.fn(),
+      queueBranchUpdate: vi.fn(),
       queueReviewBranchUpdate: vi.fn(),
       enqueueBranchSyncIfStale: vi.fn(),
       enqueueReviewCreation: vi.fn(),
@@ -125,7 +126,8 @@ vi.mock("@pushdocs/db", async (importOriginal) => {
     hashOpaqueToken: mocks.hashOpaqueToken,
   };
 });
-vi.mock("@pushdocs/providers", () => ({
+vi.mock("@pushdocs/providers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pushdocs/providers")>()),
   createProvider: mocks.createProvider,
   normalizeRepositoryLocator: mocks.normalizeRepositoryLocator,
 }));
@@ -1733,16 +1735,39 @@ it("does not bypass verification when the security user no longer exists", async
   expect(mocks.repo.manageMember).not.toHaveBeenCalled();
 });
 
-it("queues the configured default branch merge without creating a review", async () => {
+it("queues a policy-aware default branch update without creating a review", async () => {
   mocks.repo.getProjectSettings.mockResolvedValue({ default_branch: "stable" });
+  mocks.repo.getProjectSyncTarget.mockResolvedValue({
+    connection_id: "connection",
+    provider_repository_id: "42",
+    root_path: ".",
+    base_url: "https://git.test",
+    clone_url: "https://git.test/acme/docs.git",
+    kind: "gitlab",
+  });
+  const client = mocks.createProvider();
+  client.listBranches.mockResolvedValue([
+    { name: "docs/task", sha: "working-head" },
+    { name: "stable", sha: "stable-head" },
+  ]);
+  Object.assign(client, {
+    readFile: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ version: 1, git: { updateStrategy: "rebase" } })),
+  });
   await startGitOperationAction({ projectId, branch: "docs/task", mergeDefault: true });
   expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
-  expect(mocks.repo.enqueueBranchMerge).toHaveBeenCalledWith({
-    projectId,
-    branch: "docs/task",
-    sourceBranch: "stable",
-    userId: "user",
-  });
+  expect(mocks.repo.queueBranchUpdate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      projectId,
+      branch: "docs/task",
+      sourceBranch: "stable",
+      userId: "user",
+      expectedHeadSha: "working-head",
+      updatePolicy: expect.objectContaining({ strategy: "rebase", targetSha: "stable-head" }),
+    }),
+  );
+  expect(mocks.repo.enqueueBranchMerge).not.toHaveBeenCalled();
   expect(mocks.repo.enqueueReviewCreation).not.toHaveBeenCalled();
   await expect(
     startGitOperationAction({ projectId, branch: "stable", mergeDefault: true }),

@@ -6,6 +6,7 @@ import {
   fileSearchLimits,
   fileSearchPattern,
 } from "@/lib/file-search";
+import { ExplorerFileIcon } from "./file-explorer";
 import { defaultFileSearchState, type FileSearchState } from "./file-search-state";
 
 function HighlightMatches({
@@ -318,16 +319,19 @@ export function QuickOpen({
                   }
                 }}
               >
-                <strong>
-                  {content ? (
-                    <HighlightMatches
-                      text={result.title || result.path.split("/").at(-1) || result.path}
-                      query={query}
-                      options={{ matchCase, wholeWord }}
-                    />
-                  ) : (
-                    result.path.split("/").at(-1)
-                  )}
+                <strong className="quick-open-result-title">
+                  <ExplorerFileIcon path={result.path} />
+                  <span>
+                    {content ? (
+                      <HighlightMatches
+                        text={result.title || result.path.split("/").at(-1) || result.path}
+                        query={query}
+                        options={{ matchCase, wholeWord }}
+                      />
+                    ) : (
+                      result.path.split("/").at(-1)
+                    )}
+                  </span>
                 </strong>
                 <small>
                   {content ? (

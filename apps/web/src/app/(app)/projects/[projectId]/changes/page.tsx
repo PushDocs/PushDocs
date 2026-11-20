@@ -1,6 +1,8 @@
 import {
   type BranchConflictSnapshot,
   BranchUpdateStrategy,
+  branchUpdateConflictOperationId,
+  branchUpdateConflictReference,
   branchUpdateStrategy,
   branchUpdateWaitingStatus,
   hasBranchConflicts,
@@ -16,12 +18,16 @@ import {
 } from "@/app/actions";
 import { BranchConflictNotice, BranchConflictResolver } from "@/components/branch-conflicts";
 import { BranchImport } from "@/components/branch-import";
+import { BranchNotice } from "@/components/branch-notice";
 import { ChangeReview } from "@/components/change-review";
+import { CompletedReviewStatus } from "@/components/completed-review-status";
 import { GitOperation, SubmissionRefresh } from "@/components/git-operation";
 import { PausedRebaseNotice } from "@/components/paused-rebase-notice";
 import { ProjectContext } from "@/components/project-context";
 import { ReviewBranchUpdate } from "@/components/review-branch-update";
 import { SubmitChanges } from "@/components/submit-changes";
+import { findBranchReview } from "@/lib/branch-review";
+import { parseLineNumber, projectChangesHref } from "@/lib/project-paths";
 import { repository, requireUser } from "@/lib/server";
 
 export const metadata: Metadata = { title: "Изменения" };
@@ -38,14 +44,22 @@ function fileCountText(count: number): string {
   return `${count} ${word}`;
 }
 
-function BranchWorkflow({ stage, reviewLabel }: { stage: 1 | 2 | 3; reviewLabel: string }) {
+function BranchWorkflow({
+  stage,
+  reviewLabel,
+  completed,
+}: {
+  stage: 1 | 2 | 3;
+  reviewLabel: string;
+  completed: boolean;
+}) {
   const steps = ["Правки", "Коммит в ветку", reviewLabel];
   return (
     <ol className="branch-workflow" aria-label="Этапы работы с веткой">
       {steps.map((label, index) => {
         const position = (index + 1) as 1 | 2 | 3;
-        const complete = position < stage;
-        const active = position === stage;
+        const complete = completed || position < stage;
+        const active = !completed && position === stage;
         return (
           <li
             className={complete ? "complete" : active ? "active" : undefined}
@@ -66,42 +80,64 @@ export default async function ChangesPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ branch?: string; resolve?: string; conflict?: string }>;
+  searchParams: Promise<{
+    branch?: string;
+    resolve?: string;
+    conflict?: string;
+    path?: string;
+    line?: string;
+    search?: string;
+  }>;
 }) {
   const [user, { projectId }, query] = await Promise.all([requireUser(), params, searchParams]);
   const store = repository();
   const project = await store.getProjectForUser(user.id, projectId);
   if (!project) return <div className="not-found-panel">Проект не найден.</div>;
   const conflictReviewId = query.resolve ?? query.conflict;
-  const requestedReview = conflictReviewId
-    ? (await store.listChangeRequests(projectId, "open")).find(
-        (item) => item.id === conflictReviewId,
-      )
+  const requestedOperationId = conflictReviewId
+    ? branchUpdateConflictOperationId(conflictReviewId)
     : undefined;
-  if (conflictReviewId && requestedReview?.details?.source?.isFork !== false)
-    return (
-      <div className="not-found-panel">
-        Исходная ветка PR / MR недоступна для разрешения конфликтов.
-      </div>
-    );
+  const requestedOperation = requestedOperationId
+    ? await store.getBranchUpdateOperation(projectId, requestedOperationId)
+    : undefined;
+  const requestedPayload = requestedOperation?.payload as
+    | { branch: string; sourceBranch: string }
+    | undefined;
+  const requestedReview =
+    conflictReviewId && requestedOperationId === undefined
+      ? (await store.listChangeRequests(projectId, "open")).find(
+          (item) => item.id === conflictReviewId,
+        )
+      : undefined;
+  if (conflictReviewId && !requestedPayload && requestedReview?.details?.source?.isFork !== false)
+    return <div className="not-found-panel">Ветка недоступна для разрешения конфликтов.</div>;
+  const requestedBranches =
+    requestedPayload ??
+    (requestedReview
+      ? {
+          branch: requestedReview.source_branch,
+          sourceBranch: requestedReview.target_branch,
+        }
+      : undefined);
   const resolver =
-    query.resolve && requestedReview ? (
+    query.resolve && requestedBranches && requestedOperation?.status !== "done" ? (
       <BranchConflictResolver
-        key={requestedReview.id}
+        key={conflictReviewId}
         projectId={projectId}
-        reviewId={requestedReview.id}
-        branch={requestedReview.source_branch}
-        targetBranch={requestedReview.target_branch}
+        reviewId={query.resolve}
+        branch={requestedBranches.branch}
+        targetBranch={requestedBranches.sourceBranch}
         defaultBranch={project.defaultBranch}
         ownerId={user.id}
         canWrite={project.role !== "reader"}
-        providerUrl={requestedReview.provider_url}
+        providerUrl={requestedReview?.provider_url}
         reviewLabel={project.provider === "gitlab" ? "MR" : "PR"}
       />
     ) : undefined;
   const access = { role: project.role };
   const branch =
-    (query.resolve ? requestedReview?.source_branch : query.branch) ?? project.defaultBranch;
+    (query.resolve ? (requestedPayload?.branch ?? requestedReview?.source_branch) : query.branch) ??
+    project.defaultBranch;
   const branches = await store.listBranches(projectId);
   const localBranch = branches.find((item) => item.full_ref === branch);
   if (!localBranch)
@@ -118,19 +154,28 @@ export default async function ChangesPage({
     ]);
   const activePayload = activeUpdate?.payload as
     | {
-        reviewId: string;
+        reviewId?: string;
+        sourceBranch: string;
         strategy: BranchUpdateStrategy;
         expectedHeadSha: string;
         conflictSnapshot?: BranchConflictSnapshot;
       }
     | undefined;
-  const review = activePayload
-    ? openReview?.id === activePayload.reviewId
-      ? openReview
+  const branchReview =
+    openReview ??
+    findBranchReview(
+      (await store.listChangeRequests(projectId)).filter(
+        (item) => item.state === "merged" || item.state === "closed",
+      ),
+      branch,
+    );
+  const review = activePayload?.reviewId
+    ? branchReview?.id === activePayload.reviewId
+      ? branchReview
       : (await store.listChangeRequests(projectId)).find(
           (item) => item.id === activePayload.reviewId,
         )
-    : openReview;
+    : branchReview;
   const pausedRebase =
     activeUpdate?.status === branchUpdateWaitingStatus
       ? activePayload?.conflictSnapshot?.rebase
@@ -146,10 +191,14 @@ export default async function ChangesPage({
     return resolver ?? <BranchImport key={branch} projectId={projectId} branch={branch} />;
   const reviewLabel = project.provider === "gitlab" ? "MR" : "PR";
   const conflictReview = requestedReview ?? review;
-  const branchHasConflicts = hasBranchConflicts(conflictReview?.details?.readiness.reason);
+  const branchHasConflicts =
+    conflictReview?.state === "open" &&
+    hasBranchConflicts(conflictReview.details?.readiness.reason);
   const rebaseRequired =
     branchUpdateStrategy(conflictReview?.details) === BranchUpdateStrategy.Rebase;
-  const branchNeedsUpdate = Boolean(activeUpdate || (review && needsBranchUpdate(review.details)));
+  const branchNeedsUpdate = Boolean(
+    activeUpdate || (review?.state === "open" && needsBranchUpdate(review.details)),
+  );
   const branchNeedsAttention = branchHasConflicts || branchNeedsUpdate;
   const reviewUrl =
     review?.state === "open"
@@ -193,7 +242,12 @@ export default async function ChangesPage({
     <div className="page changes-page">
       <ProjectContext projectId={projectId} branch={branch} />
       <SubmissionRefresh
-        active={submission?.status === "queued" || submission?.status === "running"}
+        active={
+          submission?.status === "queued" ||
+          submission?.status === "running" ||
+          activeUpdate?.status === "queued" ||
+          activeUpdate?.status === "running"
+        }
       />
       <header className="page-header">
         <div>
@@ -213,9 +267,49 @@ export default async function ChangesPage({
         </div>
       </header>
 
-      <BranchWorkflow stage={workflowStage} reviewLabel={reviewLabel} />
+      <BranchWorkflow
+        stage={workflowStage}
+        reviewLabel={reviewLabel}
+        completed={review?.state === "merged" && fileCount === 0 && !branchNeedsAttention}
+      />
 
-      {pausedRebase && activeUpdate && activePayload ? (
+      {activeUpdate &&
+      activePayload &&
+      !activePayload.reviewId &&
+      activePayload.conflictSnapshot ? (
+        <BranchConflictNotice
+          projectId={projectId}
+          reviewId={branchUpdateConflictReference(activeUpdate.id)}
+          branch={branch}
+          targetBranch={activePayload.sourceBranch}
+          currentBranch={branch}
+          ownerId={user.id}
+          hasPendingChanges={hasPendingChanges}
+          canWrite={project.role !== "reader"}
+          reviewLabel={reviewLabel}
+          disableReadOnlyAction
+        />
+      ) : activeUpdate && activePayload && !activePayload.reviewId ? (
+        <BranchNotice
+          label="Обновление ветки"
+          title={
+            activeUpdate.status === "failed" ? "Обновление ветки не завершено" : "Обновляем ветку…"
+          }
+          action={
+            activeUpdate.status === "failed" ? (
+              <Link
+                className="pd-button pd-button--primary"
+                href={projectChangesHref(projectId, {
+                  branch,
+                  resolve: branchUpdateConflictReference(activeUpdate.id),
+                })}
+              >
+                Проверить и повторить отправку
+              </Link>
+            ) : undefined
+          }
+        />
+      ) : pausedRebase && activeUpdate && activePayload?.reviewId ? (
         <PausedRebaseNotice
           key={`${activeUpdate.id}:${pausedRebase.conflictId}`}
           projectId={projectId}
@@ -258,6 +352,9 @@ export default async function ChangesPage({
           <GitOperation
             projectId={projectId}
             branch={branch}
+            headSha={working.branch.head_commit_sha}
+            remoteHeadSha={working.branch.remote_head_sha}
+            defaultBranch={project.defaultBranch}
             reviewLabel={reviewLabel}
             disabled={changeSetStatus === "submitting"}
           />
@@ -283,7 +380,7 @@ export default async function ChangesPage({
               changeSetId={changeSetId ?? ""}
               branch={branch}
               defaultBranch={project.defaultBranch}
-              reviewTitle={review?.title}
+              reviewTitle={openReview?.title}
               reviewLabel={reviewLabel}
               submitting={changeSetStatus === "submitting"}
               disabled={
@@ -308,40 +405,57 @@ export default async function ChangesPage({
         </div>
       ) : null}
       {fileCount === 0 ? (
-        <section className="empty-state">
-          <FileText aria-hidden />
-          <h2>{branchNeedsAttention ? "Нет локальных правок" : "Все изменения отправлены"}</h2>
-          {review && reviewUrl ? (
-            <Link
-              className={`pd-button pd-button--${branchNeedsAttention ? "secondary" : "primary"}`}
-              href={reviewUrl}
-              target={review.state === "open" ? undefined : "_blank"}
-              rel={review.state === "open" ? undefined : "noreferrer"}
-            >
-              Открыть {reviewLabel}
-            </Link>
-          ) : null}
-          {!review && branch !== project.defaultBranch ? (
-            <GitOperation
-              projectId={projectId}
-              branch={branch}
-              createReview
-              reviewLabel={reviewLabel}
-              disabled={access.role === "reader"}
-            >
-              {documentsLink}
-            </GitOperation>
-          ) : (
-            documentsLink
-          )}
-        </section>
+        !branchNeedsAttention && (review?.state === "merged" || review?.state === "closed") ? (
+          <CompletedReviewStatus
+            state={review.state}
+            title={review.title}
+            targetBranch={review.target_branch}
+            url={review.provider_url}
+            reviewLabel={reviewLabel}
+          >
+            {documentsLink}
+          </CompletedReviewStatus>
+        ) : (
+          <section className="empty-state">
+            <FileText aria-hidden />
+            <h2>{branchNeedsAttention ? "Нет локальных правок" : "Все изменения отправлены"}</h2>
+            {review && reviewUrl ? (
+              <Link
+                className={`pd-button pd-button--${branchNeedsAttention ? "secondary" : "primary"}`}
+                href={reviewUrl}
+                target={review.state === "open" ? undefined : "_blank"}
+                rel={review.state === "open" ? undefined : "noreferrer"}
+              >
+                Открыть {reviewLabel}
+              </Link>
+            ) : null}
+            {!review && branch !== project.defaultBranch ? (
+              <GitOperation
+                projectId={projectId}
+                branch={branch}
+                createReview
+                reviewLabel={reviewLabel}
+                disabled={access.role === "reader"}
+              >
+                {documentsLink}
+              </GitOperation>
+            ) : (
+              documentsLink
+            )}
+          </section>
+        )
       ) : (
         <div className="changes-layout">
           <ChangeReview
+            key={branch}
+            initialPath={query.path}
+            initialQuery={query.search}
+            initialLine={parseLineNumber(query.line)}
             revertContext={
               access.role !== "reader" && working.changeSet?.status === "open"
                 ? {
                     revision: working.changeSet.revision,
+                    headSha: working.branch.head_commit_sha,
                     ownerId: user.id,
                     canEditConfig: access.role === "admin",
                   }
@@ -358,6 +472,7 @@ export default async function ChangesPage({
                     path: draft.path,
                     operation: draft.operation,
                     before: file?.baseContent ?? "",
+                    baseKnown: file?.baseContentKnown ?? false,
                     after: draft.operation === "delete" ? "" : (file?.content ?? ""),
                     binary: /\.(png|jpe?g|gif|webp|avif|svg|pdf|zip|mp4)$/i.test(draft.path),
                     existed: repositoryPaths.has(draft.path),

@@ -13,9 +13,11 @@ import {
   FileImage,
   FilePlus2,
   FileText,
+  FileVideo,
   Folder,
   FolderOpen,
   FolderPlus,
+  Languages,
   Upload,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +26,7 @@ import { changedDirectories, fileStatusLabel } from "./file-status";
 
 type Node = { path: string; name: string; directory: boolean; children: Map<string, Node> };
 const defaultSystemDirectoriesVisible = false;
+const fileIconSize = 15;
 
 export function buildFileTree(paths: string[]): Node[] {
   const root = new Map<string, Node>();
@@ -55,11 +58,16 @@ function parents(path: string) {
 }
 export function ExplorerFileIcon({ path }: { path: string }) {
   if (/\.(png|jpe?g|gif|svg|webp|avif|ico)$/i.test(path))
-    return <FileImage size={15} className="wb-file-icon image" />;
-  if (/\.(md|mdx|txt)$/i.test(path)) return <FileText size={15} className="wb-file-icon text" />;
+    return <FileImage aria-hidden size={fileIconSize} className="wb-file-icon image" />;
+  if (/\.(mp4|webm|mov|m4v|avi|mkv|mpeg|mpg|ogv)$/i.test(path))
+    return <FileVideo aria-hidden size={fileIconSize} className="wb-file-icon video" />;
+  if (/\.mdx?$/i.test(path) && /(?:^|\/)i18n\/[^/]+\//.test(path))
+    return <Languages aria-hidden size={fileIconSize} className="wb-file-icon translation" />;
+  if (/\.(md|mdx|txt)$/i.test(path))
+    return <FileText aria-hidden size={fileIconSize} className="wb-file-icon text" />;
   if (/\.(js|jsx|ts|tsx|json|yml|yaml|css|html|sh)$/i.test(path))
-    return <FileCode2 size={15} className="wb-file-icon code" />;
-  return <File size={15} className="wb-file-icon" />;
+    return <FileCode2 aria-hidden size={fileIconSize} className="wb-file-icon code" />;
+  return <File aria-hidden size={fileIconSize} className="wb-file-icon" />;
 }
 export function FileExplorer({
   paths,

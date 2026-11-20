@@ -138,7 +138,7 @@ class GitOperationStore {
             phase: result.status,
             message:
               result.status === branchUpdateWaitingStatus
-                ? "Rebase остановлен. Разрешите конфликт текущего коммита."
+                ? "Обновление остановлено. Разрешите конфликты на странице изменений."
                 : result.status === "failed"
                   ? result.last_error || "Операция не завершена. Повторите попытку."
                   : undefined,

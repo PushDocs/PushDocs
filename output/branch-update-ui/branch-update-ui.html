@@ -1,0 +1,191 @@
+<div id="pd-branch-update-proposal">
+  <div class="viz-carousel viz-dotted-background" aria-label="Расположение действий Git" data-previous-label="Предыдущий вариант" data-next-label="Следующий вариант">
+    <section data-variant="Две кнопки" aria-label="Две кнопки рядом"><div class="pd-proposal-app" data-layout="buttons"></div></section>
+    <section data-variant="Меню Git" aria-label="Действия в меню Git" hidden><div class="pd-proposal-app" data-layout="menu"></div></section>
+  </div>
+</div>
+<style>
+  #pd-branch-update-proposal {
+    --pd-paper: light-dark(#ffffff, #202127);
+    --pd-surface: light-dark(#f8f9fb, #292b33);
+    --pd-text: light-dark(#272a33, #edf0f7);
+    --pd-secondary: light-dark(#626778, #b5bacb);
+    --pd-line: light-dark(#e7e8ed, #424650);
+    --pd-accent: light-dark(#7955c7, #a68ae0);
+    --pd-accent-text: light-dark(#ffffff, #191321);
+    --pd-tint: light-dark(#f5f0ff, #302640);
+    --pd-warning: light-dark(#956000, #f4c981);
+    --pd-warning-bg: light-dark(#fffbf2, #342d22);
+    --pd-success: light-dark(#28755a, #8bd3b6);
+    --pd-error: light-dark(#bb3b4d, #f69aaa);
+    font-family: "Golos Text", system-ui, sans-serif;
+    color: var(--pd-text);
+  }
+  #pd-branch-update-proposal * { box-sizing: border-box; }
+  #pd-branch-update-proposal [hidden] { display: none !important; }
+  #pd-branch-update-proposal .pd-proposal-app {
+    min-height: 560px; background: var(--pd-paper); border: 1px solid var(--pd-line);
+    border-radius: 8px; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5;
+  }
+  #pd-branch-update-proposal .pd-top { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--pd-line); background: var(--pd-surface); }
+  #pd-branch-update-proposal .pd-brand { font-weight: 500; }
+  #pd-branch-update-proposal .pd-branch { font-family: ui-monospace, monospace; font-size: 12px; }
+  #pd-branch-update-proposal .pd-content { padding: 22px 20px; }
+  #pd-branch-update-proposal h2, #pd-branch-update-proposal h3, #pd-branch-update-proposal p { margin: 0; }
+  #pd-branch-update-proposal h2 { font-size: 23px; font-weight: 500; }
+  #pd-branch-update-proposal h3 { font-size: 16px; font-weight: 500; }
+  #pd-branch-update-proposal .pd-heading, #pd-branch-update-proposal .pd-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+  #pd-branch-update-proposal .pd-heading { justify-content: space-between; gap: 14px; margin-bottom: 20px; }
+  #pd-branch-update-proposal .pd-muted { color: var(--pd-secondary); }
+  #pd-branch-update-proposal .pd-small { font-size: 12px; }
+  #pd-branch-update-proposal button { font: inherit; }
+  #pd-branch-update-proposal .pd-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 12px; min-height: 38px; background: var(--pd-paper); color: var(--pd-text); border: 1px solid var(--pd-line); border-radius: 6px; max-width: 100%; text-align: left; }
+  #pd-branch-update-proposal .pd-button:hover:enabled { background: var(--pd-surface); }
+  #pd-branch-update-proposal .pd-button:disabled { opacity: .55; }
+  #pd-branch-update-proposal .pd-primary { background: var(--pd-accent); color: var(--pd-accent-text); border-color: var(--pd-accent); }
+  #pd-branch-update-proposal .pd-primary:hover:enabled { background: var(--pd-accent); filter: brightness(.95); }
+  #pd-branch-update-proposal .pd-link { border: 0; background: transparent; padding: 5px 0; color: var(--pd-accent); text-align: left; }
+  #pd-branch-update-proposal .pd-panel { padding: 17px; border: 1px solid var(--pd-line); border-radius: 7px; margin-bottom: 20px; background: var(--pd-paper); }
+  #pd-branch-update-proposal .pd-panel p + p { margin-top: 7px; }
+  #pd-branch-update-proposal .pd-panel .pd-actions { margin-top: 14px; }
+  #pd-branch-update-proposal .pd-warning { background: var(--pd-warning-bg); }
+  #pd-branch-update-proposal .pd-warning h3 { color: var(--pd-warning); }
+  #pd-branch-update-proposal .pd-success { color: var(--pd-success); }
+  #pd-branch-update-proposal .pd-error { color: var(--pd-error); }
+  #pd-branch-update-proposal .pd-document { border-top: 1px solid var(--pd-line); padding-top: 18px; }
+  #pd-branch-update-proposal .pd-document h3 { margin: 12px 0 8px; }
+  #pd-branch-update-proposal .pd-document p { max-width: 52ch; }
+  #pd-branch-update-proposal .pd-meta { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+  #pd-branch-update-proposal .pd-tag { display: inline-block; border-radius: 4px; padding: 2px 7px; background: var(--pd-tint); color: var(--pd-accent); font-size: 12px; }
+  #pd-branch-update-proposal .pd-menu { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--pd-line); border-radius: 7px; margin: -8px 0 16px auto; max-width: 290px; background: var(--pd-paper); }
+  #pd-branch-update-proposal .pd-menu .pd-button { justify-content: flex-start; border: 0; }
+  #pd-branch-update-proposal .pd-file { border: 1px solid var(--pd-line); border-radius: 7px; margin: 14px 0; }
+  #pd-branch-update-proposal .pd-file-title { padding: 10px 12px; background: var(--pd-surface); border-bottom: 1px solid var(--pd-line); font-family: ui-monospace, monospace; font-size: 12px; }
+  #pd-branch-update-proposal .pd-sides { display: grid; grid-template-columns: 1fr 1fr; }
+  #pd-branch-update-proposal .pd-side { padding: 13px; min-width: 0; }
+  #pd-branch-update-proposal .pd-side + .pd-side { border-left: 1px solid var(--pd-line); }
+  #pd-branch-update-proposal .pd-code { font-family: ui-monospace, monospace; font-size: 12px; padding: 12px 0; min-height: 65px; white-space: pre-wrap; }
+  #pd-branch-update-proposal .pd-chosen { background: var(--pd-tint); }
+  #pd-branch-update-proposal .pd-result { padding: 12px; border-top: 1px solid var(--pd-line); }
+  #pd-branch-update-proposal i { width: 16px; height: 16px; display: inline-flex; flex-shrink: 0; }
+  @media (max-width: 520px) {
+    #pd-branch-update-proposal .pd-proposal-app { min-height: 750px; }
+    #pd-branch-update-proposal .pd-content { padding: 18px 14px; }
+    #pd-branch-update-proposal .pd-sides { grid-template-columns: 1fr; }
+    #pd-branch-update-proposal .pd-side + .pd-side { border-left: 0; border-top: 1px solid var(--pd-line); }
+    #pd-branch-update-proposal .pd-heading { align-items: flex-start; flex-direction: column; }
+  }
+  @media (pointer: coarse) {
+    #pd-branch-update-proposal button { min-height: 44px; }
+  }
+</style>
+<script>
+(() => {
+  const root = document.getElementById("pd-branch-update-proposal");
+  const scenes = ["idle", "confirm", "running", "conflicts", "resolver", "done", "blocked", "failed"];
+  const apps = [];
+  const icon = (name) => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+  const button = (action, label, primary = false, disabled = false) => `<button type="button" class="pd-button cursor-interaction${primary ? " pd-primary" : ""}" data-action="${action}"${disabled ? " disabled" : ""}>${label}</button>`;
+  function save() {
+    if (!window.openai?.setWidgetState) return;
+    window.openai.setWidgetState({
+      modelContent: { branchUpdateProposal: apps.map(({ layout, state }) => ({ layout, scene: state.scene, strategy: state.strategy })) },
+      privateContent: { branchUpdateApps: apps.map(({ layout, state }) => ({ layout, ...state })) },
+    }).catch(() => {});
+  }
+  function restore(snapshot) {
+    const saved = snapshot?.privateContent?.branchUpdateApps;
+    if (!Array.isArray(saved)) return;
+    for (const app of apps) {
+      const item = saved.find((entry) => entry.layout === app.layout);
+      if (!item) continue;
+      app.state.scene = scenes.includes(item.scene) && item.scene !== "running" ? item.scene : "idle";
+      app.state.strategy = item.strategy === "merge" ? "merge" : "rebase";
+      app.state.choice = item.choice === "base" || item.choice === "incoming" ? item.choice : "";
+      app.state.commit = item.commit === 3 ? 3 : 2;
+      app.render();
+    }
+  }
+  for (const element of root.querySelectorAll(".pd-proposal-app")) {
+    const layout = element.dataset.layout;
+    const state = { scene: "idle", strategy: "rebase", choice: "", commit: 2, menu: false, refreshed: false, page: "documents" };
+    const app = { layout, element, state, render };
+    apps.push(app);
+    let timer;
+    function render() {
+      const busy = state.scene === "running";
+      const paused = state.scene === "conflicts" || state.scene === "resolver";
+      const resolving = state.scene === "resolver";
+      const rebase = state.strategy === "rebase";
+      const updateAction = paused ? "resolve" : "confirm";
+      const updateLabel = paused ? "Разрешить конфликты" : `${icon("git-merge")}Обновить из stable…`;
+      const heading = resolving ? "Разрешение конфликтов" : state.page === "changes" ? "Изменения в ветке" : "Документы";
+      let panel = "";
+      if (state.scene === "confirm") panel = `<section class="pd-panel" aria-label="Обновление из основной ветки"><h3>Обновить docs/task из stable?</h3><p class="pd-muted">${rebase ? "Коммиты docs/task будут перенесены поверх актуальной stable." : "Изменения stable будут влиты в docs/task."} После завершения результат будет отправлен в Git.</p><p class="pd-small">Способ обновления: <strong>${state.strategy}</strong> · задан настройками проекта.</p><div class="pd-actions">${button("start", "Обновить ветку", true)}${button("close", "Отмена")}</div></section>`;
+      if (busy) panel = `<section class="pd-panel" role="status"><h3>Обновляем docs/task из stable…</h3><p class="pd-muted">${rebase ? "Переносим коммиты. Результат отправится после завершения rebase." : "Объединяем изменения веток."}</p></section>`;
+      if (state.scene === "conflicts") panel = `<section class="pd-panel pd-warning" role="status"><h3>${icon("triangle-alert")} Обновление приостановлено: есть конфликты</h3><p class="pd-muted">docs/task ← stable${rebase ? ` · Коммит ${state.commit} из 4: «Обновить инструкцию»` : " · merge"}</p><p>Разрешите конфликты, чтобы завершить обновление ветки.</p><div class="pd-actions">${button("resolve", "Разрешить конфликты", true)}${button("cancel", rebase ? "Отменить rebase" : "Отменить обновление")}</div></section>`;
+      if (state.scene === "done") panel = `<section class="pd-panel" role="status"><h3 class="pd-success">${icon("circle-check")} Ветка docs/task обновлена из stable</h3><p class="pd-muted">Результат отправлен в Git.</p><div class="pd-actions">${button("documents", "Открыть документы")}${button("changes", "Открыть изменения")}</div></section>`;
+      if (state.scene === "blocked") panel = `<section class="pd-panel pd-warning" role="status"><h3>Сначала завершите текущие правки</h3><p>В PushDocs есть правки, ещё не отправленные в Git. Проверьте их и отправьте в Git либо отмените ненужные изменения.</p><div class="pd-actions">${button("changes", "Открыть правки", true)}</div></section>`;
+      if (state.scene === "failed") panel = `<section class="pd-panel" role="alert"><h3 class="pd-error">Не удалось проверить результат обновления</h3><p>Нет связи с сервером. Проверьте состояние операции перед повторной отправкой.</p><div class="pd-actions">${button("check", "Проверить состояние", true)}</div></section>`;
+      let content = `<div class="pd-document"><div class="pd-muted pd-small">docs/getting-started.md</div><h3>Начало работы</h3><p class="pd-muted">Создайте проект и подключите репозиторий документации. Работайте в отдельной ветке и отправляйте готовые изменения на ревью.</p></div>`;
+      if (state.page === "changes") content = `<div class="pd-document"><h3>${state.scene === "blocked" ? "Есть правки, не отправленные в Git" : "Все изменения отправлены в Git"}</h3><p class="pd-muted">${state.scene === "blocked" ? "docs/getting-started.md" : "MR можно создать, когда ветка будет готова к ревью."}</p></div>`;
+      if (resolving) {
+        const leftLabel = rebase ? "Актуальная основа" : "Рабочая ветка docs/task";
+        const rightLabel = rebase ? `Переносимый коммит ${state.commit} из 4` : "Основная ветка stable";
+        const leftText = "Создайте проект и подключите репозиторий.";
+        const rightText = "Создайте проект и выберите репозиторий документации.";
+        const selected = state.choice === "base" ? leftText : rightText;
+        panel = `<div class="pd-meta"><span class="pd-tag">${state.strategy}</span><span class="pd-muted">docs/task ← stable${rebase ? ` · Коммит ${state.commit} из 4` : ""}</span></div><p class="pd-muted pd-small">${rebase ? "После последнего шага результат отправится в docs/task." : "После отправки решения обновится ветка docs/task."}</p>`;
+        content = `<section class="pd-file" aria-label="Конфликт в инструкции"><div class="pd-file-title">docs/getting-started.md</div><div class="pd-sides"><div class="pd-side${state.choice === "base" ? " pd-chosen" : ""}"><strong>${leftLabel}</strong><p class="pd-code">${leftText}</p>${button("base", "Оставить этот текст")}</div><div class="pd-side${state.choice === "incoming" ? " pd-chosen" : ""}"><strong>${rightLabel}</strong><p class="pd-code">${rightText}</p>${button("incoming", "Оставить этот текст")}</div></div><div class="pd-result" role="status">${state.choice ? `<span class="pd-success">Фрагмент разрешён</span><p class="pd-code">${selected}</p>` : "Выберите текст для спорного фрагмента."}</div></section><div class="pd-actions">${button("continue", rebase ? "Сохранить и продолжить" : "Отправить решение в docs/task", true, !state.choice)}${button("back", "Вернуться к изменениям")}${button("cancel", rebase ? "Отменить rebase" : "Отменить обновление")}</div>`;
+      }
+      const actions = resolving
+        ? button("back", "К изменениям")
+        : layout === "buttons"
+          ? `${button("refresh", `${icon("download")}Обновить из Git`, false, busy || paused)}${button(updateAction, busy ? "Обновляем…" : updateLabel, false, busy)}`
+          : button("menu", `${icon("git-branch")}Git ${icon("chevron-down")}`, false, busy);
+      const menu = layout === "menu" && state.menu && !resolving ? `<div class="pd-menu">${button("refresh", `${icon("download")}Обновить из Git`, false, busy || paused)}${button(updateAction, updateLabel, false, busy)}</div>` : "";
+      element.innerHTML = `<div class="pd-top"><span class="pd-brand">PushDocs <span class="pd-muted">/ sendsay-docs</span></span><span class="pd-branch">${icon("git-branch")} docs/task</span></div><div class="pd-content"><header class="pd-heading"><h2>${heading}</h2><div class="pd-actions">${actions}</div></header>${menu}${state.refreshed ? '<p class="pd-success pd-small" role="status">Версия docs/task загружена из Git.</p>' : ""}${panel}${content}</div>`;
+      if (globalThis.lucide) globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+    }
+    function run() {
+      state.scene = "running";
+      render();
+      clearTimeout(timer);
+      timer = setTimeout(() => { state.scene = "conflicts"; render(); save(); }, 900);
+    }
+    element.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (!action) return;
+      if (action !== "menu") state.menu = false;
+      switch (action) {
+        case "menu": state.menu = !state.menu; break;
+        case "refresh": state.refreshed = true; break;
+        case "confirm": if (state.scene !== "blocked") state.scene = "confirm"; break;
+        case "close": state.scene = "idle"; break;
+        case "start": run(); break;
+        case "resolve": state.scene = "resolver"; break;
+        case "cancel": clearTimeout(timer); state.scene = "idle"; state.choice = ""; state.commit = 2; break;
+        case "back": state.scene = "conflicts"; state.page = "changes"; break;
+        case "base": state.choice = "base"; break;
+        case "incoming": state.choice = "incoming"; break;
+        case "continue": if (!state.choice) return; state.choice = ""; if (state.strategy === "rebase" && state.commit === 2) { state.commit = 3; } else { state.scene = "done"; } break;
+        case "documents": state.page = "documents"; break;
+        case "changes": state.page = "changes"; break;
+        case "check": run(); break;
+      }
+      render();
+      save();
+    });
+    render();
+    if (globalThis.Tweak) {
+      const tweak = new Tweak({ container: element, onChange: () => { clearTimeout(timer); state.menu = false; state.choice = ""; render(); save(); } });
+      tweak.addSelect(state, "strategy", { label: "Стратегия проекта", options: ["rebase", "merge"] });
+      tweak.addSelect(state, "scene", { label: "Состояние", options: [ { label: "Ветка готова к обновлению", value: "idle" }, { label: "Есть конфликты", value: "conflicts" }, { label: "Редактор конфликтов", value: "resolver" }, { label: "Есть неотправленные правки", value: "blocked" }, { label: "Потеряна связь", value: "failed" }, { label: "Обновление завершено", value: "done" } ] });
+    }
+  }
+  restore(window.openai?.widgetState);
+  window.addEventListener("openai:set_globals", (event) => {
+    if (event.detail?.globals?.widgetState) restore(event.detail.globals.widgetState);
+  });
+})();
+</script>

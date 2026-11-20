@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ start: vi.fn(), status: vi.fn(), router: { refresh: vi.fn() } }));
+const mocks = vi.hoisted(() => ({
+  start: vi.fn(),
+  status: vi.fn(),
+  router: { refresh: vi.fn() },
+  freshness: vi.fn(),
+  check: vi.fn(),
+}));
+vi.mock("./use-branch-freshness", () => ({ useBranchFreshness: mocks.freshness }));
 vi.mock("@/app/actions", () => ({
   startGitOperationAction: mocks.start,
   gitOperationStatusAction: mocks.status,
@@ -13,6 +20,14 @@ import { BranchOperations } from "./branch-operations";
 import { GitOperation, SubmissionRefresh } from "./git-operation";
 import { gitOperationStore } from "./git-operation-store";
 
+beforeEach(() => {
+  mocks.freshness.mockReturnValue({
+    filesCurrent: false,
+    includesDefaultBranch: false,
+    checking: false,
+    refresh: mocks.check,
+  });
+});
 afterEach(() => {
   cleanup();
   gitOperationStore.clear();
@@ -20,6 +35,58 @@ afterEach(() => {
   mocks.start.mockReset();
   mocks.status.mockReset();
 });
+it("shows current status instead of an import button and guards form submission", async () => {
+  mocks.freshness.mockReturnValue({ filesCurrent: true, includesDefaultBranch: true });
+  const props = {
+    projectId: "project",
+    branch: "docs/update",
+    headSha: "current",
+    remoteHeadSha: "current",
+  };
+  const { container, rerender } = render(<GitOperation {...props} />);
+  await act(async () => {});
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("Ветка актуальна");
+  fireEvent.submit(container.querySelector("form") as HTMLFormElement);
+  expect(mocks.start).not.toHaveBeenCalled();
+  mocks.freshness.mockReturnValue({ filesCurrent: false, includesDefaultBranch: true });
+  rerender(<GitOperation {...props} remoteHeadSha="next" />);
+  expect(screen.getByRole("button")).toHaveProperty("disabled", false);
+});
+
+it("checks unknown imports with an icon instead of an operation submit button", () => {
+  mocks.freshness.mockReturnValue({
+    filesCurrent: null,
+    includesDefaultBranch: null,
+    checking: false,
+    refresh: mocks.check,
+  });
+  render(<GitOperation projectId="project" branch="docs/update" />);
+  fireEvent.click(screen.getByRole("button", { name: "Проверить обновления" }));
+  expect(mocks.check).toHaveBeenCalledOnce();
+  expect(mocks.start).not.toHaveBeenCalled();
+});
+
+it.each(["reviewsOnly", "createReview"] as const)(
+  "does not disable %s when the branch is current",
+  (mode) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    render(
+      <GitOperation
+        projectId="project"
+        branch="docs/update"
+        headSha="current"
+        remoteHeadSha="current"
+        {...{ [mode]: true }}
+      />,
+    );
+    const name = mode === "reviewsOnly" ? "Обновить данные PR / MR" : "Создать PR / MR";
+    expect(screen.getByRole("button", { name })).toHaveProperty("disabled", false);
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);
+
 it("pulls the selected branch and refreshes after the import completes", async () => {
   vi.useFakeTimers();
   mocks.start.mockResolvedValue("job");
@@ -114,9 +181,12 @@ it("refreshes active submissions on a timer and when connectivity returns", () =
   expect(mocks.router.refresh).toHaveBeenCalledTimes(1);
   act(() => vi.advanceTimersByTime(30_000));
   expect(mocks.router.refresh).toHaveBeenCalledTimes(2);
+  act(() => vi.advanceTimersByTime(30_000));
+  expect(mocks.router.refresh).toHaveBeenCalledTimes(3);
   view.unmount();
   window.dispatchEvent(new Event("online"));
-  expect(mocks.router.refresh).toHaveBeenCalledTimes(2);
+  act(() => vi.advanceTimersByTime(30_000));
+  expect(mocks.router.refresh).toHaveBeenCalledTimes(3);
 });
 
 it("ignores late polling results and failures after unmount", async () => {
@@ -166,7 +236,7 @@ it("shares branch refresh state between Documents and Changes", async () => {
   mocks.start.mockResolvedValue("branch-job");
   mocks.status.mockResolvedValue({ status: "running" });
   const first = render(<GitOperation projectId="project" branch="stable" />);
-  fireEvent.click(screen.getByRole("button", { name: "Обновить из Git" }));
+  fireEvent.click(screen.getByRole("button", { name: "Обновить файлы" }));
   await act(async () => {});
   first.unmount();
   const onBusyChange = vi.fn();
@@ -198,7 +268,7 @@ it("does not confuse MR refresh with a branch named reviews", async () => {
   await act(async () => {});
   first.unmount();
   render(<GitOperation projectId="project" branch="reviews" />);
-  expect(screen.getByRole("button", { name: "Обновить из Git" })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("button", { name: "Обновить файлы" })).toHaveProperty("disabled", false);
 });
 
 it("uses one poller and rejects duplicate submits while a start request is pending", async () => {

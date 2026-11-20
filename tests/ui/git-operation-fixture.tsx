@@ -2,7 +2,11 @@ import { ArrowRight, FileText, Play } from "lucide-react";
 import { useState } from "react";
 import { AppShell } from "../../apps/web/src/components/app-shell";
 import { BranchOperations } from "../../apps/web/src/components/branch-operations";
+import { CompletedReviewStatus } from "../../apps/web/src/components/completed-review-status";
 import { GitOperation } from "../../apps/web/src/components/git-operation";
+import { ProjectContext } from "../../apps/web/src/components/project-context";
+import { ReviewMissingBranchNotice } from "../../apps/web/src/components/review-branch-context";
+import type { BranchReview } from "../../apps/web/src/lib/branch-review";
 
 export function BranchAttentionFixture() {
   return (
@@ -44,6 +48,53 @@ export function BranchAttentionFixture() {
 export function GitOperationFixture() {
   const [tab, setTab] = useState("documents");
   const merge = new URLSearchParams(window.location.search).has("merge");
+  const completedState = new URLSearchParams(window.location.search).get("completed-review");
+  if (completedState === "merged" || completedState === "closed") {
+    const review: BranchReview = {
+      external_id: "818",
+      source_branch: "docs/818-sendsay-mcp",
+      target_branch: "stable",
+      state: completedState,
+      title: "Документация Sendsay MCP",
+      provider_url: "https://git.example/review/818",
+      source_branch_is_local: true,
+    };
+    const reviewsPage = new URLSearchParams(window.location.search).has("review-status");
+    return (
+      <main className={`page ${reviewsPage ? "reviews-page" : "changes-page"}`}>
+        <ProjectContext projectId="project" branch={review.source_branch} />
+        <h1>{reviewsPage ? "MR" : "Изменения в ветке"}</h1>
+        {reviewsPage ? (
+          <ReviewMissingBranchNotice
+            projectId="project"
+            defaultBranch="stable"
+            branchReviews={[review]}
+            reviewLabel="MR"
+          />
+        ) : (
+          <>
+            <GitOperation
+              projectId="project"
+              branch={review.source_branch}
+              headSha="installed"
+              defaultBranch="stable"
+            />
+            <CompletedReviewStatus
+              state={completedState}
+              title={review.title}
+              targetBranch={review.target_branch}
+              url={review.provider_url}
+              reviewLabel="MR"
+            >
+              <a className="pd-button pd-button--secondary" href="#documents">
+                Открыть документы
+              </a>
+            </CompletedReviewStatus>
+          </>
+        )}
+      </main>
+    );
+  }
   if (new URLSearchParams(window.location.search).has("create-review"))
     return (
       <main className="page changes-page">
@@ -82,6 +133,8 @@ export function GitOperationFixture() {
               <BranchOperations
                 projectId="project"
                 branch={merge ? "docs/task" : "stable"}
+                headSha="installed"
+                remoteHeadSha="remote"
                 defaultBranch="stable"
                 canMerge={merge}
                 disabled={false}
