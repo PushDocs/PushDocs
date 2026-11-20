@@ -1,6 +1,19 @@
-import type { GitProvider } from "@pushdocs/providers";
+import {
+  BranchConflictChoice,
+  type BranchConflictSnapshot,
+  BranchUpdatePolicySource,
+  BranchUpdateStrategy,
+  branchConflictRepositoryKey,
+  branchUpdateLimits,
+} from "@pushdocs/contracts";
+import { type GitProvider, ProviderHttpError } from "@pushdocs/providers";
 import { describe, expect, it, vi } from "vitest";
-import type { GitTransport } from "./git-transport";
+import { resolvedBranchUpdatePolicy } from "../../../tests/fixtures/branch-update-policy";
+import {
+  BranchMergeConflictError,
+  type GitTransport,
+  RebaseNeedsResolution,
+} from "./git-transport";
 import {
   booleanFromPayload,
   createWorkerService as createService,
@@ -59,13 +72,17 @@ function provider(): GitProvider {
     commitFiles: vi.fn().mockResolvedValue({ sha: "commit-sha", url: "commit-url" }),
     ensureChangeRequest: vi.fn().mockResolvedValue({ id: "review" }),
     getChangeRequestDetails: vi.fn().mockResolvedValue(null),
-    getRepository: vi.fn(),
+    getRepository: vi.fn().mockResolvedValue({ defaultUpdateStrategy: BranchUpdateStrategy.Merge }),
     kind: "gitlab",
     listBranches: vi.fn().mockResolvedValue([{ name: "main", sha: "head" }]),
     listChangeRequests: vi.fn().mockResolvedValue([]),
     listChecks: vi.fn().mockResolvedValue([]),
     listFiles: vi.fn().mockResolvedValue([]),
-    readFile: vi.fn().mockResolvedValue("# Document"),
+    readFile: vi
+      .fn()
+      .mockImplementation(async (_repository, _ref, filePath) =>
+        filePath.endsWith(".pushdocs/config.json") ? JSON.stringify({ version: 1 }) : "# Document",
+      ),
     readBinary: vi.fn().mockResolvedValue(Buffer.from("original image")),
   } as unknown as GitProvider;
 }
@@ -86,6 +103,12 @@ function repository(): WorkerRepository {
     requireProjectAccess: vi.fn().mockResolvedValue({ role: "editor" }),
     savePreparedCommit: vi.fn(),
     savePreparedBranchMerge: vi.fn(),
+    savePreparedBranchUpdate: vi.fn(),
+    pauseRebaseUpdate: vi.fn(),
+    getActiveConflictMerge: vi.fn(),
+    saveConflictInspection: vi.fn(),
+    findConflictInspection: vi.fn(),
+    releaseBranchMergeReservation: vi.fn(),
     discardRejectedCommit: vi.fn(),
     withGitRefLock: vi.fn(async (_key, operation) => operation()),
     listActiveProjectIds: vi.fn().mockResolvedValue([]),
@@ -128,6 +151,290 @@ const submissionTarget = {
   ],
   status: "submitting" as const,
 };
+
+function conflictJobFixture() {
+  const port = repository();
+  const client = provider();
+  const target = { ...syncTarget, clone_url: "https://gitlab.test/demo/docs.git" };
+  const targetKey = JSON.stringify([
+    target.connection_id,
+    target.base_url,
+    target.provider_repository_id,
+    target.clone_url,
+    target.kind,
+    target.root_path,
+  ]);
+  const snapshot: BranchConflictSnapshot = {
+    updatePolicy: resolvedBranchUpdatePolicy(),
+    branch: "docs/update",
+    sourceBranch: "main",
+    parentSha: "parent",
+    sourceSha: "target",
+    files: [
+      {
+        path: "docs/a.md",
+        kind: "text",
+        baseContent: "Base",
+        oursContent: "Ours",
+        theirsContent: "Theirs",
+        oursExists: true,
+        theirsExists: true,
+      },
+    ],
+  };
+  const payload = {
+    projectId: "project",
+    userId: "actor",
+    reviewId: "review",
+    externalReviewId: "1",
+    branch: snapshot.branch,
+    sourceBranch: snapshot.sourceBranch,
+    inspectionId: "inspection",
+    targetKey,
+    resolutionSnapshot: snapshot,
+    resolutionFiles: [{ path: "docs/a.md", choice: BranchConflictChoice.Ours }],
+  };
+  const prepared = {
+    branch: snapshot.branch,
+    parentSha: "parent",
+    sourceSha: "target",
+    sha: "merged",
+  };
+  const transport = {
+    inspectConflicts: vi.fn().mockResolvedValue(snapshot),
+    prepareMerge: vi.fn().mockResolvedValue(prepared),
+    isPublished: vi.fn().mockResolvedValue(false),
+    publish: vi.fn().mockResolvedValue({ sha: "merged", alreadyApplied: false }),
+  };
+  vi.mocked(port.getProjectSyncTarget).mockResolvedValue(target as never);
+  vi.mocked(client.listChangeRequests).mockResolvedValue([
+    { id: "1", state: "open", sourceBranch: snapshot.branch, targetBranch: snapshot.sourceBranch },
+  ] as never);
+  vi.mocked(client.getChangeRequestDetails).mockResolvedValue({
+    source: { isFork: false },
+  } as never);
+  vi.mocked(client.listBranches).mockResolvedValue([
+    { name: snapshot.branch, sha: "parent" },
+    { name: "main", sha: "target" },
+  ]);
+  vi.mocked(client.readFile).mockRejectedValue(new ProviderHttpError(404, "File not found"));
+  const job = {
+    id: "resolve",
+    kind: "branch.merge",
+    payload,
+    attempts: 1,
+    created_at: new Date("2026-11-13T00:00:00Z"),
+  };
+  vi.mocked(port.claimNextJob).mockResolvedValue(job as never);
+  const service = createService({
+    repository: port,
+    createProvider: () => client,
+    decryptSecret: () => "token",
+    createConflictTransport: () => transport,
+    logger: { error: vi.fn() },
+  });
+  return { port, client, transport, service, job, snapshot, prepared, targetKey };
+}
+
+describe("review branch conflicts", () => {
+  it.each(["branch.conflicts", "branch.merge"])(
+    "checks OAuth before executing %s",
+    async (kind) => {
+      const fixture = conflictJobFixture();
+      fixture.job.kind = kind;
+      Object.assign(fixture.job.payload, { oauthGrantId: "revoked-grant" });
+      fixture.port.requireMcpGrant = vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("OAuth grant revoked"), { code: "PERMISSION_DENIED" }),
+        );
+      await fixture.service.runJob();
+      expect(fixture.port.requireMcpGrant).toHaveBeenCalledWith(
+        "revoked-grant",
+        "actor",
+        "project",
+        kind === "branch.conflicts" ? "pushdocs:read" : "pushdocs:submit",
+      );
+      expect(fixture.transport.inspectConflicts).not.toHaveBeenCalled();
+      expect(fixture.transport.publish).not.toHaveBeenCalled();
+      expect(fixture.port.failJob).toHaveBeenCalledWith("resolve", "OAuth grant revoked", false, 1);
+    },
+  );
+
+  it("rechecks OAuth after preparing a resolution and never publishes a revoked grant", async () => {
+    const fixture = conflictJobFixture();
+    Object.assign(fixture.job.payload, { oauthGrantId: "grant" });
+    fixture.port.requireMcpGrant = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("OAuth grant revoked"), { code: "PERMISSION_DENIED" }),
+      );
+    await fixture.service.runJob();
+    expect(fixture.transport.prepareMerge).toHaveBeenCalled();
+    expect(fixture.transport.publish).not.toHaveBeenCalled();
+    expect(fixture.port.completeJob).not.toHaveBeenCalled();
+    expect(fixture.port.releaseBranchMergeReservation).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "grant"])(
+    "enforces rebase policy for merge resolutions with OAuth grant %s",
+    async (oauthGrantId) => {
+      const fixture = conflictJobFixture();
+      Object.assign(fixture.job.payload, { oauthGrantId });
+      fixture.port.requireMcpGrant = vi.fn();
+      vi.mocked(fixture.client.getRepository).mockResolvedValue({
+        defaultUpdateStrategy: BranchUpdateStrategy.Rebase,
+      } as never);
+      await fixture.service.runJob();
+      expect(fixture.transport.prepareMerge).not.toHaveBeenCalled();
+      expect(fixture.transport.publish).not.toHaveBeenCalled();
+      expect(fixture.port.failJob).toHaveBeenCalledWith(
+        "resolve",
+        expect.stringContaining("выбран rebase"),
+        false,
+        1,
+      );
+    },
+  );
+
+  it.each(["target", "source", "closed", "protected"])(
+    "does not publish a resolution when %s changes during preparation",
+    async (side) => {
+      const fixture = conflictJobFixture();
+      fixture.transport.prepareMerge.mockImplementationOnce(async () => {
+        if (side === "closed") vi.mocked(fixture.client.listChangeRequests).mockResolvedValue([]);
+        else
+          vi.mocked(fixture.client.listBranches).mockResolvedValue([
+            {
+              name: "docs/update",
+              sha: side === "source" ? "new" : "parent",
+              protected: side === "protected",
+            },
+            { name: "main", sha: side === "target" ? "new" : "target" },
+          ]);
+        return fixture.prepared;
+      });
+      await fixture.service.runJob();
+      expect(fixture.transport.publish).not.toHaveBeenCalled();
+      expect(fixture.port.completeJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reuses an inspection for the current live heads without starting Git again", async () => {
+    const fixture = conflictJobFixture();
+    fixture.job.kind = "branch.conflicts";
+    vi.mocked(fixture.port.findConflictInspection).mockResolvedValue({
+      id: "cached",
+      snapshot: fixture.snapshot,
+    });
+    await fixture.service.runJob();
+    expect(fixture.transport.inspectConflicts).not.toHaveBeenCalled();
+    expect(fixture.port.saveConflictInspection).toHaveBeenCalledWith(
+      "resolve",
+      1,
+      fixture.snapshot,
+      fixture.targetKey,
+    );
+    expect(fixture.port.completeJob).toHaveBeenCalled();
+  });
+  it("inspects read-only and saves actual conflicts without publishing", async () => {
+    const fixture = conflictJobFixture();
+    fixture.job.kind = "branch.conflicts";
+    await fixture.service.runJob();
+    expect(fixture.port.saveConflictInspection).toHaveBeenCalledWith(
+      "resolve",
+      1,
+      fixture.snapshot,
+      fixture.targetKey,
+    );
+    expect(fixture.transport.publish).not.toHaveBeenCalled();
+    expect(fixture.port.completeJob).toHaveBeenCalled();
+  });
+
+  it("removes fragment contents when a conflict falls outside editable project files", async () => {
+    const fixture = conflictJobFixture();
+    fixture.job.kind = "branch.conflicts";
+    const file = fixture.snapshot.files[0];
+    if (!file) throw new Error("Missing conflict fixture");
+    Object.assign(file, {
+      path: "server.ts",
+      sections: [
+        { kind: "conflict", ours: "Private ours", base: "Private base", theirs: "Private theirs" },
+      ],
+    });
+    await fixture.service.runJob();
+    expect(fixture.port.saveConflictInspection).toHaveBeenCalledWith(
+      "resolve",
+      1,
+      expect.objectContaining({
+        files: [
+          expect.objectContaining({
+            kind: "unsupported",
+            baseContent: null,
+            oursContent: null,
+            theirsContent: null,
+            sections: undefined,
+          }),
+        ],
+      }),
+      fixture.targetKey,
+    );
+  });
+
+  it("journals the merge before publishing and refreshes the existing review", async () => {
+    const fixture = conflictJobFixture();
+    await fixture.service.runJob();
+    expect(fixture.transport.publish).toHaveBeenCalledWith(fixture.prepared);
+    expect(
+      vi.mocked(fixture.port.savePreparedBranchMerge).mock.invocationCallOrder[0],
+    ).toBeLessThan(fixture.transport.publish.mock.invocationCallOrder[0] ?? 0);
+    expect(fixture.port.enqueueReviewsSync).toHaveBeenCalledWith("project");
+    expect(fixture.client.ensureChangeRequest).not.toHaveBeenCalled();
+    expect(fixture.port.completeJob).toHaveBeenCalled();
+  });
+
+  it.each(["fork", "protected", "stale-target", "closed", "outside-root", "config-editor"])(
+    "does not publish a %s resolution",
+    async (reason) => {
+      const fixture = conflictJobFixture();
+      if (reason === "fork")
+        vi.mocked(fixture.client.getChangeRequestDetails).mockResolvedValue({
+          source: { isFork: true },
+        } as never);
+      if (reason === "protected")
+        vi.mocked(fixture.client.listBranches).mockResolvedValue([
+          { name: "docs/update", sha: "parent", protected: true },
+        ]);
+      if (reason === "stale-target")
+        vi.mocked(fixture.client.listBranches).mockResolvedValue([
+          { name: "docs/update", sha: "parent" },
+          { name: "main", sha: "new" },
+        ]);
+      if (reason === "closed") vi.mocked(fixture.client.listChangeRequests).mockResolvedValue([]);
+      const resolution = fixture.job.payload.resolutionFiles[0];
+      if (!resolution) throw new Error("Missing fixture decision");
+      if (reason === "outside-root") resolution.path = "server.ts";
+      if (reason === "config-editor") resolution.path = ".pushdocs/config.json";
+      await fixture.service.runJob();
+      expect(fixture.transport.publish).not.toHaveBeenCalled();
+      expect(fixture.port.completeJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("recognizes a previously published merge after a lost acknowledgment even if the MR is now closed", async () => {
+    const fixture = conflictJobFixture();
+    Object.assign(fixture.job.payload, {
+      preparedMerge: { ...fixture.prepared, targetKey: fixture.targetKey },
+    });
+    fixture.transport.isPublished.mockResolvedValue(true);
+    vi.mocked(fixture.client.listChangeRequests).mockResolvedValue([]);
+    await fixture.service.runJob();
+    expect(fixture.transport.publish).not.toHaveBeenCalled();
+    expect(fixture.client.listChangeRequests).not.toHaveBeenCalled();
+    expect(fixture.port.completeJob).toHaveBeenCalled();
+  });
+});
 
 describe("worker payloads and paths", () => {
   it("reads typed values from a job payload", () => {
@@ -337,6 +644,7 @@ describe("branch and review synchronization", () => {
         externalId: "7",
         headSha: "review-head",
         sourceBranch: "docs",
+        sourceBranchIsLocal: null,
         state: "open",
         targetBranch: "main",
         title: "Docs",
@@ -347,6 +655,42 @@ describe("branch and review synchronization", () => {
 });
 
 describe("change set submission", () => {
+  it.each(["submitting", "submitted"])(
+    "retains a web review description when retrying a %s change set",
+    async (status) => {
+      const port = repository();
+      const client = provider();
+      vi.mocked(port.getChangeSetSubmission).mockResolvedValue({
+        ...submissionTarget,
+        status,
+      } as never);
+      vi.mocked(client.listBranches).mockResolvedValue([{ name: "docs/update", sha: "base" }]);
+      vi.mocked(client.ensureChangeRequest).mockRejectedValue(new Error("Provider unavailable"));
+      await createWorkerService({
+        repository: port,
+        createProvider: () => client,
+        decryptSecret: () => "fixture",
+        logger: { error: vi.fn() },
+      }).submitChangeSet({
+        projectId: "project",
+        changeSetId: "change",
+        message: "Edit docs",
+        createReview: true,
+        description: "Тикет: https://tracker.test/DOC-123\nКомментарий",
+      });
+      expect(port.enqueueReviewCreation).toHaveBeenCalledWith(
+        "project",
+        "docs/update",
+        "Edit docs",
+        "actor",
+        expect.objectContaining({
+          description: "Тикет: https://tracker.test/DOC-123\nКомментарий",
+        }),
+      );
+      expect(client.commitFiles).toHaveBeenCalledTimes(status === "submitted" ? 0 : 1);
+    },
+  );
+
   it("records the pushed commit and retries review creation separately when the provider rejects it", async () => {
     const port = repository();
     const client = provider();
@@ -1312,6 +1656,75 @@ describe("job execution and review polling", () => {
     expect(port.completeJob).toHaveBeenCalledWith("job", 1);
   });
 
+  it("reports cumulative UTF-8 bytes across import batches and resets them for a new attempt", async () => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(port.claimNextJob)
+      .mockResolvedValueOnce({
+        attempts: 1,
+        id: "job",
+        kind: "branch.sync",
+        payload: { branch: "main", projectId: "project" },
+      } as never)
+      .mockResolvedValueOnce({
+        attempts: 2,
+        id: "job",
+        kind: "branch.sync",
+        payload: { branch: "main", projectId: "project" },
+      } as never);
+    vi.mocked(client.listFiles).mockResolvedValue([
+      ".pushdocs/config.json",
+      ...Array.from({ length: 13 }, (_, index) => `docs/${index}.md`),
+    ]);
+    vi.mocked(client.readFile).mockImplementation(async (_repo, _sha, filePath) =>
+      filePath === ".pushdocs/config.json" ? '{"version":1}' : "# Я🚀",
+    );
+    const service = createWorkerService({
+      createProvider: () => client,
+      decryptSecret: () => "token",
+      repository: port,
+    });
+    await service.runJob();
+    const expectedProgress = [
+      [
+        "job",
+        1,
+        "importing-documents",
+        { completed: 0, total: 0 },
+        { receivedBytes: 0, totalBytes: null },
+      ],
+      [
+        "job",
+        1,
+        "importing-documents",
+        { completed: 0, total: 14 },
+        { receivedBytes: 13, totalBytes: null },
+      ],
+      [
+        "job",
+        1,
+        "importing-documents",
+        { completed: 12, total: 14 },
+        { receivedBytes: 114, totalBytes: null },
+      ],
+      [
+        "job",
+        1,
+        "importing-documents",
+        { completed: 14, total: 14 },
+        { receivedBytes: 130, totalBytes: null },
+      ],
+    ];
+    expect(vi.mocked(port.updateJobProgress).mock.calls).toEqual(expectedProgress);
+    expect(port.completeJob).toHaveBeenCalledWith("job", 1);
+    vi.mocked(port.updateJobProgress).mockClear();
+    await service.runJob();
+    expect(vi.mocked(port.updateJobProgress).mock.calls).toEqual(
+      expectedProgress.map(([jobId, _attempt, ...progress]) => [jobId, 2, ...progress]),
+    );
+    expect(port.completeJob).toHaveBeenCalledWith("job", 2);
+  });
+
   it("creates and imports a working branch in one recoverable job", async () => {
     const port = repository();
     const client = provider();
@@ -1502,10 +1915,10 @@ describe("job execution and review polling", () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('"jobId":"job"'));
   });
 
-  it("releases a submission after its fifth failed attempt", async () => {
+  it("releases a submission after its second failed attempt", async () => {
     const port = repository();
     vi.mocked(port.claimNextJob).mockResolvedValue({
-      attempts: 5,
+      attempts: 2,
       id: "job",
       kind: "change-set.submit",
       payload: { changeSetId: "change", message: "Update", projectId: "project" },
@@ -1518,7 +1931,7 @@ describe("job execution and review polling", () => {
       "project",
       "Change set is unavailable",
     );
-    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false, 5);
+    expect(port.failJob).toHaveBeenCalledWith("job", "Change set is unavailable", false, 2);
   });
 
   it("polls visible projects and isolates provider failures", async () => {
@@ -1725,8 +2138,63 @@ it("caches read-only review details for open requests and obtains checks for the
   expect(client.getChangeRequestDetails).toHaveBeenCalledExactlyOnceWith("42", "1");
   expect(client.listChecks).toHaveBeenCalledExactlyOnceWith("42", "current-head");
   expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
-    expect.objectContaining({ details, headSha: "current-head", externalId: "1" }),
+    expect.objectContaining({
+      details: expect.objectContaining(details),
+      headSha: "current-head",
+      externalId: "1",
+    }),
     expect.objectContaining({ details: null, checks: [], headSha: "closed-head", externalId: "2" }),
+  ]);
+});
+
+it.each([null, ""])(
+  "synchronizes review states without requesting checks for a missing SHA (%s)",
+  async (headSha) => {
+    const port = repository();
+    const client = provider();
+    vi.mocked(client.listChangeRequests).mockResolvedValue(
+      (["open", "closed", "merged"] as const).map((state, index) => ({
+        id: String(index + 1),
+        headSha,
+        sourceBranch: `docs/${index + 1}`,
+        targetBranch: "stable",
+        state,
+        title: `Docs ${index + 1}`,
+        url: "url",
+      })),
+    );
+    await createWorkerService({ repository: port }).synchronizeReviews("project", client, "42");
+
+    expect(client.getChangeRequestDetails).toHaveBeenCalledExactlyOnceWith("42", "1");
+    expect(client.listChecks).not.toHaveBeenCalled();
+    expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
+      expect.objectContaining({ externalId: "1", state: "open", headSha: null, checks: [] }),
+      expect.objectContaining({ externalId: "2", state: "closed", headSha: null, checks: [] }),
+      expect.objectContaining({ externalId: "3", state: "merged", headSha: null, checks: [] }),
+    ]);
+  },
+);
+
+it("recovers a missing list SHA from the open review details", async () => {
+  const port = repository();
+  const client = provider();
+  vi.mocked(client.listChangeRequests).mockResolvedValue([
+    {
+      id: "1",
+      headSha: null,
+      sourceBranch: "docs/update",
+      targetBranch: "stable",
+      state: "open",
+      title: "Docs",
+      url: "url",
+    },
+  ]);
+  vi.mocked(client.getChangeRequestDetails).mockResolvedValue({ headSha: "current-head" } as never);
+  await createWorkerService({ repository: port }).synchronizeReviews("project", client, "42");
+
+  expect(client.listChecks).toHaveBeenCalledExactlyOnceWith("42", "current-head");
+  expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
+    expect.objectContaining({ externalId: "1", headSha: "current-head" }),
   ]);
 });
 
@@ -1854,10 +2322,547 @@ describe("MCP worker authorization and review metadata", () => {
   });
 });
 
+describe("updating a review branch inside PushDocs", () => {
+  it("releases a paused rebase reservation when its target branch disappears before publication", async () => {
+    const f = setup();
+    Object.assign(f.payload, { targetKey: branchConflictRepositoryKey(submissionTarget) });
+    Object.assign(f.payload, {
+      rebaseProgress: {
+        version: branchUpdateLimits.version,
+        branch: "docs/task",
+        sourceBranch: "release",
+        parentSha: "task-head",
+        sourceSha: "release-head",
+        originals: ["task-head"],
+        commits: [],
+        resolutions: [],
+      },
+    });
+    vi.mocked(f.client.listBranches).mockResolvedValue([{ name: "docs/task", sha: "task-head" }]);
+    await f.service.runJob();
+    expect(f.port.releaseBranchMergeReservation).toHaveBeenCalledWith("update-job", 1);
+    expect(f.port.failJob).toHaveBeenCalledWith(
+      "update-job",
+      "Branch release was not found",
+      false,
+      1,
+    );
+    expect(f.transport.publish).not.toHaveBeenCalled();
+  });
+
+  it("pauses the same job without completing or publishing it, and retains retry budget after many commits", async () => {
+    const f = setup();
+    f.job.attempts = 12;
+    Object.assign(f.payload, { retryBaseAttempt: 11 });
+    const progress = {
+      version: branchUpdateLimits.version,
+      branch: "docs/task",
+      sourceBranch: "release",
+      parentSha: "task-head",
+      sourceSha: "release-head",
+      originals: ["task-head"],
+      commits: [],
+      resolutions: [],
+    };
+    const snapshot: BranchConflictSnapshot = {
+      branch: "docs/task",
+      sourceBranch: "release",
+      parentSha: "task-head",
+      sourceSha: "release-head",
+      files: [
+        {
+          path: "docs/a.md",
+          kind: "text",
+          baseContent: "Base",
+          oursContent: "Target",
+          theirsContent: "Commit",
+          oursExists: true,
+          theirsExists: true,
+        },
+      ],
+      rebase: {
+        operationId: "update-job",
+        conflictId: "token",
+        commitSha: "task-head",
+        currentParentSha: "release-head",
+        originalParentSha: "base",
+        index: 1,
+        total: 1,
+        title: "Edit",
+      },
+    };
+    f.transport.prepareUpdate.mockRejectedValueOnce(new RebaseNeedsResolution(progress, snapshot));
+    await f.service.runJob();
+    expect(f.port.pauseRebaseUpdate).toHaveBeenCalledWith(
+      "update-job",
+      12,
+      progress,
+      expect.objectContaining({ rebase: snapshot.rebase, updatePolicy: f.payload.updatePolicy }),
+      expect.any(String),
+    );
+    expect(f.transport.publish).not.toHaveBeenCalled();
+    expect(f.port.completeJob).not.toHaveBeenCalled();
+    expect(f.port.failJob).not.toHaveBeenCalled();
+    f.transport.prepareUpdate.mockRejectedValueOnce(new Error("Temporary network failure"));
+    await f.service.runJob();
+    expect(f.port.failJob).toHaveBeenCalledWith(
+      "update-job",
+      "Temporary network failure",
+      true,
+      12,
+    );
+  });
+
+  function setup(strategy = BranchUpdateStrategy.Rebase) {
+    const port = repository();
+    const client = provider();
+    vi.mocked(client.getRepository).mockResolvedValue({ defaultUpdateStrategy: strategy } as never);
+    let published = false;
+    const prepared = {
+      version: branchUpdateLimits.version,
+      strategy,
+      branch: "docs/task",
+      sourceBranch: "release",
+      parentSha: "task-head",
+      sourceSha: "release-head",
+      sha: "updated-head",
+      commits:
+        strategy === BranchUpdateStrategy.Rebase
+          ? [{ originalSha: "task-head", sha: "updated-head" }]
+          : [],
+    };
+    const payload = {
+      projectId: "project",
+      branch: "docs/task",
+      sourceBranch: "release",
+      userId: "actor",
+      expectedHeadSha: "task-head",
+      updatePolicy: resolvedBranchUpdatePolicy({ strategy, targetSha: "release-head" }),
+      strategy,
+      reviewId: "review",
+      externalReviewId: "42",
+    };
+    const job = {
+      id: "update-job",
+      attempts: 1,
+      kind: "branch.update",
+      created_at: new Date("2026-11-13T10:00:00Z"),
+      payload,
+    };
+    const review = {
+      id: "42",
+      state: "open" as const,
+      sourceBranch: "docs/task",
+      targetBranch: "release",
+      title: "Docs",
+      url: "https://gitlab.test/review/42",
+      headSha: "task-head",
+    };
+    vi.mocked(port.claimNextJob).mockResolvedValue(job as never);
+    vi.mocked(port.getProjectSyncTarget).mockResolvedValue(submissionTarget as never);
+    vi.mocked(client.listBranches).mockImplementation(async () => [
+      { name: "main", sha: "main-head" },
+      { name: "release", sha: "release-head" },
+      { name: "docs/task", sha: published ? "updated-head" : "task-head" },
+    ]);
+    vi.mocked(client.listChangeRequests).mockImplementation(async () => [
+      { ...review, headSha: published ? "updated-head" : "task-head" },
+    ]);
+    vi.mocked(client.getChangeRequestDetails).mockImplementation(async () => ({
+      headSha: published ? "updated-head" : "task-head",
+      readiness: {
+        state: published ? "checking" : "blocked",
+        reason: published
+          ? null
+          : strategy === BranchUpdateStrategy.Rebase
+            ? "need_rebase"
+            : "behind",
+      },
+      source: { isFork: false, repositoryId: "42", branchUrl: null },
+      labels: [],
+      approvals: null,
+      comments: [],
+      commentsComplete: true,
+    }));
+    const transport = {
+      prepareUpdate: vi.fn().mockResolvedValue(prepared),
+      isPublished: vi.fn().mockImplementation(async () => published),
+      publish: vi.fn().mockImplementation(async () => {
+        published = true;
+        return { sha: prepared.sha, alreadyApplied: false };
+      }),
+    };
+    const service = createService({
+      repository: port,
+      createProvider: () => client,
+      createUpdateTransport: () => transport,
+      decryptSecret: () => "token",
+      logger: { error: vi.fn() },
+    });
+    const saved = {
+      ...prepared,
+      targetKey: JSON.stringify([
+        submissionTarget.connection_id,
+        submissionTarget.base_url,
+        submissionTarget.provider_repository_id,
+        submissionTarget.clone_url,
+        submissionTarget.kind,
+      ]),
+    };
+    return { port, client, transport, service, prepared, payload, job, review, saved };
+  }
+
+  it("updates a mergeable but behind review using Git, even when readiness is ready", async () => {
+    const f = setup(BranchUpdateStrategy.Merge);
+    Object.assign(f.payload, { refreshFromTarget: true, oauthGrantId: "grant" });
+    f.port.requireMcpGrant = vi.fn();
+    vi.mocked(f.client.getChangeRequestDetails).mockResolvedValue({
+      headSha: "task-head",
+      source: { isFork: false },
+      readiness: { state: "ready", reason: null },
+    } as never);
+    await f.service.runJob();
+    expect(f.transport.publish).toHaveBeenCalled();
+    expect(f.port.requireMcpGrant).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not push an already current result", async () => {
+    const f = setup(BranchUpdateStrategy.Merge);
+    f.transport.prepareUpdate.mockResolvedValue({ ...f.prepared, sha: "task-head" });
+    await f.service.runJob();
+    expect(f.transport.publish).not.toHaveBeenCalled();
+    expect(f.port.completeJob).toHaveBeenCalled();
+  });
+
+  it("keeps the configured strategy when the provider status changes to need_rebase", async () => {
+    const f = setup(BranchUpdateStrategy.Merge);
+    f.transport.prepareUpdate.mockImplementationOnce(async () => {
+      vi.mocked(f.client.getChangeRequestDetails).mockResolvedValue({
+        headSha: "task-head",
+        source: { isFork: false },
+        readiness: { state: "blocked", reason: "need_rebase" },
+      } as never);
+      return f.prepared;
+    });
+    await f.service.runJob();
+    expect(f.transport.publish).toHaveBeenCalledOnce();
+    expect(f.port.failJob).not.toHaveBeenCalled();
+  });
+
+  it("uses target configuration to select merge despite a repository rebase default and need_rebase status", async () => {
+    const f = setup(BranchUpdateStrategy.Merge);
+    f.payload.updatePolicy = resolvedBranchUpdatePolicy({
+      strategy: BranchUpdateStrategy.Merge,
+      source: BranchUpdatePolicySource.Project,
+      targetSha: "release-head",
+    });
+    vi.mocked(f.client.getRepository).mockResolvedValue({
+      defaultUpdateStrategy: BranchUpdateStrategy.Rebase,
+    } as never);
+    vi.mocked(f.client.readFile).mockImplementation(async (_repository, _ref, filePath) =>
+      filePath.endsWith(".pushdocs/config.json")
+        ? JSON.stringify({ version: 1, git: { updateStrategy: "merge" } })
+        : "# Document",
+    );
+    vi.mocked(f.client.getChangeRequestDetails).mockResolvedValue({
+      headSha: "task-head",
+      source: { isFork: false },
+      readiness: { state: "blocked", reason: "need_rebase" },
+    } as never);
+    await f.service.runJob();
+    expect(f.transport.prepareUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ strategy: BranchUpdateStrategy.Merge }),
+    );
+    expect(f.transport.publish).toHaveBeenCalledOnce();
+  });
+
+  it.each([BranchUpdateStrategy.Merge, BranchUpdateStrategy.Rebase])(
+    "stops a prepared %s if repository policy changes before publication",
+    async (strategy) => {
+      const f = setup(strategy);
+      f.transport.prepareUpdate.mockImplementationOnce(async () => {
+        vi.mocked(f.client.getRepository).mockResolvedValue({
+          defaultUpdateStrategy:
+            strategy === BranchUpdateStrategy.Merge
+              ? BranchUpdateStrategy.Rebase
+              : BranchUpdateStrategy.Merge,
+        } as never);
+        return f.prepared;
+      });
+      await f.service.runJob();
+      expect(f.transport.publish).not.toHaveBeenCalled();
+      expect(f.port.failJob).toHaveBeenCalledWith(
+        "update-job",
+        expect.stringContaining("Политика обновления"),
+        false,
+        1,
+      );
+    },
+  );
+
+  it("does not reconstruct an unpublished prepared operation after policy changes", async () => {
+    const f = setup();
+    vi.mocked(f.port.claimNextJob).mockResolvedValue({
+      ...f.job,
+      payload: { ...f.payload, preparedUpdate: f.saved },
+    } as never);
+    vi.mocked(f.client.getRepository).mockResolvedValue({
+      defaultUpdateStrategy: BranchUpdateStrategy.Merge,
+    } as never);
+    await f.service.runJob();
+    expect(f.transport.prepareUpdate).not.toHaveBeenCalled();
+    expect(f.transport.publish).not.toHaveBeenCalled();
+  });
+
+  it("does not reconstruct an unpublished prepared operation after the source advances", async () => {
+    const f = setup();
+    vi.mocked(f.port.claimNextJob).mockResolvedValue({
+      ...f.job,
+      payload: { ...f.payload, preparedUpdate: f.saved },
+    } as never);
+    vi.mocked(f.client.listBranches).mockResolvedValue([
+      { name: "release", sha: "release-head" },
+      { name: "docs/task", sha: "autofix-head" },
+    ]);
+    await f.service.runJob();
+    expect(f.transport.prepareUpdate).not.toHaveBeenCalled();
+    expect(f.transport.publish).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "only reconciles a legacy prepared operation without policy when published=%s",
+    async (published) => {
+      const f = setup();
+      vi.mocked(f.port.claimNextJob).mockResolvedValue({
+        ...f.job,
+        payload: { ...f.payload, updatePolicy: undefined, preparedUpdate: f.saved },
+      } as never);
+      f.transport.isPublished.mockResolvedValue(published);
+      vi.mocked(f.client.getRepository).mockRejectedValue(new Error("Settings unavailable"));
+      await f.service.runJob();
+      expect(f.transport.prepareUpdate).not.toHaveBeenCalled();
+      expect(f.transport.publish).not.toHaveBeenCalled();
+      if (published) expect(f.port.completeJob).toHaveBeenCalledWith("update-job", 1);
+      else expect(f.port.failJob).toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks the grant after preparing an update", async () => {
+    const f = setup();
+    Object.assign(f.payload, { oauthGrantId: "grant" });
+    f.port.requireMcpGrant = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Grant revoked"));
+    await f.service.runJob();
+    expect(f.transport.prepareUpdate).toHaveBeenCalled();
+    expect(f.transport.publish).not.toHaveBeenCalled();
+  });
+
+  it.each([BranchUpdateStrategy.Rebase, BranchUpdateStrategy.Merge])(
+    "publishes %s to the selected source and refreshes documents and MR",
+    async (strategy) => {
+      const { port, client, transport, service, saved } = setup(strategy);
+      await service.runJob();
+      expect(port.withGitRefLock).toHaveBeenCalledWith(
+        "https://gitlab.test:42:docs/task",
+        expect.any(Function),
+      );
+      expect(transport.prepareUpdate).toHaveBeenCalledWith({
+        operationId: "update-job",
+        branch: "docs/task",
+        sourceBranch: "release",
+        strategy,
+        createdAt: "2026-11-13T10:00:00.000Z",
+      });
+      expect(port.savePreparedBranchUpdate).toHaveBeenCalledWith("update-job", 1, saved);
+      expect(vi.mocked(port.savePreparedBranchUpdate).mock.invocationCallOrder[0]).toBeLessThan(
+        transport.publish.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(port.replaceImportedDocuments).toHaveBeenCalledWith(
+        "project",
+        "docs/task",
+        "updated-head",
+        [],
+        [],
+      );
+      expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", [
+        expect.objectContaining({
+          headSha: "updated-head",
+          details: expect.objectContaining({ readiness: { state: "checking", reason: null } }),
+        }),
+      ]);
+      expect(client.ensureChangeRequest).not.toHaveBeenCalled();
+      expect(port.completeJob).toHaveBeenCalledWith("update-job", 1);
+    },
+  );
+
+  it.each(["source", "target"])(
+    "does not push when the %s advances during preparation",
+    async (side) => {
+      const { port, client, transport, service, prepared } = setup();
+      transport.prepareUpdate.mockImplementationOnce(async () => {
+        vi.mocked(client.listBranches).mockResolvedValue([
+          { name: "docs/task", sha: side === "source" ? "autofix" : "task-head" },
+          { name: "release", sha: side === "target" ? "new-target" : "release-head" },
+        ]);
+        return prepared;
+      });
+      await service.runJob();
+      expect(transport.publish).not.toHaveBeenCalled();
+      expect(port.releaseBranchMergeReservation).toHaveBeenCalledWith("update-job", 1);
+      expect(port.failJob).toHaveBeenCalledWith(
+        "update-job",
+        expect.stringContaining(
+          side === "target" ? "Политика обновления" : "обновились перед отправкой",
+        ),
+        false,
+        1,
+      );
+    },
+  );
+
+  it("rechecks the review target and local write permission before publishing", async () => {
+    const { port, client, transport, service, review } = setup();
+    vi.mocked(client.listChangeRequests)
+      .mockResolvedValueOnce([review])
+      .mockResolvedValue([{ ...review, targetBranch: "other" }]);
+    await service.runJob();
+    expect(transport.publish).not.toHaveBeenCalled();
+    vi.mocked(client.listChangeRequests).mockResolvedValue([review]);
+    vi.mocked(port.requireProjectAccess)
+      .mockResolvedValueOnce({ role: "editor" } as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Permission revoked"), { code: "ACCESS_DENIED" }),
+      );
+    await service.runJob();
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(port.failJob).toHaveBeenLastCalledWith("update-job", "Permission revoked", false, 1);
+  });
+
+  it("reconciles a lost push response without repeating the rebase, even after the MR closes", async () => {
+    const { port, client, transport, service, job, payload, saved } = setup();
+    transport.publish.mockRejectedValueOnce(new Error("Connection lost after push"));
+    await service.runJob();
+    expect(port.failJob).toHaveBeenCalledWith("update-job", "Connection lost after push", true, 1);
+    expect(port.releaseBranchMergeReservation).not.toHaveBeenCalled();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      ...job,
+      attempts: 2,
+      payload: { ...payload, preparedUpdate: saved },
+    } as never);
+    transport.isPublished.mockResolvedValue(true);
+    vi.mocked(client.listChangeRequests).mockResolvedValue([]);
+    await service.runJob();
+    expect(transport.prepareUpdate).toHaveBeenCalledOnce();
+    expect(transport.publish).toHaveBeenCalledOnce();
+    expect(port.completeJob).toHaveBeenCalledWith("update-job", 2);
+    expect(port.replaceChangeRequests).toHaveBeenCalledWith("project", []);
+  });
+
+  it.each([
+    { attempts: 1, retryBaseAttempt: undefined, retry: true },
+    { attempts: 2, retryBaseAttempt: undefined, retry: false },
+    { attempts: 12, retryBaseAttempt: 11, retry: true },
+    { attempts: 13, retryBaseAttempt: 11, retry: false },
+  ])("limits failed updates to two attempts: %j", async ({ attempts, retryBaseAttempt, retry }) => {
+    const f = setup();
+    f.job.attempts = attempts;
+    Object.assign(f.payload, { retryBaseAttempt });
+    f.transport.prepareUpdate.mockRejectedValue(new Error("Git fetch failed"));
+    await f.service.runJob();
+    expect(f.port.failJob).toHaveBeenCalledWith("update-job", "Git fetch failed", retry, attempts);
+    expect(f.port.markProjectAttention).toHaveBeenCalledTimes(retry ? 0 : 1);
+    expect(f.transport.publish).not.toHaveBeenCalled();
+    expect(f.port.completeJob).not.toHaveBeenCalled();
+  });
+
+  it("restores the same durable result when a retry confirms the previous push never completed", async () => {
+    const { port, transport, service, job, payload, saved } = setup();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      ...job,
+      attempts: 2,
+      payload: { ...payload, preparedUpdate: saved },
+    } as never);
+    await service.runJob();
+    expect(transport.prepareUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ prepared: saved }),
+    );
+    expect(transport.publish).toHaveBeenCalledOnce();
+  });
+
+  it("releases an unpublished prepared update after its MR closes on an explicit later retry", async () => {
+    const { port, client, transport, service, job, payload, saved } = setup();
+    vi.mocked(port.claimNextJob).mockResolvedValue({
+      ...job,
+      attempts: 6,
+      payload: { ...payload, preparedUpdate: saved },
+    } as never);
+    transport.isPublished.mockResolvedValue(false);
+    vi.mocked(client.listChangeRequests).mockResolvedValue([]);
+    await service.runJob();
+    expect(transport.prepareUpdate).not.toHaveBeenCalled();
+    expect(transport.publish).not.toHaveBeenCalled();
+    expect(port.releaseBranchMergeReservation).toHaveBeenCalledWith("update-job", 6);
+    expect(port.failJob).toHaveBeenCalledWith(
+      "update-job",
+      expect.stringContaining("закрыт"),
+      false,
+      6,
+    );
+    expect(port.completeJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["fork", "protected", "stale", "closed"])(
+    "refuses %s input before preparing a result",
+    async (kind) => {
+      const { port, client, transport, service } = setup();
+      if (kind === "fork")
+        vi.mocked(client.getChangeRequestDetails).mockResolvedValue({
+          source: { isFork: true },
+        } as never);
+      if (kind === "protected")
+        vi.mocked(client.listBranches).mockResolvedValue([
+          { name: "docs/task", sha: "task-head", protected: true },
+          { name: "release", sha: "release-head" },
+        ]);
+      if (kind === "stale")
+        vi.mocked(client.listBranches).mockResolvedValue([
+          { name: "docs/task", sha: "autofix" },
+          { name: "release", sha: "release-head" },
+        ]);
+      if (kind === "closed") vi.mocked(client.listChangeRequests).mockResolvedValue([]);
+      await service.runJob();
+      expect(transport.prepareUpdate).not.toHaveBeenCalled();
+      expect(transport.publish).not.toHaveBeenCalled();
+      expect(port.failJob).toHaveBeenCalledWith("update-job", expect.any(String), false, 1);
+    },
+  );
+
+  it("stops on conflicts and journal failures without publishing", async () => {
+    const { port, transport, service } = setup();
+    transport.prepareUpdate.mockRejectedValueOnce(
+      new BranchMergeConflictError("Rebase остановлен: article.md"),
+    );
+    await service.runJob();
+    expect(port.failJob).toHaveBeenCalledWith(
+      "update-job",
+      "Rebase остановлен: article.md",
+      false,
+      1,
+    );
+    expect(transport.publish).not.toHaveBeenCalled();
+    vi.mocked(port.savePreparedBranchUpdate).mockRejectedValue(new Error("Journal unavailable"));
+    await service.runJob();
+    expect(transport.publish).not.toHaveBeenCalled();
+  });
+});
+
 describe("merging the default branch before a review exists", () => {
   function setup() {
     const port = repository();
     const client = provider();
+    let published = false;
     vi.mocked(port.getProjectSyncTarget).mockResolvedValue(submissionTarget as never);
     vi.mocked(port.claimNextJob).mockResolvedValue({
       id: "merge-job",
@@ -1866,18 +2871,22 @@ describe("merging the default branch before a review exists", () => {
       created_at: new Date("2026-10-16T00:00:00Z"),
       payload: { projectId: "project", branch: "docs/task", sourceBranch: "main", userId: "actor" },
     } as never);
-    vi.mocked(client.listBranches).mockResolvedValue([
+    vi.mocked(client.listBranches).mockImplementation(async () => [
       { name: "main", sha: "main-head" },
-      { name: "docs/task", sha: "merged-head" },
+      { name: "docs/task", sha: published ? "merged-head" : "task-head" },
     ]);
     const transport = {
+      isPublished: vi.fn().mockImplementation(async () => published),
       prepareMerge: vi.fn().mockResolvedValue({
         branch: "docs/task",
         parentSha: "task-head",
         sourceSha: "main-head",
         sha: "merged-head",
       }),
-      publish: vi.fn().mockResolvedValue({ sha: "merged-head", alreadyApplied: false }),
+      publish: vi.fn().mockImplementation(async () => {
+        published = true;
+        return { sha: "merged-head", alreadyApplied: false };
+      }),
     };
     const service = createService({
       repository: port,
@@ -1910,6 +2919,48 @@ describe("merging the default branch before a review exists", () => {
     expect(client.ensureChangeRequest).not.toHaveBeenCalled();
     expect(port.completeJob).toHaveBeenCalledWith("merge-job", 1);
   });
+
+  it.each(["protection", "default", "policy"])(
+    "reconciles an already published merge after %s changes",
+    async (change) => {
+      const f = setup();
+      vi.mocked(f.client.listFiles).mockRejectedValueOnce(
+        new Error("Import unavailable after push"),
+      );
+      await f.service.runJob();
+      const prepared = vi.mocked(f.port.savePreparedBranchMerge).mock.calls[0]?.[2];
+      if (!prepared) throw new Error("Missing prepared merge");
+      vi.mocked(f.port.claimNextJob).mockResolvedValue({
+        id: "merge-job",
+        attempts: 2,
+        kind: "branch.merge",
+        created_at: new Date("2026-10-16T00:00:00Z"),
+        payload: {
+          projectId: "project",
+          branch: "docs/task",
+          sourceBranch: "main",
+          userId: "actor",
+          preparedMerge: prepared,
+        },
+      } as never);
+      if (change === "protection")
+        vi.mocked(f.client.listBranches).mockResolvedValue([
+          { name: "main", sha: "main-head" },
+          { name: "docs/task", sha: "merged-head", protected: true },
+        ]);
+      if (change === "default")
+        vi.mocked(f.port.getProjectSyncTarget).mockResolvedValue({
+          ...submissionTarget,
+          default_branch: "release",
+        } as never);
+      if (change === "policy")
+        vi.mocked(f.client.getRepository).mockRejectedValue(new Error("Settings unavailable"));
+      await f.service.runJob();
+      expect(f.transport.prepareMerge).toHaveBeenCalledOnce();
+      expect(f.transport.publish).toHaveBeenCalledOnce();
+      expect(f.port.completeJob).toHaveBeenCalledWith("merge-job", 2);
+    },
+  );
   it("journals the result before pushing and restores it after a post-push import failure", async () => {
     const { port, client, transport, service } = setup();
     const prepared = {
@@ -1917,6 +2968,7 @@ describe("merging the default branch before a review exists", () => {
       parentSha: "task-head",
       sourceSha: "main-head",
       sha: "merged-head",
+      updatePolicy: resolvedBranchUpdatePolicy({ targetSha: "main-head" }),
       targetKey: JSON.stringify([
         submissionTarget.connection_id,
         submissionTarget.base_url,
@@ -1951,17 +3003,10 @@ describe("merging the default branch before a review exists", () => {
       },
     } as never);
     await service.runJob();
-    expect(transport.prepareMerge).toHaveBeenLastCalledWith({
-      branch: "docs/task",
-      sourceBranch: "main",
-      createdAt: "2026-10-16T00:00:00.000Z",
-      prepared: {
-        branch: prepared.branch,
-        parentSha: prepared.parentSha,
-        sourceSha: prepared.sourceSha,
-        sha: prepared.sha,
-      },
-    });
+    expect(transport.prepareMerge).toHaveBeenCalledOnce();
+    expect(transport.isPublished).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: prepared.sha }),
+    );
     expect(port.completeJob).toHaveBeenCalledWith("merge-job", 2);
   });
 

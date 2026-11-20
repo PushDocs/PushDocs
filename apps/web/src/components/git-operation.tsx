@@ -1,8 +1,11 @@
 "use client";
-import { Download, GitPullRequest } from "lucide-react";
+import { Download, GitPullRequest, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { gitOperationStatusAction, startGitOperationAction } from "@/app/actions";
+import { type ReactNode, useEffect, useState } from "react";
+import { branchSyncLabels } from "./git-operation-labels";
+import { GitOperationKind } from "./git-operation-store";
+import { ReviewDescription } from "./review-description";
+import { useGitOperation } from "./use-git-operation";
 
 export function GitOperation({
   projectId,
@@ -11,6 +14,7 @@ export function GitOperation({
   createReview = false,
   reviewLabel = "PR / MR",
   disabled = false,
+  children,
 }: {
   reviewsOnly?: boolean;
   projectId: string;
@@ -18,109 +22,106 @@ export function GitOperation({
   createReview?: boolean;
   reviewLabel?: string;
   disabled?: boolean;
+  children?: ReactNode;
 }) {
   const router = useRouter();
-  const [jobId, setJobId] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState(false);
   const [title, setTitle] = useState("");
-  useEffect(() => {
-    if (!jobId) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const job = await gitOperationStatusAction(projectId, jobId);
-        if (stopped) return;
-        if (job.status === "done" || job.status === "failed") {
-          setBusy(false);
-          setJobId("");
-          setError(job.status === "failed");
-          setMessage(
-            job.status === "done"
-              ? createReview
-                ? `${reviewLabel} создан`
-                : reviewsOnly
-                  ? `Состояние ${reviewLabel} обновлено`
-                  : "Изменения получены"
-              : job.last_error || "Операция не завершена. Повторите попытку.",
-          );
-          router.refresh();
-          return;
-        }
-        timer = setTimeout(poll, 2000);
-      } catch {
-        if (stopped) return;
-        setMessage("Нет связи с сервером. Проверяем результат…");
-        timer = setTimeout(poll, 5000);
+  const { busy, message, error, start } = useGitOperation({
+    projectId,
+    branch,
+    kind: reviewsOnly
+      ? GitOperationKind.Reviews
+      : createReview
+        ? GitOperationKind.CreateReview
+        : GitOperationKind.Pull,
+    onComplete: () => router.refresh(),
+    successMessage: (kind) =>
+      kind === GitOperationKind.CreateReview
+        ? `${reviewLabel} создан`
+        : kind === GitOperationKind.Reviews
+          ? `Состояние ${reviewLabel} обновлено`
+          : `Ветка ${branch} обновлена из Git`,
+  });
+  const idleLabel = createReview
+    ? `Создать ${reviewLabel}`
+    : reviewsOnly
+      ? `Обновить данные ${reviewLabel}`
+      : branchSyncLabels.idle;
+  const busyLabel = createReview
+    ? `Создаём ${reviewLabel}…`
+    : reviewsOnly
+      ? `Обновляем ${reviewLabel}…`
+      : branchSyncLabels.busy;
+  const submitButton = (
+    <button
+      className={`pd-button pd-button--${createReview ? "primary" : "secondary"}`}
+      type="submit"
+      disabled={busy || disabled}
+      aria-busy={busy}
+      title={
+        createReview
+          ? undefined
+          : reviewsOnly
+            ? `Обновить статусы, проверки и обсуждения ${reviewLabel} из Git`
+            : `Получить свежую версию ${branch} из Git в PushDocs`
       }
-    };
-    void poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [jobId, projectId, router, createReview, reviewLabel, reviewsOnly]);
+    >
+      {busy ? (
+        <LoaderCircle className="spin" aria-hidden size={16} />
+      ) : createReview ? (
+        <GitPullRequest aria-hidden size={16} />
+      ) : (
+        <Download aria-hidden size={16} />
+      )}
+      <span className="git-operation-label">
+        <span aria-hidden={busy}>{idleLabel}</span>
+        <span aria-hidden={!busy}>{busyLabel}</span>
+      </span>
+    </button>
+  );
   return (
     <form
       className="git-operation"
       onSubmit={async (event) => {
         event.preventDefault();
-        setBusy(true);
-        setError(false);
-        setMessage("");
-        try {
-          setJobId(
-            await startGitOperationAction({
-              projectId,
-              branch,
-              ...(reviewsOnly ? { reviewsOnly: true } : {}),
-              ...(createReview ? { title } : {}),
-            }),
-          );
-        } catch {
-          setBusy(false);
-          setError(true);
-          setMessage("Не удалось начать операцию. Повторите попытку.");
-        }
+        if (busy || disabled) return;
+        await start({
+          projectId,
+          branch,
+          ...(reviewsOnly ? { reviewsOnly: true } : {}),
+          ...(createReview
+            ? {
+                title,
+                description: String(new FormData(event.currentTarget).get("description") ?? ""),
+              }
+            : {}),
+        });
       }}
     >
       {createReview ? (
-        <label>
-          Название {reviewLabel}
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            required
-            minLength={3}
-            maxLength={255}
-            disabled={busy || disabled}
-          />
-        </label>
+        <>
+          <label>
+            Название {reviewLabel}
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              required
+              minLength={3}
+              maxLength={255}
+              disabled={busy || disabled}
+            />
+          </label>
+          <ReviewDescription reviewLabel={reviewLabel} disabled={busy || disabled} />
+        </>
       ) : null}
-      <button
-        className={`pd-button pd-button--${createReview ? "primary" : "secondary"}`}
-        type="submit"
-        disabled={busy || disabled}
-      >
-        {createReview ? (
-          <GitPullRequest aria-hidden size={16} />
-        ) : (
-          <Download aria-hidden size={16} />
-        )}
-        {busy
-          ? createReview
-            ? `Создаём ${reviewLabel}…`
-            : reviewsOnly
-              ? `Обновляем ${reviewLabel}…`
-              : "Получаем изменения…"
-          : createReview
-            ? `Создать ${reviewLabel}`
-            : reviewsOnly
-              ? "Обновить из Git"
-              : "Получить из Git"}
-      </button>
+      {createReview ? (
+        <div className="git-operation-actions">
+          {children}
+          {submitButton}
+        </div>
+      ) : (
+        submitButton
+      )}
       {message ? <p role={error ? "alert" : "status"}>{message}</p> : null}
     </form>
   );

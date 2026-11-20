@@ -2,6 +2,16 @@
   "version": 1,
   "defaultLocale": "ru",
   "documentRoots": ["docs", "i18n"],
+  "fileExplorer": {
+    "systemDirectories": [
+      ".pushdocs",
+      ".gitlab",
+      "src/theme",
+      "package.json",
+      "yarn.lock",
+      ".gitignore"
+    ]
+  },
   "media": {
     "documentPathPrefixes": {
       "en": "en/"

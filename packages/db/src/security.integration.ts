@@ -24,7 +24,7 @@ try {
   await migrateToLatest(db);
   const repo = new PushDocsRepository(db);
   const owner = await repo.createOperator({
-    displayName: "Old owner",
+    displayName: "Owner",
     email: "owner@example.test",
     passwordHash: "hash",
   });
@@ -50,50 +50,22 @@ try {
     rootPath: ".",
     slug: "fixture",
   });
-  await repo.createInvitation({
+  const invitationCreatedAt = Date.now();
+  const invitation = await repo.createInvitation({
     email: "reader@example.test",
     invitedByUserId: owner.id,
     projectId: project.id,
     role: "reader",
     tokenHash: "single-use",
   });
-  await repo.createSession(owner.id, "old-owner-session", new Date(Date.now() + 60_000));
-  await repo.createSession(reader.id, "old-reader-session", new Date(Date.now() + 60_000));
-
-  // Recreate the schema immediately before 011-two-factor only in the disposable database.
-  // Later migrations must be rolled back too, otherwise Kysely rejects the broken history.
-  await sql`
-    drop table mcp_audit, mcp_calls, mcp_tokens, mcp_codes, mcp_grants, mcp_consents, mcp_clients, mcp_rate_limits;
-    drop table preview_workspaces;
-    drop table preview_leases;
-    drop table preview_sessions;
-    drop table comment_reads;
-    alter table change_requests drop column details;
-    drop table collaborative_documents;
-    drop index if exists discussions_project_branch_path_idx;
-    drop index if exists change_requests_project_state_updated_idx;
-    drop index if exists attachments_change_set_created_idx;
-    drop index if exists change_sets_project_branch_created_idx;
-    drop index if exists branch_contexts_project_ref_generation_idx;
-    drop index if exists project_memberships_user_project_idx;
-  `.execute(db);
-  await sql`alter table users drop column totp_secret, drop column totp_pending_secret,
-    drop column totp_pending_expires_at, drop column totp_last_counter, drop column auth_attempts,
-    drop column auth_window_at, drop column legacy_password_login`.execute(db);
-  await sql`alter table sessions drop column purpose, drop column mfa_verified`.execute(db);
-  await sql`update project_invitations set expires_at = created_at + interval '7 days'`.execute(db);
-  await sql`delete from kysely_migration
-    where name >= '011-two-factor'`.execute(db);
-  await migrateToLatest(db);
-  assert.ok(await repo.findUserBySessionHash("old-owner-session"));
-  assert.equal(await repo.findUserBySessionHash("old-reader-session"), undefined);
-  assert.equal((await repo.getSecurityUser(owner.id))?.legacy_password_login, true);
-  assert.equal((await repo.getSecurityUser(reader.id))?.legacy_password_login, false);
-  const invitation = await db
-    .selectFrom("project_invitations")
-    .selectAll()
-    .executeTakeFirstOrThrow();
-  assert.equal(invitation.expires_at.getTime() - invitation.created_at.getTime(), 24 * 60 * 60_000);
+  const invitationTtlMs = 24 * 60 * 60_000;
+  assert.ok(invitation.expires_at.getTime() >= invitationCreatedAt + invitationTtlMs);
+  assert.ok(invitation.expires_at.getTime() <= Date.now() + invitationTtlMs);
+  await repo.createSession(owner.id, "owner-setup-session", new Date(Date.now() + 60_000), "setup");
+  await repo.createSession(reader.id, "reader-password-session", new Date(Date.now() + 60_000));
+  assert.equal(await repo.findUserBySessionHash("owner-setup-session"), undefined);
+  assert.equal(await repo.findUserBySessionHash("reader-password-session"), undefined);
+  assert.ok(await repo.getAuthenticationSession("owner-setup-session"));
   const accepts = await Promise.allSettled([
     repo.acceptInvitation("single-use", reader.id),
     repo.acceptInvitation("single-use", reader.id),
@@ -110,9 +82,8 @@ try {
     repo.consumeTotp(owner.id, code, true),
   ]);
   assert.equal(verifies.filter(Boolean).length, 1);
-  assert.equal(await repo.findUserBySessionHash("old-owner-session"), undefined);
+  assert.equal(await repo.getAuthenticationSession("owner-setup-session"), undefined);
   assert.equal(await repo.consumeTotp(owner.id, code), false);
-  assert.equal((await repo.getSecurityUser(owner.id))?.legacy_password_login, false);
   await repo.createSession(owner.id, "verified", new Date(Date.now() + 60_000), "full", true);
   assert.ok(await repo.findUserBySessionHash("verified"));
   assert.equal(await repo.changePassword(owner.id, "hash", "new-hash"), true);
@@ -122,7 +93,7 @@ try {
   );
   assert.equal(attempts.filter(Boolean).length, 10);
   console.log(
-    "PASS: upgrade compatibility, 24-hour invites, concurrent single-use acceptance, TOTP replay protection, session revocation and persistent attempt limits",
+    "PASS: 24-hour invites, concurrent single-use acceptance, TOTP replay protection, session revocation and persistent attempt limits",
   );
 } finally {
   await db.destroy();

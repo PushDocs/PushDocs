@@ -261,6 +261,48 @@ it("supports keyboard navigation across preview tabs", () => {
   expect(screen.getByRole("tabpanel").textContent).toBe("One");
 });
 
+it.each(["mouse", "keyboard"])(
+  "preserves the selected preview tab and focus after parent updates using %s",
+  (input) => {
+    const source =
+      '<Tabs>\n<TabItem value="a" label="First">One</TabItem>\n<TabItem value="b" label="Second">Two</TabItem>\n</Tabs>\n\n<Custom />';
+    const { rerender } = render(preview(source));
+    const first = screen.getByRole("tab", { name: "First" });
+    const second = screen.getByRole("tab", { name: "Second" });
+    if (input === "mouse") {
+      second.focus();
+      fireEvent.click(second);
+    } else {
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowRight" });
+    }
+    expect(screen.getByRole("tabpanel").textContent).toBe("Two");
+
+    for (const sitePreviewUrl of [undefined, "https://preview.example.test/docs/a"]) {
+      rerender(
+        <DocumentPreview
+          {...context}
+          repositoryPaths={[...context.repositoryPaths]}
+          onErrorLine={() => {}}
+          sitePreviewUrl={sitePreviewUrl}
+          source={source}
+        />,
+      );
+      expect(screen.getByRole("tab", { name: "Second" })).toBe(second);
+      expect(second.getAttribute("aria-selected")).toBe("true");
+      expect(second.tabIndex).toBe(0);
+      expect(document.activeElement).toBe(second);
+      expect(screen.getByRole("tabpanel").textContent).toBe("Two");
+    }
+    expect(
+      screen.getByRole("link", { name: "Открыть предпросмотр сайта" }).getAttribute("href"),
+    ).toBe("https://preview.example.test/docs/a");
+    fireEvent.keyDown(second, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(first);
+    expect(screen.getByRole("tabpanel").textContent).toBe("One");
+  },
+);
+
 it("provides a branch-specific route to the real preview for unsupported components", () => {
   render(preview("<Custom />"));
   expect(

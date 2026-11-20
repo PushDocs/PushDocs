@@ -25,6 +25,12 @@ it("always creates an MR and generates the working branch without extra controls
     "docs/update-12345678",
   );
   expect(screen.getByRole("button", { name: "Отправить и создать PR / MR" })).toBeTruthy();
+  const description = screen.getByRole("textbox", { name: "Описание PR / MR (необязательно)" });
+  expect(description).toHaveProperty("required", false);
+  fireEvent.change(description, { target: { value: "Тикет: https://tracker.test/DOC-123" } });
+  expect(new FormData(container.querySelector("form") as HTMLFormElement).get("description")).toBe(
+    "Тикет: https://tracker.test/DOC-123",
+  );
 });
 it("sends subsequent changes to the existing review without offering another branch", () => {
   const { container } = render(
@@ -36,6 +42,7 @@ it("sends subsequent changes to the existing review without offering another bra
   expect(container.querySelector('input[name="createReview"]')?.getAttribute("value")).toBe("on");
   expect(container.querySelector('input[name="newBranch"]')).toBeNull();
   expect(screen.getByRole("button", { name: "Отправить в PR / MR" })).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: /Описание/ })).toBeNull();
 });
 it("blocks duplicate submissions while a job is running", () => {
   render(<SubmitChanges {...props} disabled submitting />);
@@ -43,7 +50,9 @@ it("blocks duplicate submissions while a job is running", () => {
   expect(
     screen.getByRole("button", { name: "Отправляем изменения…" }).hasAttribute("disabled"),
   ).toBe(true);
-  expect(screen.getByRole("textbox").hasAttribute("disabled")).toBe(true);
+  for (const field of screen.getAllByRole("textbox")) {
+    expect(field.hasAttribute("disabled")).toBe(true);
+  }
 });
 
 it("opens the form only on request and closes it without affecting the page", () => {
@@ -65,4 +74,14 @@ it("prevents sending when the user has no access or unresolved conflicts", () =>
   expect(trigger.hasAttribute("disabled")).toBe(true);
   fireEvent.click(trigger);
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("treats an inserted link as an unsaved edit when closing the modal", () => {
+  render(<SubmitChanges {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Отправить изменения" }));
+  fireEvent.click(screen.getByRole("button", { name: "Добавить ссылку" }));
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+  expect(screen.getByRole("alert").textContent).toContain("Закрыть без сохранения?");
+  fireEvent.click(screen.getByRole("button", { name: "Продолжить редактирование" }));
+  expect(screen.getByRole("textbox", { name: /Описание/ })).toHaveProperty("value", "[Текст]()");
 });

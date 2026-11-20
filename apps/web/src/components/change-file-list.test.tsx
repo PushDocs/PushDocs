@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { groupChangedFiles } from "./change-file-groups";
 import { ChangeFileList } from "./change-file-list";
 
 afterEach(() => {
@@ -33,7 +34,11 @@ it("measures, scrolls, selects and disconnects a virtual file list", () => {
   );
   const onSelect = vi.fn();
   const view = render(
-    <ChangeFileList files={files} selectedPath="docs/file-29.md" onSelect={onSelect} />,
+    <ChangeFileList
+      groups={groupChangedFiles(files)}
+      selectedPath="docs/file-29.md"
+      onSelect={onSelect}
+    />,
   );
   const list = screen.getByRole("listbox");
   Object.defineProperty(list, "clientHeight", { configurable: true, value: 96 });
@@ -59,7 +64,7 @@ it("measures, scrolls, selects and disconnects a virtual file list", () => {
 it("handles an empty list and environments without ResizeObserver", () => {
   vi.stubGlobal("ResizeObserver", undefined);
   const onSelect = vi.fn();
-  render(<ChangeFileList files={[]} onSelect={onSelect} />);
+  render(<ChangeFileList groups={[]} onSelect={onSelect} />);
   const list = screen.getByRole("listbox");
   fireEvent.keyDown(list, { key: "End" });
   fireEvent.keyDown(list, { key: "Unknown" });

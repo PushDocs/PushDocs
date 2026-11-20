@@ -1,8 +1,14 @@
-import { MediaInsertionMode } from "@pushdocs/contracts";
-import { X } from "lucide-react";
+import {
+  BranchUpdateStrategy,
+  hasBranchConflicts,
+  MediaInsertionMode,
+  needsBranchUpdate,
+} from "@pushdocs/contracts";
+import { ExternalLink, GitPullRequest, X } from "lucide-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssetVideo } from "../../apps/web/src/components/asset-video";
+import { BranchConflictNotice } from "../../apps/web/src/components/branch-conflicts";
 import { CopyInvitation } from "../../apps/web/src/components/copy-invitation";
 import { DiffViewer } from "../../apps/web/src/components/diff-viewer";
 import { FileComments, FileCommentsButton } from "../../apps/web/src/components/file-comments";
@@ -10,6 +16,13 @@ import { FilePicker } from "../../apps/web/src/components/file-picker";
 import { LivePreviewButton } from "../../apps/web/src/components/live-preview-button";
 import { MediaLibrary } from "../../apps/web/src/components/media-library";
 import { QuickOpen } from "../../apps/web/src/components/quick-open";
+import { ReviewBranchAction } from "../../apps/web/src/components/review-branch-action";
+import {
+  ReviewBranchList,
+  ReviewBranchSwitch,
+  ReviewMissingBranchNotice,
+} from "../../apps/web/src/components/review-branch-context";
+import { ReviewBranchUpdate } from "../../apps/web/src/components/review-branch-update";
 import {
   ReviewInformation,
   ReviewReadiness,
@@ -17,10 +30,18 @@ import {
 import { SettingsModal, useSettingsModal } from "../../apps/web/src/components/settings-modal";
 import { SubmitChanges } from "../../apps/web/src/components/submit-changes";
 import { useFileComments } from "../../apps/web/src/components/use-file-comments";
-import { Button, SearchableSelect, Select } from "../../packages/ui/src";
+import { Button, SearchableSelect, Select, Status } from "../../packages/ui/src";
+import { resolvedBranchUpdatePolicy } from "../fixtures/branch-update-policy";
+import { BranchImportFixture } from "./branch-import-fixture";
+import { ChangeReviewFixture } from "./change-review-fixture";
 import { CollaborationFixture } from "./collaboration-fixture";
+import { EditorSettingsFixture, SettingsContextFixture } from "./editor-settings-fixture";
+import { BranchAttentionFixture, GitOperationFixture } from "./git-operation-fixture";
 import { PathCompletionsFixture } from "./path-completions-fixture";
+import { SidebarBranchPickerFixture } from "./sidebar-branch-picker-fixture";
 import { WorkbenchScrollFixture } from "./workbench-scroll-fixture";
+import { workbenchSearchFixture } from "./workbench-search-data";
+import { WorkbenchSearchFixture } from "./workbench-search-fixture";
 import "../../packages/ui/src/styles.css";
 import "../../apps/web/src/app/globals.css";
 import "../../apps/web/src/app/workbench.css";
@@ -141,6 +162,20 @@ function CommentsFixture() {
 }
 
 function App() {
+  if (new URLSearchParams(window.location.search).has("branch-picker"))
+    return <SidebarBranchPickerFixture />;
+  if (new URLSearchParams(window.location.search).has("change-review"))
+    return <ChangeReviewFixture />;
+  if (new URLSearchParams(window.location.search).has("branch-attention"))
+    return <BranchAttentionFixture />;
+  if (/^\/projects\/[^/]+\/settings(?:\/|$)/.test(window.location.pathname))
+    return <SettingsContextFixture />;
+  if (new URLSearchParams(window.location.search).has("editor-settings"))
+    return <EditorSettingsFixture />;
+  if (new URLSearchParams(window.location.search).has("git-operation"))
+    return <GitOperationFixture />;
+  if (new URLSearchParams(window.location.search).has("branch-import"))
+    return <BranchImportFixture />;
   if (new URLSearchParams(window.location.search).has("video"))
     return (
       <div className="wb-binary-preview">
@@ -205,9 +240,17 @@ function App() {
     );
   if (new URLSearchParams(window.location.search).has("comments")) return <CommentsFixture />;
   if (new URLSearchParams(window.location.search).has("reviews")) {
+    const updateReason = new URLSearchParams(window.location.search).get("update");
+    const branch = updateReason ? `docs/${"long-branch-name-".repeat(6)}` : "docs/update";
     const details = {
+      branchUpdatePolicy: resolvedBranchUpdatePolicy({
+        strategy:
+          new URLSearchParams(window.location.search).get("strategy") === "merge"
+            ? BranchUpdateStrategy.Merge
+            : BranchUpdateStrategy.Rebase,
+      }),
       headSha: "sha",
-      readiness: { state: "blocked" as const, reason: "not_approved" },
+      readiness: { state: "blocked" as const, reason: updateReason ?? "not_approved" },
       labels: [
         { name: "documentation", color: "#abcdef" },
         { name: "very-long-label-".repeat(5), color: "#ff0000" },
@@ -229,26 +272,144 @@ function App() {
         },
       ],
       commentsComplete: true,
+      source: { repositoryId: "main", isFork: false, branchUrl: null },
     };
+    const review = {
+      id: "review-7",
+      source_branch: branch,
+      target_branch: "stable",
+      provider_url: "https://git.example/review/7",
+      details,
+    };
+    const hasConflicts = hasBranchConflicts(details.readiness.reason);
+    const branchAction = (
+      <ReviewBranchAction
+        projectId="project"
+        ownerId="user"
+        provider="gitlab"
+        canWrite
+        review={review}
+        hasPendingChanges={new URLSearchParams(window.location.search).has("pending")}
+        actionOnly={!hasConflicts}
+      />
+    );
+    if (new URLSearchParams(window.location.search).has("changes")) {
+      const hasPendingChanges = new URLSearchParams(window.location.search).has("pending");
+      return (
+        <main className="page changes-page">
+          <h1>Изменения в ветке</h1>
+          {hasBranchConflicts(details.readiness.reason) &&
+          details.branchUpdatePolicy.strategy === BranchUpdateStrategy.Merge ? (
+            <BranchConflictNotice
+              projectId="project"
+              ownerId="user"
+              reviewId={review.id}
+              branch={branch}
+              currentBranch={branch}
+              targetBranch="stable"
+              canWrite
+              hasPendingChanges={hasPendingChanges}
+              providerUrl={review.provider_url}
+              reviewLabel="MR"
+            />
+          ) : (
+            <ReviewBranchUpdate
+              provider="gitlab"
+              projectId="project"
+              ownerId="user"
+              canWrite
+              review={review}
+              hasPendingChanges={hasPendingChanges}
+            />
+          )}
+        </main>
+      );
+    }
     return (
       <main className="page reviews-page">
         <h1>MR</h1>
+        <ReviewMissingBranchNotice
+          projectId="project"
+          defaultBranch="stable"
+          reviewBranches={[branch]}
+          reviewLabel="MR"
+        />
         <div className="reviews-layout">
-          <nav className="review-list" aria-label="Список MR">
-            <a href="?reviews&amp;review=7">
-              <span aria-hidden>↗</span>
-              <span>
-                <strong>Update documentation</strong>
-                <small>!7 docs/update → stable</small>
-                <ReviewReadiness details={details} />
-              </span>
-            </a>
-          </nav>
+          <ReviewBranchList
+            projectId="project"
+            defaultBranch="stable"
+            reviewLabel="MR"
+            reviews={[
+              {
+                id: "review-8",
+                branch: "docs/other",
+                isFork: false,
+                content: (
+                  <a href="?reviews&amp;review=8">
+                    <GitPullRequest aria-hidden size={17} />
+                    <span>
+                      <strong>Other documentation</strong>
+                      <small>!8 docs/other → stable</small>
+                    </span>
+                  </a>
+                ),
+              },
+              {
+                id: review.id,
+                branch,
+                isFork: false,
+                content: (
+                  <a className="active" href="?reviews&amp;review=7">
+                    <GitPullRequest aria-hidden size={17} />
+                    <span>
+                      <strong>Update documentation</strong>
+                      <small>!7 {branch} → stable</small>
+                      <span className="review-list-statuses">
+                        <ReviewReadiness details={details} showAction />
+                      </span>
+                    </span>
+                  </a>
+                ),
+              },
+            ]}
+          />
           <section className="review-detail">
             <header className="review-heading">
+              <Status tone="success">Открыт</Status>
               <h2>Update documentation</h2>
+              <p>{branch} → stable</p>
+              {hasConflicts ? branchAction : null}
             </header>
-            <ReviewInformation details={details} />
+            <nav className="review-actions" aria-label="Действия с MR">
+              <ReviewBranchSwitch
+                projectId="project"
+                branch={branch}
+                defaultBranch="stable"
+                isFork={false}
+              />
+              <div className="review-primary-actions">
+                <a
+                  className="pd-button pd-button--secondary review-provider-link"
+                  href={review.provider_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Открыть MR в GitLab <ExternalLink aria-hidden size={15} />
+                </a>
+                {!hasConflicts ? branchAction : null}
+                {new URLSearchParams(window.location.search).has("review-preview") ? (
+                  <a className="pd-button pd-button--secondary" href="#preview">
+                    Открыть предпросмотр
+                  </a>
+                ) : null}
+              </div>
+            </nav>
+            <ReviewInformation
+              details={details}
+              showReadiness={
+                !needsBranchUpdate(details) && !hasBranchConflicts(details.readiness.reason)
+              }
+            />
           </section>
         </div>
       </main>
@@ -322,6 +483,7 @@ function App() {
     );
   if (new URLSearchParams(window.location.search).has("collaboration"))
     return <CollaborationFixture />;
+  if (window.location.pathname === workbenchSearchFixture.path) return <WorkbenchSearchFixture />;
   if (new URLSearchParams(window.location.search).has("workbench"))
     return <WorkbenchScrollFixture />;
   if (new URLSearchParams(window.location.search).has("branches"))

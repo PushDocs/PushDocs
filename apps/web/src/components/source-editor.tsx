@@ -3,6 +3,7 @@ import { applyEditorInput } from "@pushdocs/content/editing";
 import type { ProjectConfig } from "@pushdocs/contracts";
 import type { editor } from "monaco-editor";
 import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEditorWordWrap } from "./editor-preferences";
 import { FallbackSourceEditor } from "./fallback-source-editor";
 import { editorOptions, fileLanguage, type MonacoApi, useMonaco } from "./monaco-runtime";
 import { createPathIndex, pathCompletionItems } from "./path-completions";
@@ -43,14 +44,15 @@ export function SourceEditor(props: SourceEditorProps) {
 
 export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoApi }) {
   const { monaco, storageKey, inputRef, path, value, readOnly, jump, repositoryPaths } = props;
+  const [wordWrap] = useEditorWordWrap();
   const pathIndex = useMemo(
     () => (repositoryPaths ? createPathIndex(repositoryPaths) : undefined),
     [repositoryPaths],
   );
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const current = useRef({ ...props, pathIndex });
-  current.current = { ...props, pathIndex };
+  const current = useRef({ ...props, pathIndex, wordWrap });
+  current.current = { ...props, pathIndex, wordWrap };
   useLayoutEffect(() => {
     /* v8 ignore next -- React attaches the host in the same commit before this effect. */
     if (!host.current) return;
@@ -60,6 +62,7 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
     );
     const editor = monaco.editor.create(host.current, {
       ...editorOptions,
+      wordWrap: current.current.wordWrap,
       model,
       readOnly: current.current.readOnly,
       ariaLabel: "Исходник документа",
@@ -205,6 +208,9 @@ export function MonacoSourceEditor(props: SourceEditorProps & { monaco: MonacoAp
   useEffect(() => {
     instance.current?.updateOptions({ readOnly });
   }, [readOnly]);
+  useEffect(() => {
+    instance.current?.updateOptions({ wordWrap });
+  }, [wordWrap]);
   useEffect(() => {
     if (!jump || !instance.current) return;
     const editor = instance.current;

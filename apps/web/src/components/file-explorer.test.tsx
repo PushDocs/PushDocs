@@ -3,7 +3,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 import { FileExplorer } from "./file-explorer";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  sessionStorage.clear();
+});
 it("remembers expanded folders and exposes actions for the clicked file", () => {
   sessionStorage.clear();
   const action = vi.fn();
@@ -235,7 +238,212 @@ it("hides internal .pushdocs files even when selected and creates files outside 
   fireEvent.click(screen.getByRole("button", { name: "Новый файл" }));
   expect(onCreate).toHaveBeenCalledWith("new", "");
   view.rerender(<FileExplorer {...props} paths={[".pushdocs/config.json"]} />);
-  expect(screen.getByText("Нет файлов")).toBeTruthy();
+  expect(screen.getByText("Системные файлы и папки скрыты")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Показать" }));
+  expect(screen.getByRole("treeitem", { name: "config.json" })).toBeTruthy();
+  expect(
+    screen
+      .getByRole("button", { name: "Показывать системные файлы и папки" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+});
+
+it("filters files and folders from the same list by complete paths", () => {
+  const onOpen = vi.fn();
+  const props = {
+    paths: [
+      "docs/internal/a.md",
+      "docs/internal-old/b.md",
+      "other/internal/c.md",
+      ".pushdocs/config.json",
+      ".gitlab/ci.yml",
+      "literal*/a.md",
+      "literal-other/b.md",
+      "file.md",
+      "file.md.backup",
+      "package.json",
+      "examples/package.json",
+      "yarn.lock",
+      ".gitignore",
+      "docs/note.md",
+      "docs/other.md",
+    ],
+    selected: "docs/internal/a.md",
+    systemDirectories: [
+      "docs/internal",
+      "literal*",
+      "file.md",
+      "package.json",
+      "yarn.lock",
+      ".gitignore",
+      "docs/note.md",
+    ],
+    statuses: new Map<string, string>(),
+    readOnly: true,
+    busy: true,
+    onOpen,
+    onCreate: vi.fn(),
+  };
+  const view = render(<FileExplorer {...props} />);
+  expect(screen.queryByRole("treeitem", { name: "internal" })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: "internal-old" })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: ".pushdocs" })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: ".gitlab" })).toBeTruthy();
+  for (const name of ["file.md", "package.json", "yarn.lock", ".gitignore", "note.md"]) {
+    expect(screen.queryByRole("treeitem", { name })).toBeNull();
+  }
+  expect(screen.getByRole("treeitem", { name: "file.md.backup" })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: "other.md" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("treeitem", { name: "examples" }));
+  expect(screen.getByRole("treeitem", { name: "package.json" }).dataset.path).toBe(
+    "examples/package.json",
+  );
+  expect(screen.queryByRole("treeitem", { name: "literal*" })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: "literal-other" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("treeitem", { name: "other" }));
+  expect(screen.getByRole("treeitem", { name: "internal" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Показывать системные файлы и папки" }));
+  expect(screen.getByRole("treeitem", { name: "a.md" })).toBeTruthy();
+  for (const name of ["file.md", "yarn.lock", ".gitignore", "note.md"]) {
+    expect(screen.getByRole("treeitem", { name })).toBeTruthy();
+  }
+  expect(screen.getAllByRole("treeitem", { name: "package.json" })).toHaveLength(2);
+  expect(onOpen).not.toHaveBeenCalled();
+  view.rerender(<FileExplorer {...props} systemDirectories={[]} />);
+  expect(screen.queryByRole("button", { name: "Показывать системные файлы и папки" })).toBeNull();
+});
+
+it("offers to reveal hidden root files when the tree is empty and creates files in the root", () => {
+  const onCreate = vi.fn();
+  render(
+    <FileExplorer
+      paths={["package.json", "yarn.lock"]}
+      selected="package.json"
+      systemDirectories={["package.json", "yarn.lock"]}
+      statuses={new Map()}
+      readOnly={false}
+      busy={false}
+      onOpen={vi.fn()}
+      onCreate={onCreate}
+    />,
+  );
+  expect(screen.getByText("Системные файлы и папки скрыты")).toBeTruthy();
+  expect(screen.queryAllByRole("treeitem")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Новый файл" }));
+  expect(onCreate).toHaveBeenCalledWith("new", "");
+  fireEvent.click(screen.getByRole("button", { name: "Показать" }));
+  expect(screen.getByRole("treeitem", { name: "package.json" })).toBeTruthy();
+  expect(screen.getByRole("treeitem", { name: "yarn.lock" })).toBeTruthy();
+});
+
+it("moves the creation and upload destination to a visible ancestor when folders are hidden", () => {
+  const onCreate = vi.fn();
+  const onUpload = vi.fn();
+  const props = {
+    paths: ["docs/internal/a.md", "docs/public/b.md"],
+    selected: "docs/internal/a.md",
+    systemDirectories: ["docs/internal"],
+    statuses: new Map<string, string>(),
+    readOnly: false,
+    busy: false,
+    onOpen: vi.fn(),
+    onCreate,
+    onUpload,
+  };
+  render(<FileExplorer {...props} />);
+  const toggle = screen.getByRole("button", { name: "Показывать системные файлы и папки" });
+  fireEvent.click(toggle);
+  fireEvent.click(screen.getByRole("treeitem", { name: "a.md" }));
+  fireEvent.click(screen.getByRole("button", { name: "Новый файл" }));
+  expect(onCreate).toHaveBeenLastCalledWith("new", "docs/internal");
+  fireEvent.click(toggle);
+  expect(screen.getByRole("treeitem", { name: "docs" }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "Новая папка" }));
+  expect(onCreate).toHaveBeenLastCalledWith("folder", "docs");
+  const upload = new File(["x"], "upload.md");
+  fireEvent.change(screen.getByLabelText("Файлы для загрузки"), { target: { files: [upload] } });
+  expect(onUpload).toHaveBeenLastCalledWith([upload], "docs");
+});
+
+it("restores visibility only for its storage key and tolerates unavailable browser storage", () => {
+  const props = {
+    paths: [".pushdocs/config.json"],
+    selected: ".pushdocs/config.json",
+    statuses: new Map<string, string>(),
+    readOnly: false,
+    busy: false,
+    onOpen: vi.fn(),
+    onCreate: vi.fn(),
+    visibilityStorageKey: "visibility:one",
+  };
+  const view = render(<FileExplorer {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Показывать системные файлы и папки" }));
+  expect(sessionStorage.getItem(props.visibilityStorageKey)).toBe("true");
+  view.rerender(<FileExplorer {...props} visibilityStorageKey="visibility:two" />);
+  expect(screen.queryByRole("treeitem", { name: "config.json" })).toBeNull();
+  expect(sessionStorage.getItem(props.visibilityStorageKey)).toBe("true");
+  view.rerender(<FileExplorer {...props} />);
+  expect(screen.getByRole("treeitem", { name: "config.json" })).toBeTruthy();
+  cleanup();
+  render(<FileExplorer {...props} />);
+  expect(screen.getByRole("treeitem", { name: "config.json" })).toBeTruthy();
+  cleanup();
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    throw new Error("blocked");
+  });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("blocked");
+  });
+  render(<FileExplorer {...props} />);
+  expect(screen.queryByRole("treeitem", { name: "config.json" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Показывать системные файлы и папки" }));
+  expect(screen.getByRole("treeitem", { name: "config.json" })).toBeTruthy();
+});
+
+it("keeps a virtualized list reachable after hiding a large system folder", () => {
+  const props = {
+    paths: [
+      ...Array.from({ length: 1000 }, (_, index) => `.pushdocs/file-${index}.md`),
+      ...Array.from({ length: 500 }, (_, index) => `public-${index}.md`),
+    ],
+    selected: ".pushdocs/file-999.md",
+    statuses: new Map<string, string>(),
+    readOnly: false,
+    busy: false,
+    onOpen: vi.fn(),
+    onCreate: vi.fn(),
+  };
+  render(<FileExplorer {...props} />);
+  const toggle = screen.getByRole("button", { name: "Показывать системные файлы и папки" });
+  fireEvent.click(toggle);
+  expect(screen.getByRole("treeitem", { name: "file-999.md" })).toBeTruthy();
+  const tree = screen.getByRole("tree");
+  expect(tree.scrollTop).toBeGreaterThan(0);
+  fireEvent.click(toggle);
+  expect(screen.queryByRole("treeitem", { name: "file-999.md" })).toBeNull();
+  expect(screen.getByRole("treeitem", { name: "public-499.md" })).toBeTruthy();
+  expect(screen.getAllByRole("treeitem").length).toBeLessThan(60);
+});
+
+it("updates hidden folders and clears their context menu when the configuration changes", () => {
+  const props = {
+    paths: ["docs/internal/a.md", "docs/public/b.md"],
+    selected: "docs/internal/a.md",
+    systemDirectories: [] as string[],
+    statuses: new Map<string, string>(),
+    readOnly: false,
+    busy: false,
+    onOpen: vi.fn(),
+    onCreate: vi.fn(),
+  };
+  const view = render(<FileExplorer {...props} />);
+  fireEvent.contextMenu(screen.getByRole("treeitem", { name: "a.md" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+  view.rerender(<FileExplorer {...props} systemDirectories={["docs/internal"]} />);
+  expect(screen.queryByRole("treeitem", { name: "a.md" })).toBeNull();
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Новый файл" }));
+  expect(props.onCreate).toHaveBeenCalledWith("new", "docs");
 });
 
 it("supports every toolbar, context-menu and tree keyboard action", async () => {
@@ -266,7 +474,7 @@ it("supports every toolbar, context-menu and tree keyboard action", async () => 
     expect(screen.getByLabelText("comparison failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Вложения" }));
     expect(onMedia).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Получить из Git" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Обновить из Git" })).toBeNull();
 
     const input = screen.getByLabelText("Файлы для загрузки") as HTMLInputElement;
     const pickerClick = vi.spyOn(input, "click");

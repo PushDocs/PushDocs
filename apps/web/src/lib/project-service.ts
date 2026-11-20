@@ -163,6 +163,7 @@ export class ProjectService {
         : null,
       ...context.snapshot,
       sharedChangeSet: true,
+      pendingOperation: await this.store.getMcpBranchOperation(projectId, context.snapshot.branch),
     };
   }
   async search(projectId: string, branch: string, query: string, topic: boolean) {

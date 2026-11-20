@@ -5,6 +5,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   acceptInvitationSchema,
+  BranchUpdateStrategy,
   bootstrapSchema,
   createCommentSchema,
   createComponentSchema,
@@ -17,6 +18,7 @@ import {
   inviteMemberSchema,
   loginSchema,
   resolveConflictSchema,
+  reviewDescriptionMaxLength,
   saveDraftSchema,
   submitChangeSetSchema,
   updateConnectionSchema,
@@ -37,6 +39,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { oauthResumeCookie, oauthResumeTarget } from "@/lib/mcp/resume";
+import { projectChangesHref } from "@/lib/project-paths";
 import { providerForConnection } from "@/lib/provider";
 import {
   actor,
@@ -567,12 +570,12 @@ export async function uploadAttachmentAction(formData: FormData): Promise<void> 
   revalidatePath(`/projects/${projectId}/files`);
 }
 
-export async function synchronizeBranchAction(formData: FormData): Promise<string> {
+export async function synchronizeBranchAction(formData: FormData): Promise<string | null> {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   const branch = String(formData.get("branch"));
   await repository().requireProjectAccess(user.id, projectId, "project:read");
-  const jobId = await repository().enqueueBranchSync(projectId, branch);
+  const jobId = await repository().ensureBranchImport(projectId, branch);
   revalidatePath(`/projects/${projectId}/documents`);
   return jobId;
 }
@@ -586,11 +589,8 @@ export async function submitChangeSetAction(formData: FormData): Promise<void> {
   });
   await repository().requireProjectAccess(user.id, input.projectId, "branch:push");
   await repository().queueChangeSetSubmission({ ...input, userId: user.id });
-  revalidatePath(`/projects/${input.projectId}/changes`);
-  if (input.newBranch)
-    redirect(
-      `/projects/${input.projectId}/changes?${new URLSearchParams({ branch: input.newBranch })}`,
-    );
+  revalidatePath(projectChangesHref(input.projectId));
+  if (input.newBranch) redirect(projectChangesHref(input.projectId, input.newBranch));
 }
 
 export async function resolveConflictAction(formData: FormData): Promise<void> {
@@ -598,7 +598,7 @@ export async function resolveConflictAction(formData: FormData): Promise<void> {
   const input = resolveConflictSchema.parse(Object.fromEntries(formData));
   await repository().requireProjectAccess(user.id, input.projectId, "document:write");
   await repository().resolveConflict(input);
-  revalidatePath(`/projects/${input.projectId}/changes`);
+  revalidatePath(projectChangesHref(input.projectId));
 }
 
 export async function retryChangeSetSubmissionAction(formData: FormData): Promise<void> {
@@ -606,7 +606,7 @@ export async function retryChangeSetSubmissionAction(formData: FormData): Promis
   const projectId = String(formData.get("projectId"));
   const changeSetId = String(formData.get("changeSetId"));
   await repository().retryChangeSetSubmission(changeSetId, projectId, user.id);
-  revalidatePath(`/projects/${projectId}/changes`);
+  revalidatePath(projectChangesHref(projectId));
 }
 
 export async function createProjectComponentAction(formData: FormData): Promise<void> {
@@ -632,14 +632,44 @@ export async function createDocumentAction(formData: FormData): Promise<void> {
 }
 
 export async function startGitOperationAction(input: {
+  updateReview?: {
+    reviewId: string;
+    expectedHeadSha: string;
+    expectedStrategy?: BranchUpdateStrategy;
+  };
   mergeDefault?: boolean;
   reviewsOnly?: boolean;
   projectId: string;
   branch: string;
   title?: string;
+  description?: string;
 }) {
   const user = await requireUser();
   const store = repository();
+  if (input.updateReview) {
+    const update = z
+      .object({
+        reviewId: z.string().uuid(),
+        expectedHeadSha: z.string().min(1).max(64),
+        expectedStrategy: z.enum(BranchUpdateStrategy).optional(),
+      })
+      .parse(input.updateReview);
+    try {
+      return await store.queueReviewBranchUpdate({
+        ...update,
+        projectId: input.projectId,
+        userId: user.id,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        ["REVISION_CONFLICT", "ACCESS_DENIED"].includes(String(error.code))
+      )
+        return { error: error.message };
+      throw error;
+    }
+  }
   await store.requireProjectAccess(
     user.id,
     input.projectId,
@@ -665,6 +695,14 @@ export async function startGitOperationAction(input: {
       input.branch,
       input.title.trim().slice(0, 255),
       user.id,
+      {
+        description: z
+          .string()
+          .trim()
+          .max(reviewDescriptionMaxLength)
+          .optional()
+          .parse(input.description),
+      },
     );
   return store.enqueueBranchSync(input.projectId, input.branch);
 }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isMediaFile, parseProjectConfig, planTemplate, safePath } from "@pushdocs/content";
 import { validateBranchName } from "@pushdocs/providers";
 import { z } from "zod";
+import { fileSearchLimits, fileSearchPattern } from "@/lib/file-search";
 import { providerForConnection } from "@/lib/provider";
 import { readJsonBody } from "@/lib/request-body";
 import {
@@ -57,23 +58,32 @@ export async function GET(request: Request, context: Context) {
     const branch = query.get("branch") ?? "";
     if (query.has("search")) {
       const { state } = await localWorkbenchContext(projectId, branch);
-      const needle = query.get("search")?.trim().toLocaleLowerCase() ?? "";
-      if (!needle) return Response.json({ results: [] });
+      const expression = fileSearchPattern(query.get("search") ?? "", {
+        matchCase: query.get("matchCase") === "true",
+        wholeWord: query.get("wholeWord") === "true",
+      });
+      if (!expression) return Response.json({ results: [] });
       const results = state.files
         .filter((file) => /\.mdx?$/i.test(file.path) && file.status !== "delete")
         .flatMap((file) => {
-          const index = file.content.toLocaleLowerCase().indexOf(needle);
+          expression.lastIndex = 0;
+          const index = expression.exec(file.content)?.index ?? -1;
           if (index < 0) return [];
           return [
             {
               path: file.path,
               title: file.title,
               line: file.content.slice(0, index).split("\n").length,
-              excerpt: file.content.slice(Math.max(0, index - 40), index + 140).replace(/\n/g, " "),
+              excerpt: file.content
+                .slice(
+                  Math.max(0, index - fileSearchLimits.excerptBefore),
+                  index + fileSearchLimits.excerptAfter,
+                )
+                .replace(/\n/g, " "),
             },
           ];
         })
-        .slice(0, 100);
+        .slice(0, fileSearchLimits.results);
       return Response.json({ results }, { headers: { "Cache-Control": "private, no-store" } });
     }
     const { state, config, store, access, target, user } = await localWorkbenchIndexContext(

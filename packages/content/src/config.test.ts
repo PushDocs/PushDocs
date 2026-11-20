@@ -10,6 +10,49 @@ import {
   safePath,
 } from "./config";
 
+it("accepts file and folder paths in the same system list without requiring them to exist", () => {
+  const fileExplorer = {
+    systemDirectories: [
+      ".gitlab",
+      "src/theme",
+      "future folder",
+      "literal*",
+      "package.json",
+      "yarn.lock",
+      ".gitignore",
+    ],
+  };
+  expect(parseProjectConfig(JSON.stringify({ version: 1, fileExplorer })).fileExplorer).toEqual(
+    fileExplorer,
+  );
+});
+
+it.each([
+  "/src",
+  "src/",
+  "src//theme",
+  ".",
+  "..",
+  "src/../theme",
+  ".git",
+  "src/.GIT",
+  "src\\theme",
+  "src\u0000theme",
+  "x".repeat(1001),
+])("rejects unsafe system directory %j", (directory) => {
+  expect(() =>
+    parseProjectConfig(
+      JSON.stringify({ version: 1, fileExplorer: { systemDirectories: [directory] } }),
+    ),
+  ).toThrow("Недопустимый путь");
+});
+
+it("keeps defaults independent between parsed project configurations", () => {
+  const config = parseProjectConfig();
+  config.fileExplorer.systemDirectories.push("src");
+  expect(parseProjectConfig().fileExplorer.systemDirectories).toEqual([".pushdocs"]);
+});
+
 it("validates the optional preview output path", () => {
   expect(
     parseProjectConfig(JSON.stringify({ version: 1, preview: { output: "build/index.html" } }))
