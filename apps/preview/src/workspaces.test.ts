@@ -383,3 +383,53 @@ it("cleans a private preparation and Git registration abandoned by a previous co
   expect(await readdir(path.join(root, "preview/preparing"))).toEqual([]);
   expect(await readdir(path.join(root, "preview/repositories"))).toEqual([]);
 });
+
+it.each(["before rename", "after rename", "without receipt"] as const)(
+  "recovers retirement %s without pruning a live Git registration",
+  async (interruption) => {
+    const { root, first, manager } = await fixture();
+    const previewRoot = path.join(root, "preview");
+    const retired = path.join(previewRoot, "retired");
+    const metadata = path.join(previewRoot, "metadata");
+    const branch = { projectId: "project", branch: "main", headSha: first };
+    const keep = { ...branch, branch: "keep" };
+    const old = await manager.ensure(branch, new AbortController().signal);
+    const live = await manager.ensure(keep, new AbortController().signal);
+    const repositoryRoot = path.join(previewRoot, "repositories");
+    const [repository] = await readdir(repositoryRoot);
+    if (!repository || !old.cache.gitDirectory || !live.cache.gitDirectory)
+      throw new Error("Missing Git worktree registrations");
+    const registrations = path.join(repositoryRoot, repository, "worktrees");
+    const gitDir = path.join(registrations, old.cache.gitDirectory);
+    const liveGitDir = path.join(registrations, live.cache.gitDirectory);
+    const id = "00000000-0000-4000-8000-000000000001";
+    const directory = path.join(retired, id);
+    const receipt = path.join(metadata, `retired-${id}.json`);
+    if (interruption !== "without receipt")
+      await writeFile(receipt, JSON.stringify({ directory, gitDir, exposed: false }));
+    if (interruption !== "before rename") await rename(old.workspace, directory);
+    if (interruption === "without receipt")
+      await writeFile(path.join(gitDir, "gitdir"), `${path.join(directory, ".git")}\n`);
+
+    const restarted = createWorkspaceManager({
+      root: previewRoot,
+      run,
+      access: async () => {
+        throw new Error("no fetch needed for retirement recovery");
+      },
+      fetch: (operation) => operation(),
+    });
+    const active = new Set([workspaceKey(branch), workspaceKey(keep)]);
+    await restarted.prune(active, Date.now() + 1000);
+    expect(await readdir(retired)).toEqual([]);
+    await expect(stat(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+    if (interruption === "before rename") {
+      expect(await readFile(path.join(old.workspace, "docs/page.md"), "utf8")).toBe("first");
+      expect((await stat(gitDir)).isDirectory()).toBe(true);
+    } else {
+      await expect(stat(gitDir)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(await readFile(path.join(live.workspace, "docs/page.md"), "utf8")).toBe("first");
+    expect((await stat(liveGitDir)).isDirectory()).toBe(true);
+  },
+);

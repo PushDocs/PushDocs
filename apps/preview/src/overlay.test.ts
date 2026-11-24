@@ -110,10 +110,8 @@ it(
         JSON.stringify({ appliedPaths: [], headSha: head, installed: true, uid: 11000 }),
       );
       await writeFile(path.join(root, "attachment"), "image");
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => new Response("ready")),
-      );
+      const fetchReady = vi.fn(async () => new Response("ready"));
+      vi.stubGlobal("fetch", fetchReady);
       preview = createPreviewService({
         workspaceRoot: root,
         attachmentsRoot: root,
@@ -183,8 +181,33 @@ it(
       );
       const oldTime = new Date("2020-01-01T00:00:00Z");
       for (const file of paths) await utimes(file, oldTime, oldTime);
+      const stoppingSession = {
+        ...session,
+        id: "00000000-0000-4000-8000-000000000006",
+        branch: "docs/stopping",
+        port: 43001,
+        desired_state: "stopped",
+      };
+      sessions.push(stoppingSession);
+      let releaseReadiness: (() => void) | undefined;
+      const readiness = new Promise<Response>((resolve) => {
+        releaseReadiness = () => resolve(new Response("ready"));
+      });
+      const blockedReadiness = vi.fn(() => readiness);
+      fetchReady.mockImplementationOnce(blockedReadiness);
       revision++;
-      await preview.tick();
+      const restartTick = preview.tick();
+      try {
+        await waitForPreview(() => expect(blockedReadiness).toHaveBeenCalledOnce());
+        await waitForPreview(() => expect(stoppingSession.status).toBe("stopped"));
+        await restartTick;
+        expect(session.status).toBe("starting");
+      } finally {
+        releaseReadiness?.();
+        await restartTick;
+      }
+      sessions.pop();
+      await waitForPreview(() => expect(session.status).toBe("ready"));
       expect(await readFile(path.join(currentWorkspace, "docs/edited.md"), "utf8")).toBe(
         "revision 2",
       );
@@ -338,7 +361,7 @@ it(
         expect.objectContaining({ preparation_status: "starting" }),
       );
       await preview.tick();
-      expect(sessions.at(-1)?.status).toBe("ready");
+      await waitForPreview(() => expect(sessions.at(-1)?.status).toBe("ready"));
       expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
         "revision 3",
       );

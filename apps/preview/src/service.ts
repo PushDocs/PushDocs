@@ -655,14 +655,28 @@ export function createPreviewService(options: PreviewServiceOptions) {
     };
   }
 
-  async function start(session: PreviewSession): Promise<void> {
-    const startedAt = Date.now();
+  function scheduleStart(session: PreviewSession) {
+    if (shuttingDown) return;
+    const key = workspaceKey(branchRef(session, ""));
+    evictedWorkspaces.delete(key);
+    for (const [other, controller] of preparationControllers) if (other !== key) controller.abort();
     const controller = new AbortController();
+    starting.set(session.id, controller);
+    const task = start(session, controller)
+      .catch((error) => logger.error(String(error)))
+      .finally(() => {
+        starting.delete(session.id);
+        startTasks.delete(session.id);
+      });
+    startTasks.set(session.id, task);
+  }
+
+  async function start(session: PreviewSession, controller: AbortController): Promise<void> {
+    const startedAt = Date.now();
     let launched: RunningPreview | undefined;
     let generatedConfig: string | undefined;
     let preparationRef: WorkspaceBranch | undefined;
     let filesystemIdentity: { uid: number; gid: number } | undefined;
-    starting.set(session.id, controller);
     let startupOutput = "";
     let startupFailure: string | undefined;
     try {
@@ -899,7 +913,6 @@ export function createPreviewService(options: PreviewServiceOptions) {
           filesystemIdentity,
         ).catch((error) => logger.error(String(error)));
       if (preparationRef) await workspaces.discard(preparationRef);
-      starting.delete(session.id);
     }
   }
 
@@ -1112,29 +1125,21 @@ export function createPreviewService(options: PreviewServiceOptions) {
             await repository.updatePreviewSession(session.id, { status: "stopped" });
           continue;
         }
+        if (starting.has(session.id)) continue;
         if (!active) {
-          if (!starting.has(session.id)) {
-            if (session.status === "queued") {
-              if (running.size + starting.size < maxActive) {
-                const key = workspaceKey(branchRef(session, ""));
-                evictedWorkspaces.delete(key);
-                for (const [other, controller] of preparationControllers)
-                  if (other !== key) controller.abort();
-                const task = start(session)
-                  .catch((error) => logger.error(String(error)))
-                  .finally(() => startTasks.delete(session.id));
-                startTasks.set(session.id, task);
-              } else if (!session.log?.startsWith("Ожидаем свободное место"))
-                await repository.updatePreviewSession(session.id, {
-                  log: "Ожидаем свободное место для предпросмотра. Другой сайт уже использует выделенные ресурсы.",
-                });
-            } else if (
-              session.status === "ready" ||
-              session.status === "starting" ||
-              session.status === "stopped"
-            )
-              await repository.updatePreviewSession(session.id, { status: "queued" });
-          }
+          if (session.status === "queued") {
+            const occupiedSlots = new Set([...running.keys(), ...starting.keys()]).size;
+            if (occupiedSlots < maxActive) scheduleStart(session);
+            else if (!session.log?.startsWith("Ожидаем свободное место"))
+              await repository.updatePreviewSession(session.id, {
+                log: "Ожидаем свободное место для предпросмотра. Другой сайт уже использует выделенные ресурсы.",
+              });
+          } else if (
+            session.status === "ready" ||
+            session.status === "starting" ||
+            session.status === "stopped"
+          )
+            await repository.updatePreviewSession(session.id, { status: "queued" });
           continue;
         }
         const state = await previewState(session);
@@ -1152,7 +1157,7 @@ export function createPreviewService(options: PreviewServiceOptions) {
             status: "queued",
             log: "Перезапускаем предпросмотр с обновлёнными файлами…",
           });
-          await start(session);
+          scheduleStart(session);
         }
       } catch (error) {
         const active = running.get(session.id);

@@ -48,6 +48,20 @@ type Runner = (
   },
 ) => Promise<string>;
 
+type RetirementReceipt = {
+  directory: string;
+  gitDir?: string;
+  exposed: boolean;
+};
+
+const opaqueWorkspaceIdPattern = "[a-f0-9-]{36}";
+const opaqueWorkspaceName = new RegExp(`^${opaqueWorkspaceIdPattern}$`);
+const retiredReceiptPrefix = "retired-";
+const retiredReceiptName = new RegExp(
+  `^${retiredReceiptPrefix}(${opaqueWorkspaceIdPattern})\\.json$`,
+);
+const repositoryName = /^[a-f0-9]{64}\.git$/;
+
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 export const workspaceKey = (branch: Pick<WorkspaceBranch, "projectId" | "branch">) =>
   digest(`${branch.projectId}\0${branch.branch}`);
@@ -220,7 +234,7 @@ export function createWorkspaceManager(options: {
       const old = await readCache(branch);
       const stable = workspacePath(branch);
       const legacy =
-        legacySessionId && /^[a-f0-9-]{36}$/.test(legacySessionId)
+        legacySessionId && opaqueWorkspaceName.test(legacySessionId)
           ? path.join(options.root, legacySessionId)
           : undefined;
       const source = (await exists(stable))
@@ -346,44 +360,97 @@ export function createWorkspaceManager(options: {
     }
   }
 
-  async function cleanupRetired() {
-    return lockedRuntime(privateTreeCleanupIdentity.uid, cleanupRetiredOnce);
+  const retiredReceiptPath = (id: string) =>
+    path.join(metadata, `${retiredReceiptPrefix}${id}.json`);
+  const gitBacklinkPath = (gitDir: string) => path.join(gitDir, "gitdir");
+
+  function writeRetirementReceipt(id: string, receipt: RetirementReceipt) {
+    return atomicWrite(retiredReceiptPath(id), JSON.stringify(receipt), 0o600);
   }
 
-  async function cleanupRetiredOnce() {
-    for (const filename of await readdir(metadata)) {
-      if (!/^retired-[a-f0-9-]{36}\.json$/.test(filename)) continue;
-      const receiptPath = path.join(metadata, filename);
-      const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as {
-        directory: string;
-        gitDir?: string;
-        uid?: number;
-        gid?: number;
-        exposed: boolean;
-      };
-      if (path.dirname(receipt.directory) !== retired)
-        throw new Error("Неверная папка устаревшего предпросмотра");
-      try {
-        if (!receipt.exposed) await rm(receipt.directory, { recursive: true, force: true });
-        else {
-          await privateTreeOperation("prepare-cleanup", receipt.directory);
-          await privateTreeOperation(
-            "clear",
-            receipt.directory,
-            undefined,
-            privateTreeCleanupIdentity,
-          );
-          // Only the now-empty top-level entry is removed by the controller.
-          await rmdir(receipt.directory);
-        }
-        if (receipt.gitDir) await rm(receipt.gitDir, { recursive: true, force: true });
-        await rm(receiptPath, { force: true });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
-          await rm(receiptPath, { force: true });
-        // A failed unprivileged cleanup is retained for the next bounded prune.
+  async function retireDirectory(
+    source: string,
+    { gitDir, exposed }: Omit<RetirementReceipt, "directory">,
+  ) {
+    await lockedRuntime(privateTreeCleanupIdentity.uid, async () => {
+      const id = randomUUID();
+      const directory = path.join(retired, id);
+      await writeRetirementReceipt(id, { directory, gitDir, exposed });
+      await rename(source, directory);
+      if (gitDir && (await exists(gitDir)))
+        await writeFile(gitBacklinkPath(gitDir), `${path.join(directory, ".git")}\n`);
+    });
+  }
+
+  async function recoverRetiredReceipts(recorded: Set<string>) {
+    const unrecorded = (await readdir(retired, { withFileTypes: true })).filter(
+      (entry) =>
+        entry.isDirectory() && opaqueWorkspaceName.test(entry.name) && !recorded.has(entry.name),
+    );
+    if (unrecorded.length === 0) return;
+
+    // Read backlinks from controller-owned Git registrations, never from retired trees.
+    const registrations = new Map<string, string>();
+    for (const repository of await readdir(repositories, { withFileTypes: true })) {
+      if (!repository.isDirectory() || !repositoryName.test(repository.name)) continue;
+      const gitWorktrees = path.join(repositories, repository.name, "worktrees");
+      const entries = await readdir(gitWorktrees, { withFileTypes: true }).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const gitDir = path.join(gitWorktrees, entry.name);
+        const backlink = await readFile(gitBacklinkPath(gitDir), "utf8").catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+          throw error;
+        });
+        if (backlink) registrations.set(backlink.trimEnd(), gitDir);
       }
     }
+    for (const { name } of unrecorded) {
+      const directory = path.join(retired, name);
+      await writeRetirementReceipt(name, {
+        directory,
+        gitDir: registrations.get(path.join(directory, ".git")),
+        exposed: true,
+      });
+      recorded.add(name);
+    }
+  }
+
+  async function cleanupRetired(recover = false) {
+    await lockedRuntime(privateTreeCleanupIdentity.uid, async () => {
+      const recorded = new Set(
+        (await readdir(metadata)).flatMap((filename) => {
+          const match = retiredReceiptName.exec(filename);
+          return match?.[1] ? [match[1]] : [];
+        }),
+      );
+      if (recover) await recoverRetiredReceipts(recorded);
+      for (const id of recorded) {
+        const receiptPath = retiredReceiptPath(id);
+        const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as RetirementReceipt;
+        const directory = path.join(retired, id);
+        if (receipt.directory !== directory)
+          throw new Error("Неверная папка устаревшего предпросмотра");
+        try {
+          // When only the intent was written, the Git registration still belongs to the source.
+          if (await exists(directory)) {
+            if (receipt.gitDir) await rm(receipt.gitDir, { recursive: true, force: true });
+            if (!receipt.exposed) await rm(directory, { recursive: true, force: true });
+            else {
+              await privateTreeOperation("prepare-cleanup", directory);
+              await privateTreeOperation("clear", directory, undefined, privateTreeCleanupIdentity);
+              await rmdir(directory);
+            }
+          }
+          await rm(receiptPath, { force: true });
+        } catch {
+          // Retry incomplete cleanup on the next prune.
+        }
+      }
+    });
   }
 
   async function discard(branch: Pick<WorkspaceBranch, "projectId" | "branch">) {
@@ -407,24 +474,9 @@ export function createWorkspaceManager(options: {
   ) {
     const workspace = workspacePath(branch);
     if (!(await exists(workspace))) return;
-    const id = randomUUID();
-    const directory = path.join(retired, id);
-    await rename(workspace, directory);
     const gitDirectory = cache?.gitDirectory ?? workspaceKey(branch);
     const gitDir = path.join(repositoryPath(branch.projectId), "worktrees", gitDirectory);
-    if (await exists(gitDir))
-      await writeFile(path.join(gitDir, "gitdir"), `${path.join(directory, ".git")}\n`);
-    await atomicWrite(
-      path.join(metadata, `retired-${id}.json`),
-      JSON.stringify({
-        directory,
-        gitDir,
-        uid: cache?.uid,
-        gid: cache?.gid,
-        exposed: cache?.exposed !== false,
-      }),
-      0o600,
-    );
+    await retireDirectory(workspace, { gitDir, exposed: cache?.exposed !== false });
   }
 
   async function publish(branch: WorkspaceBranch, identity?: { uid: number; gid: number }) {
@@ -448,7 +500,7 @@ export function createWorkspaceManager(options: {
         "worktrees",
         stage.cache.gitDirectory ?? "",
       );
-      await writeFile(path.join(gitDir, "gitdir"), `${path.join(workspace, ".git")}\n`);
+      await writeFile(gitBacklinkPath(gitDir), `${path.join(workspace, ".git")}\n`);
       await rename(stage.workspace, workspace);
       pending.delete(workspaceKey(branch));
       const cache = {
@@ -628,29 +680,20 @@ export function createWorkspaceManager(options: {
     // An ensure() between mkdir and pending registration still holds a project lock.
     if (locks.size > 0) return;
     for (const entry of await readdir(preparing, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
+      if (!entry.isDirectory() || !opaqueWorkspaceName.test(entry.name)) continue;
       const directory = path.join(preparing, entry.name);
       if ([...pending.values()].some((stage) => stage.workspace === directory)) continue;
       let gitDir: string | undefined;
       for (const repository of await readdir(repositories, { withFileTypes: true })) {
-        if (!repository.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(repository.name)) continue;
+        if (!repository.isDirectory() || !repositoryName.test(repository.name)) continue;
         const candidate = path.join(repositories, repository.name, "worktrees", entry.name);
         if (await exists(candidate)) {
           if (gitDir) throw new Error("Неоднозначная регистрация приватной рабочей папки");
           gitDir = candidate;
         }
       }
-      const id = randomUUID();
-      const target = path.join(retired, id);
-      await rename(directory, target);
-      if (gitDir) await writeFile(path.join(gitDir, "gitdir"), `${path.join(target, ".git")}\n`);
-      await atomicWrite(
-        path.join(metadata, `retired-${id}.json`),
-        JSON.stringify({ directory: target, gitDir, exposed: true }),
-        0o600,
-      );
+      await retireDirectory(directory, { gitDir, exposed: true });
     }
-    await cleanupRetired();
   }
 
   async function prune(
@@ -661,6 +704,7 @@ export function createWorkspaceManager(options: {
   ) {
     await initialize();
     await retireAbandonedPreparations();
+    await cleanupRetired(true);
     const candidates: Array<{
       key: string;
       directory: string;
@@ -671,7 +715,7 @@ export function createWorkspaceManager(options: {
     }> = [];
     const registered = new Map<string, string>();
     for (const entry of await readdir(repositories, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(entry.name)) continue;
+      if (!entry.isDirectory() || !repositoryName.test(entry.name)) continue;
       const repository = path.join(repositories, entry.name);
       const trees = await options.run(
         ["git", "-C", repository, "worktree", "list", "--porcelain"],
@@ -701,7 +745,7 @@ export function createWorkspaceManager(options: {
       });
     }
     for (const entry of await readdir(options.root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
+      if (!entry.isDirectory() || !opaqueWorkspaceName.test(entry.name)) continue;
       const directory = path.join(options.root, entry.name);
       const filename = path.join(options.root, `${entry.name}.json`);
       const cacheTime = await stat(filename)
@@ -735,20 +779,7 @@ export function createWorkspaceManager(options: {
           WorkspaceBranch;
         await remove(cache);
       } else {
-        const id = randomUUID();
-        const directory = path.join(retired, id);
-        let cache: WorkspaceCache | null = null;
-        try {
-          cache = JSON.parse(await readFile(candidate.metadata ?? "", "utf8"));
-        } catch {
-          /* Unknown runtime provenance: retain instead of root deletion. */
-        }
-        await rename(candidate.directory, directory);
-        await atomicWrite(
-          path.join(metadata, `retired-${id}.json`),
-          JSON.stringify({ directory, uid: cache?.uid, gid: cache?.gid, exposed: true }),
-          0o600,
-        );
+        await retireDirectory(candidate.directory, { exposed: true });
         if (candidate.metadata) await rm(candidate.metadata, { force: true });
         await cleanupRetired();
       }
@@ -765,7 +796,7 @@ export function createWorkspaceManager(options: {
       retained.add(repositoryPath(cache.projectId));
     }
     for (const entry of await readdir(repositories, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^[a-f0-9]{64}\.git$/.test(entry.name)) continue;
+      if (!entry.isDirectory() || !repositoryName.test(entry.name)) continue;
       const repository = path.join(repositories, entry.name);
       if (retained.has(repository)) continue;
       if ((await stat(repository)).mtimeMs > cutoff && bytes <= maxBytes) continue;
