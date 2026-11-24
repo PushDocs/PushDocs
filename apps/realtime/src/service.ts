@@ -26,7 +26,13 @@ export function cookieValue(header: string | undefined, name: string): string | 
   if (!header) return undefined;
   for (const item of header.split(";")) {
     const [key, ...parts] = item.trim().split("=");
-    if (key === name) return decodeURIComponent(parts.join("="));
+    if (key === name) {
+      try {
+        return decodeURIComponent(parts.join("="));
+      } catch {
+        return undefined;
+      }
+    }
   }
   return undefined;
 }
@@ -136,7 +142,11 @@ export function createRealtimeHandler(options: RealtimeServiceOptions) {
       return;
     }
     if (request.url?.startsWith("/events")) {
-      void events(request, response);
+      void events(request, response).catch((error: unknown) => {
+        logger.error("Realtime connection failed", error);
+        if (!response.headersSent) response.writeHead(500);
+        response.end();
+      });
       return;
     }
     response.writeHead(404).end();

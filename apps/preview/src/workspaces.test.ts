@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -26,7 +37,7 @@ async function fixture() {
   await git(["commit", "--quiet", "-m", "first"]);
   const first = (await git(["rev-parse", "HEAD"])).trim();
   const commands: string[][] = [];
-  const manager = createWorkspaceManager({
+  const rawManager = createWorkspaceManager({
     root: path.join(root, "preview"),
     access: async () => ({ remote: source, env: process.env }),
     fetch: (operation) => operation(),
@@ -38,7 +49,14 @@ async function fixture() {
     },
   });
   await mkdir(path.join(root, "preview"));
-  return { root, source, git, first, commands, manager };
+  const manager = {
+    ...rawManager,
+    ensure: async (...args: Parameters<typeof rawManager.ensure>) => {
+      await rawManager.ensure(...args);
+      return rawManager.publish(args[0]);
+    },
+  };
+  return { root, source, git, first, commands, manager, rawManager };
 }
 
 it("pins the imported SHA and shares Git objects between isolated branch worktrees", async () => {
@@ -109,6 +127,11 @@ it("keeps different projects separate and prunes only inactive worktrees", async
 
 it("migrates a prepared legacy checkout without losing its installed dependencies or drafts", async () => {
   const { root, source, first, manager } = await fixture();
+  await manager.initialize();
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ repository: "legacy" }),
+  );
   const id = "00000000-0000-4000-8000-000000000001";
   const legacy = path.join(root, "preview", id);
   await run(["git", "clone", "--quiet", source, legacy], { cwd: root, timeoutMs: 10_000 });
@@ -144,9 +167,10 @@ it("migrates a prepared legacy checkout without losing its installed dependencie
   expect(await readFile(path.join(prepared.workspace, "node_modules/installed"), "utf8")).toBe(
     "dependencies",
   );
-  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("draft");
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(legacy, "docs/page.md"), "utf8")).toBe("draft");
   expect(prepared.cache.installed).toBe(true);
-  expect(prepared.cache.appliedPaths).toEqual(["docs/page.md"]);
+  expect(prepared.cache.appliedPaths).toEqual([]);
   expect(
     await run(["git", "rev-parse", "HEAD"], { cwd: prepared.workspace, timeoutMs: 10_000 }),
   ).toContain(first);
@@ -289,3 +313,123 @@ it("reports cache disk usage and expiry and removes only the requested branch wo
   expect(await readFile(path.join(other.workspace, "docs/page.md"), "utf8")).toBe("first");
   expect((await manager.inventory()).map((item) => item.branch)).toEqual(["other"]);
 });
+
+it("ignores a runtime-replaced Git pointer when restoring a draft", async () => {
+  const { source, first, manager } = await fixture();
+  const ref = { projectId: "one", branch: "stable", headSha: first };
+  const prepared = await manager.ensure(ref, new AbortController().signal);
+  await writeFile(path.join(prepared.workspace, "docs/page.md"), "runtime draft");
+  await writeFile(path.join(prepared.workspace, ".git"), `gitdir: ${path.join(source, ".git")}\n`);
+  await writeFile(path.join(source, "docs/page.md"), "outside runtime");
+  await manager.restore(prepared.workspace, "docs/page.md", first);
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(source, "docs/page.md"), "utf8")).toBe("outside runtime");
+});
+
+it("prepares a new private tree without touching an old writer or reused UID", async () => {
+  const { root, first, manager, rawManager } = await fixture();
+  const a = { projectId: "a", branch: "main", headSha: first };
+  const b = { ...a, projectId: "b" };
+  const one = await manager.ensure(a, new AbortController().signal);
+  const two = await manager.ensure(b, new AbortController().signal);
+  await manager.saveCache(a, { ...one.cache, uid: 11000, exposed: true });
+  await writeFile(
+    path.join(root, "preview/metadata/runtime-11000.json"),
+    JSON.stringify({ workspace: two.workspace }),
+  );
+  await writeFile(path.join(one.workspace, "docs/page.md"), "old writer");
+  const prepared = await rawManager.ensure(a, new AbortController().signal);
+  expect(prepared.workspace).not.toBe(one.workspace);
+  expect(path.dirname(prepared.workspace)).toBe(path.join(root, "preview/preparing"));
+  expect(await readFile(path.join(prepared.workspace, "docs/page.md"), "utf8")).toBe("first");
+  expect(await readFile(path.join(one.workspace, "docs/page.md"), "utf8")).toBe("old writer");
+  expect(await readFile(path.join(two.workspace, "docs/page.md"), "utf8")).toBe("first");
+  await rawManager.discard(a);
+});
+
+it("does not copy cache hardlinks or follow cache symlinks outside the old tree", async () => {
+  const { root, first, manager, rawManager } = await fixture();
+  const branch = { projectId: "a", branch: "main", headSha: first };
+  const one = await manager.ensure(branch, new AbortController().signal);
+  const { link, readlink } = await import("node:fs/promises");
+  const outside = path.join(root, "outside");
+  await writeFile(outside, "controller data");
+  await mkdir(path.join(one.workspace, "node_modules"));
+  await link(outside, path.join(one.workspace, "node_modules/hardlink"));
+  await symlink(outside, path.join(one.workspace, "node_modules/symlink"));
+  await manager.saveCache(branch, { ...one.cache, installed: true });
+  const prepared = await rawManager.ensure(branch, new AbortController().signal);
+  await expect(readFile(path.join(prepared.workspace, "node_modules/hardlink"))).rejects.toThrow();
+  expect(await readlink(path.join(prepared.workspace, "node_modules/symlink"))).toBe(outside);
+  expect(prepared.cache.installed).toBe(false);
+  expect(await readFile(outside, "utf8")).toBe("controller data");
+  await rawManager.discard(branch);
+});
+
+it("cleans a private preparation and Git registration abandoned by a previous controller", async () => {
+  const { root, first, rawManager } = await fixture();
+  const branch = { projectId: "a", branch: "main", headSha: first };
+  const abandoned = await rawManager.ensure(branch, new AbortController().signal);
+  const restarted = createWorkspaceManager({
+    root: path.join(root, "preview"),
+    run,
+    access: async () => {
+      throw new Error("no fetch needed for orphan cleanup");
+    },
+    fetch: (operation) => operation(),
+  });
+  await restarted.prune(new Set(), Date.now() + 1000);
+  await expect(stat(abandoned.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(path.join(root, "preview/preparing"))).toEqual([]);
+  expect(await readdir(path.join(root, "preview/repositories"))).toEqual([]);
+});
+
+it.each(["before rename", "after rename", "without receipt"] as const)(
+  "recovers retirement %s without pruning a live Git registration",
+  async (interruption) => {
+    const { root, first, manager } = await fixture();
+    const previewRoot = path.join(root, "preview");
+    const retired = path.join(previewRoot, "retired");
+    const metadata = path.join(previewRoot, "metadata");
+    const branch = { projectId: "project", branch: "main", headSha: first };
+    const keep = { ...branch, branch: "keep" };
+    const old = await manager.ensure(branch, new AbortController().signal);
+    const live = await manager.ensure(keep, new AbortController().signal);
+    const repositoryRoot = path.join(previewRoot, "repositories");
+    const [repository] = await readdir(repositoryRoot);
+    if (!repository || !old.cache.gitDirectory || !live.cache.gitDirectory)
+      throw new Error("Missing Git worktree registrations");
+    const registrations = path.join(repositoryRoot, repository, "worktrees");
+    const gitDir = path.join(registrations, old.cache.gitDirectory);
+    const liveGitDir = path.join(registrations, live.cache.gitDirectory);
+    const id = "00000000-0000-4000-8000-000000000001";
+    const directory = path.join(retired, id);
+    const receipt = path.join(metadata, `retired-${id}.json`);
+    if (interruption !== "without receipt")
+      await writeFile(receipt, JSON.stringify({ directory, gitDir, exposed: false }));
+    if (interruption !== "before rename") await rename(old.workspace, directory);
+    if (interruption === "without receipt")
+      await writeFile(path.join(gitDir, "gitdir"), `${path.join(directory, ".git")}\n`);
+
+    const restarted = createWorkspaceManager({
+      root: previewRoot,
+      run,
+      access: async () => {
+        throw new Error("no fetch needed for retirement recovery");
+      },
+      fetch: (operation) => operation(),
+    });
+    const active = new Set([workspaceKey(branch), workspaceKey(keep)]);
+    await restarted.prune(active, Date.now() + 1000);
+    expect(await readdir(retired)).toEqual([]);
+    await expect(stat(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+    if (interruption === "before rename") {
+      expect(await readFile(path.join(old.workspace, "docs/page.md"), "utf8")).toBe("first");
+      expect((await stat(gitDir)).isDirectory()).toBe(true);
+    } else {
+      await expect(stat(gitDir)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(await readFile(path.join(live.workspace, "docs/page.md"), "utf8")).toBe("first");
+    expect((await stat(liveGitDir)).isDirectory()).toBe(true);
+  },
+);

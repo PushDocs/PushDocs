@@ -40,6 +40,9 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+const waitForPreview = (assertion: () => void | Promise<void>) =>
+  vi.waitFor(assertion, { timeout: overlayTestTimeouts.ready });
+
 it(
   "updates only changed files, preserves dependencies across commits and reinstalls changed manifests",
   async () => {
@@ -66,6 +69,8 @@ it(
       head_commit_sha: string;
     }> = [];
     let revision = 1;
+    let advanceRevisionAfterRead = false;
+    const recordPreviewWorkspace = vi.fn();
     let leaseExpired = false;
     const logger = { error: vi.fn(), log: vi.fn() };
     let preview: ReturnType<typeof createPreviewService> | undefined;
@@ -105,16 +110,15 @@ it(
         JSON.stringify({ appliedPaths: [], headSha: head, installed: true, uid: 11000 }),
       );
       await writeFile(path.join(root, "attachment"), "image");
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => new Response("ready")),
-      );
+      const fetchReady = vi.fn(async () => new Response("ready"));
+      vi.stubGlobal("fetch", fetchReady);
       preview = createPreviewService({
         workspaceRoot: root,
         attachmentsRoot: root,
         logger,
         gitAccess: async () => ({ remote, env: process.env }),
         repository: {
+          recordPreviewWorkspace,
           reconcilePreviewLeases: async () => {
             if (leaseExpired) session.desired_state = "stopped";
           },
@@ -127,14 +131,21 @@ it(
             kind: "github",
             secret_encrypted: "token",
           }),
-          listChangedWorkingFiles: async () => ({
-            branch: { head_commit_sha: head },
-            changeSet: { revision },
-            files: [
-              { path: "docs/unchanged.md", content: "unchanged", status: "add" },
-              { path: "docs/edited.md", content: `revision ${revision}`, status: "add" },
-            ],
-          }),
+          listChangedWorkingFiles: async () => {
+            const snapshotRevision = revision;
+            if (advanceRevisionAfterRead) {
+              advanceRevisionAfterRead = false;
+              revision++;
+            }
+            return {
+              branch: { head_commit_sha: head },
+              changeSet: { revision: snapshotRevision },
+              files: [
+                { path: "docs/unchanged.md", content: "unchanged", status: "add" },
+                { path: "docs/edited.md", content: `revision ${snapshotRevision}`, status: "add" },
+              ],
+            };
+          },
           listPreviewAttachments: async () => [
             { repository_path: "static/new/folder/image.png", storage_key: "attachment" },
           ],
@@ -155,9 +166,7 @@ it(
         decryptSecret: (value) => value,
       });
       await preview.tick();
-      await vi.waitFor(() => expect(session.status).toBe("ready"), {
-        timeout: overlayTestTimeouts.ready,
-      });
+      await waitForPreview(() => expect(session.status).toBe("ready"));
       // Locate the workspace through its article, also after migration to a stable branch path.
       const { readdir } = await import("node:fs/promises");
       const entries = await readdir(root, { recursive: true });
@@ -172,8 +181,33 @@ it(
       );
       const oldTime = new Date("2020-01-01T00:00:00Z");
       for (const file of paths) await utimes(file, oldTime, oldTime);
+      const stoppingSession = {
+        ...session,
+        id: "00000000-0000-4000-8000-000000000006",
+        branch: "docs/stopping",
+        port: 43001,
+        desired_state: "stopped",
+      };
+      sessions.push(stoppingSession);
+      let releaseReadiness: (() => void) | undefined;
+      const readiness = new Promise<Response>((resolve) => {
+        releaseReadiness = () => resolve(new Response("ready"));
+      });
+      const blockedReadiness = vi.fn(() => readiness);
+      fetchReady.mockImplementationOnce(blockedReadiness);
       revision++;
-      await preview.tick();
+      const restartTick = preview.tick();
+      try {
+        await waitForPreview(() => expect(blockedReadiness).toHaveBeenCalledOnce());
+        await waitForPreview(() => expect(stoppingSession.status).toBe("stopped"));
+        await restartTick;
+        expect(session.status).toBe("starting");
+      } finally {
+        releaseReadiness?.();
+        await restartTick;
+      }
+      sessions.pop();
+      await waitForPreview(() => expect(session.status).toBe("ready"));
       expect(await readFile(path.join(currentWorkspace, "docs/edited.md"), "utf8")).toBe(
         "revision 2",
       );
@@ -210,9 +244,7 @@ it(
         await preview?.tick();
         expect(session.status).toBe("queued");
         await preview?.tick();
-        await vi.waitFor(() => expect(session.status).toBe("ready"), {
-          timeout: overlayTestTimeouts.ready,
-        });
+        await waitForPreview(() => expect(session.status).toBe("ready"));
       };
       await writeFile(path.join(currentWorkspace, "base.txt"), "new base");
       await advance();
@@ -244,9 +276,7 @@ it(
       session.desired_state = "running";
       session.status = "queued";
       await preview.tick();
-      await vi.waitFor(() => expect(session.status).toBe("ready"), {
-        timeout: overlayTestTimeouts.ready,
-      });
+      await waitForPreview(() => expect(session.status).toBe("ready"));
       expect(installations()).toBe(2);
 
       const queued = {
@@ -274,9 +304,7 @@ it(
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("не является папкой"));
       await rm(path.join(currentWorkspace, ".cache"));
       leaseExpired = false;
-      await vi.waitFor(() => expect(queued.status).toBe("ready"), {
-        timeout: overlayTestTimeouts.ready,
-      });
+      await waitForPreview(() => expect(queued.status).toBe("ready"));
 
       queued.desired_state = "stopped";
       backgroundBranches.push({
@@ -292,12 +320,10 @@ it(
         "worktrees",
         workspaceKey({ projectId: session.project_id, branch: "docs/prepared" }),
       );
-      await vi.waitFor(
-        async () =>
-          expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
-            "revision 2",
-          ),
-        { timeout: overlayTestTimeouts.ready },
+      await waitForPreview(async () =>
+        expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
+          "revision 2",
+        ),
       );
       expect(starts()).toBe(beforePreparation);
       const preparedSession = {
@@ -310,9 +336,7 @@ it(
       sessions.push(preparedSession);
       const beforeFetch = launches.filter((args) => args.includes("fetch")).length;
       await preview.tick();
-      await vi.waitFor(() => expect(preparedSession.status).toBe("ready"), {
-        timeout: overlayTestTimeouts.ready,
-      });
+      await waitForPreview(() => expect(preparedSession.status).toBe("ready"));
       expect(launches.filter((args) => args.includes("fetch")).length).toBe(beforeFetch);
       preparedSession.desired_state = "stopped";
       await preview.tick();
@@ -324,9 +348,23 @@ it(
         status: "queued",
       });
       await preview.tick();
-      await vi.waitFor(() => expect(sessions.at(-1)?.status).toBe("ready"), {
-        timeout: overlayTestTimeouts.ready,
-      });
+      await waitForPreview(() => expect(sessions.at(-1)?.status).toBe("ready"));
+      expect(installations()).toBe(beforeReopen);
+      // A change arriving after the active-site read belongs to the next restart,
+      // never to an independent background publication over the active workspace.
+      recordPreviewWorkspace.mockClear();
+      advanceRevisionAfterRead = true;
+      await preview.tick();
+      expect(recordPreviewWorkspace).not.toHaveBeenCalledWith(
+        session.project_id,
+        "docs/prepared",
+        expect.objectContaining({ preparation_status: "starting" }),
+      );
+      await preview.tick();
+      await waitForPreview(() => expect(sessions.at(-1)?.status).toBe("ready"));
+      expect(await readFile(path.join(preparedWorkspace, "docs/edited.md"), "utf8")).toBe(
+        "revision 3",
+      );
       expect(installations()).toBe(beforeReopen);
     } finally {
       await preview?.stopAll();
