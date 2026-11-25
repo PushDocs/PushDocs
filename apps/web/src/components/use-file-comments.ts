@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { realtimeEvents } from "@/lib/realtime-events";
 
 export interface FileComment {
   id: string;
@@ -81,7 +82,7 @@ export function useFileComments({
     };
     setVisible(document.visibilityState === "visible");
     update();
-    window.addEventListener("pushdocs:refresh", update);
+    window.addEventListener(realtimeEvents.refresh, update);
     window.addEventListener("online", update);
     window.addEventListener("pushdocs:realtime-connected", update);
     window.addEventListener("focus", update);
@@ -92,7 +93,7 @@ export function useFileComments({
       controller.abort();
       generation.current += 1;
       window.clearInterval(timer);
-      window.removeEventListener("pushdocs:refresh", update);
+      window.removeEventListener(realtimeEvents.refresh, update);
       window.removeEventListener("online", update);
       window.removeEventListener("pushdocs:realtime-connected", update);
       window.removeEventListener("focus", update);

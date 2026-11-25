@@ -217,6 +217,24 @@ it("reopens the current paused commit after reload and cancels that exact confli
   expect(mocks.router.push).toHaveBeenCalledWith("/projects/project/changes?branch=docs%2Ftask");
 });
 
+it("returns to changes when the active operation updates from another target branch", async () => {
+  mocks.prepare.mockResolvedValue([
+    { branch: "docs/task", paths: [], busy: true, mergeJobId: "rebase" },
+  ]);
+  mocks.status.mockResolvedValue({
+    status: "needs_resolution",
+    conflictSnapshot: { ...rebaseSnapshot(1), sourceBranch: "main" },
+  });
+  render(<BranchConflictResolver {...props} />);
+  await waitFor(() =>
+    expect(mocks.router.replace).toHaveBeenCalledWith(
+      "/projects/project/changes?branch=docs%2Ftask&conflict=review",
+    ),
+  );
+  expect(screen.queryByRole("heading", { name: "docs/a.md" })).toBeNull();
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
 it("keeps conflicts visible in documents after the background inspection finishes", async () => {
   render(
     <>

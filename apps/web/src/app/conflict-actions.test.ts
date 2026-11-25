@@ -142,7 +142,11 @@ it("continues a merge on the same operation using its exact snapshot token", asy
 });
 
 it("opens and continues the same paused rebase with the exact conflict token", async () => {
-  mocks.active.mockResolvedValue({ id: "rebase", status: "needs_resolution" });
+  mocks.active.mockResolvedValue({
+    id: "rebase",
+    status: "needs_resolution",
+    payload: { externalReviewId: "1", branch: "task", sourceBranch: "main" },
+  });
   mocks.continueRebase.mockResolvedValue("rebase");
   expect(await inspectReviewConflictsAction("project", "review", true)).toBe("rebase");
   expect(mocks.provider).not.toHaveBeenCalled();
@@ -163,6 +167,23 @@ it("opens and continues the same paused rebase with the exact conflict token", a
   });
   await cancelRebaseUpdateAction("project", "rebase", "token");
   expect(mocks.cancel).toHaveBeenCalledWith("project", "rebase", "token", "user");
+});
+
+it.each(["other-target", "other-review"])("does not reuse an operation for %s", async (reason) => {
+  mocks.active.mockResolvedValue({
+    id: "operation",
+    status: "needs_resolution",
+    payload: {
+      branch: "task",
+      sourceBranch: reason === "other-target" ? "stable" : "main",
+      externalReviewId: reason === "other-review" ? "2" : "1",
+    },
+  });
+  await expect(inspectReviewConflictsAction("project", "review")).rejects.toThrow("другой");
+  await expect(prepareConflictResolutionAction("project", "review", "main")).rejects.toThrow(
+    "другой",
+  );
+  expect(mocks.enqueue).not.toHaveBeenCalled();
 });
 
 it("recovers a branch update even when it failed before its first conflict pause", async () => {

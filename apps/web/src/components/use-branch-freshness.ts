@@ -1,7 +1,9 @@
 "use client";
 
+import { domainEvents } from "@pushdocs/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BranchFreshness } from "@/lib/branch-freshness";
+import { realtimeEvents } from "@/lib/realtime-events";
 
 export function useBranchFreshness({
   projectId,
@@ -53,16 +55,16 @@ export function useBranchFreshness({
     const onSynchronize = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined;
       if (
-        detail?.type === "branch.synchronized" &&
+        detail?.type === domainEvents.branchSynchronized &&
         detail.projectId === projectId &&
         (detail.payload?.branch === branch || detail.payload?.branch === defaultBranch)
       )
         void refresh();
     };
-    window.addEventListener("pushdocs:refresh", onSynchronize);
+    window.addEventListener(realtimeEvents.refresh, onSynchronize);
     return () => {
       controller.current?.abort();
-      window.removeEventListener("pushdocs:refresh", onSynchronize);
+      window.removeEventListener(realtimeEvents.refresh, onSynchronize);
     };
   }, [projectId, branch, defaultBranch, enabled, refresh]);
 

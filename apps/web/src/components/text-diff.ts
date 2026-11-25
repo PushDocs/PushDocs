@@ -103,7 +103,7 @@ export function revertDiffLines(before: string, after: string, lineIds: number[]
       selected.size
   )
     throw new Error("Строки изменений недоступны. Обновите страницу.");
-  return diff.lines
+  return diffLinesInPairOrder(diff.lines)
     .filter((line) =>
       line.kind === "delete"
         ? selected.has(line.id)
@@ -159,4 +159,12 @@ export function pairDiffLines(lines: DiffLine[]) {
     }
   }
   return rows;
+}
+
+// Partial reverts must keep each replacement at the position of its displayed pair.
+export function diffLinesInPairOrder(lines: DiffLine[]) {
+  return pairDiffLines(lines).flatMap(({ left, right }) => {
+    if (left === right) return left ? [left] : [];
+    return [left, right].filter((line): line is DiffLine => line !== undefined);
+  });
 }

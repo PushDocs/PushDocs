@@ -115,6 +115,35 @@ beforeEach(() => {
 });
 
 describe("live review operations", () => {
+  it.each(["target", "review"])(
+    "returns the existing operation when its %s differs",
+    async (kind) => {
+      const f = fixture();
+      f.store.getActiveReviewBranchUpdate.mockResolvedValue({
+        id: "paused-update",
+        status: "needs_resolution",
+        payload: {
+          branch: f.review.sourceBranch,
+          sourceBranch: kind === "target" ? "main" : f.review.targetBranch,
+          externalReviewId: kind === "review" ? "another-review" : f.review.id,
+        },
+      } as never);
+      const result = await f.service.inspect({
+        projectId: "project",
+        reviewId: "814",
+        refresh: true,
+      });
+      expect(result).toMatchObject({
+        status: "blocked",
+        reason: "branch_busy",
+        activeOperationId: "paused-update",
+        editorUrl: expect.stringContaining("resolve=branch-update%3Apaused-update"),
+      });
+      expect(result).not.toHaveProperty("inspectionId");
+      expect(f.store.enqueueConflictInspection).not.toHaveBeenCalled();
+    },
+  );
+
   it("reports and continues a paused merge on the same operation with renewed OAuth", async () => {
     const f = fixture();
     const snapshot = {
@@ -130,7 +159,12 @@ describe("live review operations", () => {
     f.store.getActiveReviewBranchUpdate.mockResolvedValue({
       id: "merge-job",
       status: "needs_resolution",
-      payload: { strategy: "merge" },
+      payload: {
+        strategy: "merge",
+        externalReviewId: f.review.id,
+        branch: f.review.sourceBranch,
+        sourceBranch: f.review.targetBranch,
+      },
     } as never);
     expect(
       await f.service.inspect({ projectId: "project", reviewId: "814", refresh: true }),
@@ -199,6 +233,11 @@ describe("live review operations", () => {
     f.store.getActiveReviewBranchUpdate.mockResolvedValue({
       id: "rebase-job",
       status: "needs_resolution",
+      payload: {
+        externalReviewId: f.review.id,
+        branch: f.review.sourceBranch,
+        sourceBranch: f.review.targetBranch,
+      },
     } as never);
     f.provider.getRepository.mockResolvedValue({
       webUrl: "https://gitlab.test/g/docs",
@@ -412,6 +451,95 @@ describe("live review operations", () => {
 });
 
 describe("report and resolution safety", () => {
+  it.each([
+    "source-head",
+    "target-head",
+    "deleted-branch",
+    "default-branch",
+    "policy",
+    "repository",
+    "operation-branch",
+    "missing-branch-only-flag",
+    "protected",
+  ])("validates branch-only context before reporting and resolving: %s", async (change) => {
+    const f = fixture();
+    f.store.getProjectSyncTarget.mockResolvedValue({
+      ...target,
+      default_branch: "stable",
+    } as never);
+    const inspection = {
+      branchOnly: true,
+      branch: f.snapshot.branch,
+      sourceBranch: f.snapshot.sourceBranch,
+      repositoryKey: branchConflictRepositoryKey(target),
+      status: "needs_resolution",
+      snapshot: { ...f.snapshot, merge: { operationId: "merge-job", conflictId: "current-token" } },
+      externalReviewId: undefined,
+      targetKey: branchConflictRepositoryKey(target),
+    };
+    if (
+      change === "source-head" ||
+      change === "target-head" ||
+      change === "deleted-branch" ||
+      change === "protected"
+    ) {
+      f.provider.listBranches.mockResolvedValue([
+        ...(change === "deleted-branch"
+          ? []
+          : [
+              {
+                name: f.snapshot.branch,
+                sha: change === "source-head" ? "new-branch-head" : f.snapshot.parentSha,
+                protected: change === "protected",
+              },
+            ]),
+        {
+          name: "stable",
+          sha: change === "target-head" ? "new-target-head" : f.snapshot.sourceSha,
+        },
+      ] as never);
+    }
+    if (change === "default-branch") f.store.getProjectSyncTarget.mockResolvedValue(target);
+    if (change === "policy")
+      f.provider.getRepository.mockResolvedValue({
+        webUrl: "https://gitlab.test/g/docs",
+        defaultUpdateStrategy: BranchUpdateStrategy.Rebase,
+      });
+    if (change === "repository") inspection.repositoryKey = "another-repository";
+    if (change === "operation-branch") inspection.branch = "another-branch";
+    if (change === "missing-branch-only-flag") inspection.branchOnly = false;
+    f.store.getMcpConflictInspection.mockResolvedValue(inspection as never);
+    const report = await f.service.report({
+      projectId: "project",
+      inspectionId: "merge-job",
+      mode: ConflictReportMode.Editorial,
+      offset: 0,
+      limit: 5,
+      fragmentOffset: 0,
+    });
+    expect(report).toMatchObject({ stale: change !== "protected", resolutionSupported: false });
+    await expect(
+      f.service.resolve({
+        projectId: "project",
+        inspectionId: "merge-job",
+        conflictId: "current-token",
+        files: [{ path: "docs/a.md", choice: "branch" }],
+      }),
+    ).rejects.toMatchObject({
+      code:
+        change === "protected"
+          ? "ACCESS_DENIED"
+          : change === "missing-branch-only-flag"
+            ? "REVIEW_REQUIRED"
+            : change === "policy"
+              ? "REBASE_RESOLUTION_UNSUPPORTED"
+              : "REVISION_CONFLICT",
+    });
+    expect(f.store.continueMergeUpdate).not.toHaveBeenCalled();
+    expect(f.store.continueRebaseUpdate).not.toHaveBeenCalled();
+    expect(f.provider.listChangeRequests).not.toHaveBeenCalled();
+  });
+
   it.each([ConflictReportMode.Editorial, ConflictReportMode.Detailed])(
     "marks changed snapshots stale and excludes binary reads in %s",
     async (mode) => {

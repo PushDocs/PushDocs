@@ -12,6 +12,7 @@ import { Button } from "@pushdocs/ui";
 import { Download, FileText, Link2, Trash2, Undo2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { realtimeEvents } from "@/lib/realtime-events";
 import { AttachmentDirectory } from "./attachment-directory";
 import { MediaGallery } from "./media-gallery";
 import { MediaPreview } from "./media-preview";
@@ -105,8 +106,8 @@ export function MediaLibrary({
       void reload().catch((cause) => setError(String(cause)));
     };
     refresh();
-    window.addEventListener("pushdocs:refresh", refresh);
-    return () => window.removeEventListener("pushdocs:refresh", refresh);
+    window.addEventListener(realtimeEvents.refresh, refresh);
+    return () => window.removeEventListener(realtimeEvents.refresh, refresh);
   }, [reload]);
   useEffect(() => {
     onBusyChange?.(busy);

@@ -9,6 +9,7 @@ import {
 } from "@pushdocs/contracts";
 import { loadBranchUpdatePolicy } from "@pushdocs/providers";
 import { z } from "zod";
+import { branchUpdateMatchesReview } from "@/lib/branch-review";
 import { providerForConnection } from "@/lib/provider";
 import { repository, requireUser } from "@/lib/server";
 
@@ -49,12 +50,31 @@ async function conflictContext(projectId: string, reference: string) {
   };
 }
 
+async function matchingReviewUpdate(
+  projectId: string,
+  context: Awaited<ReturnType<typeof conflictContext>>,
+) {
+  const { store, review } = context;
+  if (!review) return undefined;
+  const active = await store.getActiveReviewBranchUpdate(projectId, review.source_branch);
+  if (
+    active?.status === branchUpdateWaitingStatus &&
+    !branchUpdateMatchesReview(active.payload, review)
+  )
+    throw new Error(
+      "Ветка обновляется из другой целевой ветки или PR / MR. Откройте операцию в Изменениях.",
+    );
+  return active;
+}
+
 export async function prepareConflictResolutionAction(
   projectId: string,
   reviewId: string,
   currentBranch: string,
 ) {
-  const { store, branch } = await conflictContext(projectId, reviewId);
+  const context = await conflictContext(projectId, reviewId);
+  await matchingReviewUpdate(projectId, context);
+  const { store, branch } = context;
   const branches = [...new Set([branch, z.string().min(1).max(255).parse(currentBranch)])];
   return Promise.all(branches.map((branch) => store.getBranchConflictBlockers(projectId, branch)));
 }
@@ -72,7 +92,7 @@ export async function inspectReviewConflictsAction(
     throw new Error("Операция больше не ожидает разрешения конфликтов. Обновите страницу.");
   }
   if (!review) throw new Error("PR / MR недоступен");
-  const active = await store.getActiveReviewBranchUpdate(projectId, review.source_branch);
+  const active = await matchingReviewUpdate(projectId, context);
   if (active?.status === branchUpdateWaitingStatus) return active.id;
   const target = await store.getProjectSyncTarget(projectId);
   if (!target) throw new Error("Подключение проекта недоступно");

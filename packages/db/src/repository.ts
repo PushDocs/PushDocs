@@ -21,6 +21,7 @@ import {
   branchUpdateStrategy,
   branchUpdateWaitingStatus,
   conflictResolutionPolicyError,
+  domainEvents,
   hasBranchConflicts,
   jobAttempt,
   jobRetryPolicy,
@@ -734,7 +735,7 @@ export class PushDocsRepository extends SecurityRepository {
         payload: { branch: branchName, documentCount: documents.length, headSha },
         projectId,
         revision: 1,
-        type: "branch.synchronized",
+        type: domainEvents.branchSynchronized,
       });
     });
   }
@@ -2113,7 +2114,7 @@ export class PushDocsRepository extends SecurityRepository {
   async getMcpConflictInspection(projectId: string, inspectionId: string) {
     const job = await this.database
       .selectFrom("jobs")
-      .select(["payload", "status"])
+      .select(["payload", "status", "kind"])
       .where("id", "=", inspectionId)
       .where("kind", "in", ["branch.conflicts", branchUpdateJobKind])
       .where(sql<string>`payload->>'projectId'`, "=", projectId)
@@ -2122,6 +2123,14 @@ export class PushDocsRepository extends SecurityRepository {
     const payload = job.payload as Record<string, unknown>;
     return {
       status: job.status,
+      branchOnly:
+        job.kind === branchUpdateJobKind &&
+        payload.branchOnly === true &&
+        !payload.reviewId &&
+        !payload.externalReviewId,
+      branch: payload.branch,
+      sourceBranch: payload.sourceBranch,
+      repositoryKey: payload.repositoryKey,
       externalReviewId:
         typeof payload.externalReviewId === "string" ? payload.externalReviewId : undefined,
       targetKey: payload.targetKey,
@@ -3032,7 +3041,7 @@ export class PushDocsRepository extends SecurityRepository {
       .selectFrom("domain_events")
       .select("id")
       .where("entity_id", "=", branchId)
-      .where("type", "=", "branch.synchronized")
+      .where("type", "=", domainEvents.branchSynchronized)
       .executeTakeFirst();
     return Boolean(event);
   }

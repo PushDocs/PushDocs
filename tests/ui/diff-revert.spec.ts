@@ -124,6 +124,7 @@ async function undoGray(page: Page, line: number, fallback: boolean) {
     await row.locator(".wb-diff-text").last().hover();
     await row.locator("..").getByRole("button", { name: "Вернуть изменения" }).click();
   } else {
+    await expect(page.locator(".wb-diff-reverted-line").first()).toBeVisible();
     await hoverLine(page, line);
     await page
       .locator(".wb-diff-hover-actions")
@@ -141,7 +142,7 @@ for (const fallback of [false, true])
       await page.goto(`${fixture.url}/?change-review&revert`);
       if (!fallback) await expect(page.getByTestId("monaco-diff")).toBeVisible();
       if (split) await page.getByRole("button", { name: "Две колонки" }).click();
-      for (const line of [1, 2]) {
+      for (const [index, line] of [2, 1].entries()) {
         const actions = await hoverLine(page, line, fallback, split);
         await expect(actions.getByRole("button")).toHaveCount(1);
         const diff = page.getByRole("region", { name: "Сравнение изменений", exact: true });
@@ -152,11 +153,12 @@ for (const fallback of [false, true])
         expect(await popup.textContent()).not.toContain("content/intro.md");
         expect((await popup.boundingBox())?.width).toBeLessThanOrEqual(300);
         expect(await diff.boundingBox()).toEqual(bounds);
-        expect(commands).toHaveLength(line - 1);
+        expect(commands).toHaveLength(index);
         await confirm(page);
-        await expect.poll(() => state.revision).toBe(7 + line);
+        await expect.poll(() => state.revision).toBe(8 + index);
+        if (index === 0) expect(state.content).toBe(after.replace("second new", "second old"));
       }
-      expect(commands[0]?.lineIds).toEqual([0, 2]);
+      expect(commands[0]?.lineIds).toEqual([1, 3]);
       expect(state.content).toBe(after.replace("first new\nsecond new", "first old\nsecond old"));
       await undoGray(page, 1, fallback);
       await expect.poll(() => state.content).toBe(after.replace("second new", "second old"));

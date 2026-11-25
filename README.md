@@ -60,6 +60,16 @@ Choose one mode and follow its commands below. Requires Docker with Compose v2; 
 | Development | Run through Yarn with automatic reload; PostgreSQL runs in Docker | http://localhost:3000 |
 | Docker | All services run in containers | http://localhost:8080 |
 
+If Docker Desktop reports `open sysctl net.mptcp.enabled ... no such file or directory`, its Linux kernel may be built without MPTCP. For local starts, add `-f compose.yml -f compose.no-mptcp.yml` to the Compose command:
+
+~~~sh
+docker compose -f compose.yml -f compose.no-mptcp.yml up -d --wait postgres
+# Or start all application containers:
+docker compose -f compose.yml -f compose.no-mptcp.yml up -d --wait
+~~~
+
+Use this override only on kernels without MPTCP. The server configuration and deployment checks keep MPTCP disabled as before.
+
 ### First run
 
 **Development:** create `.env` from `.env.example` if it does not exist. Set the secrets and use the same password in `DATABASE_URL` and `POSTGRES_PASSWORD`. `DATABASE_URL` must point to the local PostgreSQL port (5432 by default).

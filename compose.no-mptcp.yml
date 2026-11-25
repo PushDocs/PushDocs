@@ -1,0 +1,17 @@
+# Local override for Docker kernels built without MPTCP. Do not use on servers with MPTCP.
+x-no-mptcp: &no-mptcp
+  sysctls:
+    net.mptcp.enabled: !reset null
+
+services:
+  postgres: *no-mptcp
+  migrate: *no-mptcp
+  web: *no-mptcp
+  worker: *no-mptcp
+  preview: *no-mptcp
+  vpn-gateway-1: *no-mptcp
+  vpn-gateway-2: *no-mptcp
+  vpn-gateway-3: *no-mptcp
+  vpn-gateway-4: *no-mptcp
+  realtime: *no-mptcp
+  caddy: *no-mptcp

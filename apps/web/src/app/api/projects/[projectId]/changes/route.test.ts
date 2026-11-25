@@ -223,6 +223,37 @@ function restore(restoreToken: string, overrides: Record<string, unknown> = {}) 
   );
 }
 
+it("saves and restores the middle replacement without moving adjacent lines", async () => {
+  mocks.file.mockResolvedValue({
+    baseContentKnown: true,
+    baseContent: "A\nB\nC\n",
+    content: "D\nE\nF\n",
+  });
+  mocks.stage.mockResolvedValue({ revision: 8 });
+  const response = await request("docs/a.md", "https://cms.test", [1, 4]);
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result.content).toBe("D\nB\nF\n");
+  expect(result.undoBlocks).toEqual([{ index: 0, start: 2, end: 4 }]);
+  expect(readDiffRevertUndo(undoScope, result.undoToken).blocks).toEqual([
+    { start: 2, end: 4, text: "E\n" },
+  ]);
+  expect(mocks.stage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ files: [{ path: "docs/a.md", content: "D\nB\nF\n" }] }),
+  );
+  mocks.state.mockResolvedValue({
+    branch: { head_commit_sha: "head" },
+    changeSet: { id: "set", revision: 8, status: "open" },
+  });
+  mocks.file.mockResolvedValue({ content: result.content, status: "modify" });
+  const restored = await restore(result.undoToken, { expectedRevision: 8, restoreBlocks: [0] });
+  expect(restored.status).toBe(200);
+  expect((await restored.json()).content).toBe("D\nE\nF\n");
+  expect(mocks.stage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ files: [{ path: "docs/a.md", content: "D\nE\nF\n" }] }),
+  );
+});
+
 it("issues an authenticated snapshot of the saved text and restores after the draft disappears", async () => {
   const result = await (await request("docs/a.md", "https://cms.test", [0, 1])).json();
   expect(readDiffRevertUndo(undoScope, result.undoToken)).toMatchObject({

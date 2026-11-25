@@ -1,4 +1,4 @@
-import { buildTextDiff, type DiffLine } from "@/components/text-diff";
+import { buildTextDiff, type DiffLine, diffLinesInPairOrder } from "@/components/text-diff";
 
 export interface RevertEdit {
   start: number;
@@ -23,7 +23,7 @@ export function revertEdits(lines: DiffLine[], selectedIds: number[]): RevertEdi
   const edits: RevertEdit[] = [];
   let offset = 0;
   let edit: RevertEdit | undefined;
-  for (const line of lines) {
+  for (const line of diffLinesInPairOrder(lines)) {
     const value = bytes(line);
     if (line.kind !== "context" && selected.has(line.id)) {
       edit ??= { start: offset, end: offset, text: "" };

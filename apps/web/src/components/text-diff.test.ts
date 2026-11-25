@@ -79,6 +79,23 @@ describe("text diff", () => {
   });
 
   it.each([
+    ["A\nB\nC\n", "D\nE\nF\n", [1, 4], "D\nB\nF\n"],
+    ["A\nB\nC\n", "D\nE\nF\n", [0, 3], "A\nE\nF\n"],
+    ["A\nB\nC\n", "D\nE\nF\n", [2, 5], "D\nE\nC\n"],
+    ["A\nB\nC\n", "D\nE\nF\n", [0, 2, 3, 5], "A\nE\nC\n"],
+    ["A\nB\nC\n", "D\nE\nF\nG\n", [1, 4], "D\nB\nF\nG\n"],
+    ["A\nB\nC\nG\n", "D\nE\nF\n", [1, 5], "D\nB\nF\n"],
+    ["A\nB\nC\n", "D\nE\nF\n", [1], "D\nB\nE\nF\n"],
+    ["A\nB\nC\n", "D\nE\nF\n", [4], "D\nF\n"],
+    ["A\r\nB\nC", "D\r\nE\r\nF", [1, 4], "D\r\nB\nF"],
+  ])(
+    "keeps a partial replacement in its displayed row: %j → %j",
+    (before, after, ids, expected) => {
+      expect(revertDiffLines(before, after, ids)).toBe(expected);
+    },
+  );
+
+  it.each([
     ["", "new\nfile", [0, 1], ""],
     ["deleted\r\nfile", "", [0], "deleted\r\n"],
     ["old\n", "new\n", [0, 1], "old\n"],

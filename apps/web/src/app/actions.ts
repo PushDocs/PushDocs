@@ -5,6 +5,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   acceptInvitationSchema,
+  BranchCreationStatusFailure,
   BranchUpdateStrategy,
   bootstrapSchema,
   branchConflictRepositoryKey,
@@ -31,8 +32,10 @@ import {
   encryptSecret,
   hashInvitationToken,
   hashOpaqueToken,
+  NotFoundError,
   RevisionConflictError,
 } from "@pushdocs/db";
+import { AccessDeniedError } from "@pushdocs/domain";
 import { loadBranchUpdatePolicy, normalizeRepositoryLocator } from "@pushdocs/providers";
 import { clearVpnAccess, validateVpnProfile, vpnProfileLimit } from "@pushdocs/vpn";
 import argon2 from "argon2";
@@ -744,6 +747,22 @@ export async function gitOperationStatusAction(projectId: string, jobId: string)
   const job = await repository().getProjectJob(projectId, jobId);
   if (!job) throw new Error("Операция не найдена");
   return job;
+}
+
+export async function branchCreationStatusAction(projectId: string, jobId: string) {
+  const user = await optionalUser();
+  if (!user) return { error: BranchCreationStatusFailure.AuthenticationRequired } as const;
+  const store = repository();
+  try {
+    await store.requireProjectAccess(user.id, projectId, "project:read");
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof AccessDeniedError)
+      return { error: BranchCreationStatusFailure.AccessDenied } as const;
+    throw error;
+  }
+  const job = await store.getProjectJob(projectId, jobId);
+  if (!job) return { error: BranchCreationStatusFailure.NotFound } as const;
+  return { job } as const;
 }
 
 export async function twoFactorStatusAction(): Promise<boolean> {

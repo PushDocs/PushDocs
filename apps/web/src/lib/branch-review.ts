@@ -23,3 +23,18 @@ export function findBranchReview<T extends BranchReview>(reviews: T[], branch: s
         b.external_id.localeCompare(a.external_id, undefined, { numeric: true }),
     )[0];
 }
+
+export function branchUpdateMatchesReview(
+  payload: unknown,
+  review: Pick<BranchReview, "external_id" | "source_branch" | "target_branch">,
+) {
+  if (!payload || typeof payload !== "object") return false;
+  const operation = payload as Record<string, unknown>;
+  return (
+    operation.branch === review.source_branch &&
+    operation.sourceBranch === review.target_branch &&
+    (operation.branchOnly === true
+      ? !operation.reviewId && !operation.externalReviewId
+      : operation.externalReviewId === review.external_id)
+  );
+}

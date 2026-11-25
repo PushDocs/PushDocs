@@ -292,7 +292,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "inspect_review_conflicts",
-    "Inspect a live open review without committing or pushing. If rebase is paused, returns the same operationId and its current conflicting commit. Otherwise compares branch tips. Media contents are excluded. Poll until done or needs_resolution, then call get_conflict_report using inspectionId. A rebase tip comparison requires update_review_branch before resolving individual commits.",
+    "Inspect a live open review without committing or pushing. Reuse a paused UI or MCP update only for the same branch pair and review context; a different operation returns blocked with activeOperationId and editorUrl. If rebase is paused, returns the same operationId and its current conflicting commit. Otherwise compares branch tips. Media contents are excluded. Poll until done or needs_resolution, then call get_conflict_report using inspectionId. A rebase tip comparison requires update_review_branch before resolving individual commits.",
     {
       projectId,
       reviewId: z.string().min(1).max(200),
@@ -305,7 +305,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "get_conflict_report",
-    "Read conflict evidence with immutable article/version links and commit dates. Default editorial: explain original -> current target change / user's branch change -> recommendation in plain language. Detailed only when explicitly requested: show actual fragments and context. Always disclose media not inspected and any truncation/staleness. Follow nextCursor, nextFragmentCursor and nextReferenceCursor; fragment/reference cursors require path. No media download in either mode.",
+    "Read conflict evidence with immutable article/version links and commit dates. Accepts paused UI or MCP branch updates, including updates without PR/MR; use their operationId as inspectionId (discover it via get_project.pendingOperation). Default editorial: explain original -> current target change / user's branch change -> recommendation in plain language. Detailed only when explicitly requested: show actual fragments and context. Always disclose media not inspected and any truncation/staleness. Follow nextCursor, nextFragmentCursor and nextReferenceCursor; fragment/reference cursors require path. No media download in either mode.",
     {
       projectId,
       inspectionId: z.string().uuid(),
@@ -356,7 +356,7 @@ export function createMcpServer(principal: McpPrincipal, db = getDatabase()) {
   );
   tool(
     "resolve_review_conflicts",
-    "Apply explicitly requested decisions for ALL conflict files. Merge publishes a merge commit; a paused rebase continues the SAME operation and may return needs_resolution for another commit. Rebase pushes only after all commits are replayed. PR/MR stays open. Requires current inspectionId. For text, choice branch/target selects that side of all conflict fragments while preserving clean edits from both branches. For media or modify/delete, it chooses the complete file including deletion. combine supplies EVERY conflict fragment by zero-based index, choosing branch/target/manual text. Never guess ambiguous text/media choices. For rebase, branch means the current rebased foundation and target means the original commit being replayed. Read comparisonKind and rebase metadata before choosing sides.",
+    "Apply explicitly requested decisions for ALL conflict files. Accepts the same paused operation from UI or MCP, including branch updates without PR/MR; keep its operationId as inspectionId and pass the current conflictId. Merge publishes a merge commit; a paused rebase continues the SAME operation and may return needs_resolution for another commit. Rebase pushes only after all commits are replayed. PR/MR stays open. Requires current inspectionId. For text, choice branch/target selects that side of all conflict fragments while preserving clean edits from both branches. For media or modify/delete, it chooses the complete file including deletion. combine supplies EVERY conflict fragment by zero-based index, choosing branch/target/manual text. Never guess ambiguous text/media choices. For rebase, branch means the current rebased foundation and target means the original commit being replayed. Read comparisonKind and rebase metadata before choosing sides.",
     {
       projectId,
       inspectionId: z.string().uuid(),

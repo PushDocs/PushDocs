@@ -12,6 +12,7 @@ import {
 } from "@pushdocs/content";
 import {
   type BranchConflictSnapshot,
+  BranchCreationStage,
   type BranchUpdatePolicy,
   BranchUpdateStrategy,
   branchConflictCache,
@@ -416,10 +417,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
 
   async function createBranch(
     payload: unknown,
-    onProgress: (progress: string, counts?: { completed: number; total: number }) => Promise<void>,
+    onProgress: (
+      progress: BranchCreationStage,
+      counts?: { completed: number; total: number },
+    ) => Promise<void>,
   ): Promise<void> {
     await checkMcpAuthorization(payload, "pushdocs:write");
-    await onProgress("checking-source");
+    await onProgress(BranchCreationStage.CheckingSource);
     const projectId = projectIdFromPayload(payload);
     const userId = stringFromPayload(payload, "userId");
     const branchName = stringFromPayload(payload, "branch");
@@ -436,7 +440,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     let createdBranch = branches.find((branch) => branch.name === branchName);
     if (createdBranch && createdBranch.sha !== sourceSha)
       throw new Error(`Ветка ${branchName} уже существует и содержит другие изменения`);
-    await onProgress("creating-branch");
+    await onProgress(BranchCreationStage.CreatingBranch);
     if (!createdBranch) {
       await checkMcpAuthorization(payload, "pushdocs:write");
       await repository.requireProjectAccess(userId, projectId, "branch:push");
@@ -446,12 +450,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
         sourceSha,
       );
     }
-    await onProgress("importing-documents");
+    await onProgress(BranchCreationStage.ImportingDocuments);
     await synchronizeBranch(
       projectId,
       branchName,
       provider,
-      (completed, total) => onProgress("importing-documents", { completed, total }),
+      (completed, total) =>
+        onProgress(BranchCreationStage.ImportingDocuments, { completed, total }),
       createdBranch,
     );
   }
@@ -1446,7 +1451,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
             repository.updateJobProgress(
               job.id,
               job.attempts,
-              "importing-documents",
+              BranchCreationStage.ImportingDocuments,
               { completed, total },
               { receivedBytes, totalBytes: null },
             ),

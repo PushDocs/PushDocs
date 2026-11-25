@@ -1,4 +1,5 @@
-import { BranchUpdateStrategy } from "@pushdocs/contracts";
+import { BranchCreationStatusFailure, BranchUpdateStrategy } from "@pushdocs/contracts";
+import { AccessDeniedError } from "@pushdocs/domain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -146,11 +147,12 @@ vi.mock("@/lib/server", () => ({
   sessionCookieName: "pushdocs_session",
 }));
 
-import { RevisionConflictError } from "@pushdocs/db";
+import { NotFoundError, RevisionConflictError } from "@pushdocs/db";
 import {
   acceptInvitationAction,
   beginTwoFactorAction,
   bootstrapAction,
+  branchCreationStatusAction,
   changePasswordAction,
   createCommentAction,
   createConnectionAction,
@@ -1387,6 +1389,42 @@ describe("document and review actions", () => {
     await expect(twoFactorStatusAction()).resolves.toBe(true);
     mocks.repo.getSecurityUser.mockResolvedValueOnce(undefined);
     await expect(twoFactorStatusAction()).resolves.toBe(false);
+  });
+
+  it("returns a serializable sign-in failure before reading branch operation data", async () => {
+    await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+      error: BranchCreationStatusFailure.AuthenticationRequired,
+    });
+    expect(mocks.repo.requireProjectAccess).not.toHaveBeenCalled();
+    expect(mocks.repo.getProjectJob).not.toHaveBeenCalled();
+  });
+
+  it.each([new NotFoundError("Project not found"), new AccessDeniedError("project:read")])(
+    "stops branch status checks when project access is lost: %s",
+    async (error) => {
+      mocks.optionalUser.mockResolvedValue(mocks.user);
+      mocks.repo.requireProjectAccess.mockRejectedValueOnce(error);
+      await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+        error: BranchCreationStatusFailure.AccessDenied,
+      });
+      expect(mocks.repo.getProjectJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("scopes branch status reads and distinguishes a missing job from a failed request", async () => {
+    mocks.optionalUser.mockResolvedValue(mocks.user);
+    mocks.repo.getProjectJob.mockResolvedValueOnce({ status: "running" });
+    await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+      job: { status: "running" },
+    });
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+    expect(mocks.repo.getProjectJob).toHaveBeenCalledWith(projectId, "job");
+    mocks.repo.getProjectJob.mockResolvedValueOnce(undefined);
+    await expect(branchCreationStatusAction(projectId, "missing")).resolves.toEqual({
+      error: BranchCreationStatusFailure.NotFound,
+    });
+    mocks.repo.requireProjectAccess.mockRejectedValueOnce(new Error("database offline"));
+    await expect(branchCreationStatusAction(projectId, "job")).rejects.toThrow("database offline");
   });
 
   it("retries the existing submission using the signed-in actor", async () => {

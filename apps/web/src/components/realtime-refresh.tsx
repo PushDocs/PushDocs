@@ -1,7 +1,9 @@
 "use client";
 
+import { domainEvents } from "@pushdocs/contracts";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { realtimeEvents } from "@/lib/realtime-events";
 
 const localEvents = [
   "document.updated",
@@ -12,7 +14,7 @@ const localEvents = [
   "files.staged",
 ];
 const routeEvents = [
-  "branch.synchronized",
+  domainEvents.branchSynchronized,
   "change-set.conflicted",
   "change-set.failed",
   "change-set.submitted",
@@ -47,7 +49,7 @@ export function RealtimeRefresh() {
         try {
           detail = { ...detail, ...JSON.parse(String(event.data)) };
         } catch {}
-      window.dispatchEvent(new CustomEvent("pushdocs:refresh", { detail }));
+      window.dispatchEvent(new CustomEvent(realtimeEvents.refresh, { detail }));
     };
     const refresh = (event: Event) => {
       dispatch(event);

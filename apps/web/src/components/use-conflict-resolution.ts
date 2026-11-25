@@ -2,6 +2,7 @@
 
 import {
   BranchConflictChoice,
+  type BranchConflictSnapshot,
   BranchUpdateStrategy,
   branchUpdateWaitingStatus,
   conflictResolutionPolicyError,
@@ -57,6 +58,10 @@ function prepared(state: ResolutionState) {
     state.phase === ResolutionPhase.Submitting ||
     ("prepared" in state && state.prepared)
   );
+}
+
+function matchesBranches(snapshot: BranchConflictSnapshot, branch: string, targetBranch: string) {
+  return snapshot.branch === branch && snapshot.sourceBranch === targetBranch;
 }
 
 type ResolutionInput = {
@@ -142,6 +147,10 @@ export function useConflictResolution({
           const job = await gitOperationStatusAction(projectId, merge.mergeJobId);
           if (active.current !== token) return;
           if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot) {
+            if (!matchesBranches(job.conflictSnapshot, branch, targetBranch)) {
+              returnToChanges(pending);
+              return;
+            }
             const blocked = pending.filter(
               (item) => item.paths.length || item.mergeJobId !== merge.mergeJobId,
             );
@@ -196,6 +205,11 @@ export function useConflictResolution({
       request: () => gitOperationStatusAction(projectId, jobId),
       onResult: (job) => {
         if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot) {
+          if (!matchesBranches(job.conflictSnapshot, branch, targetBranch)) {
+            setState({ phase: ResolutionPhase.Redirecting });
+            router.replace(projectChangesHref(projectId, branch));
+            return false;
+          }
           conflictInspectionStore.acceptRebase(
             { projectId, reviewId, branch, targetBranch },
             jobId,
