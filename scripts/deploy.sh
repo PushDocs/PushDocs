@@ -87,6 +87,34 @@ set_setting() {
 }
 
 compose=(docker compose --env-file .env -f compose.yml)
+writers=(caddy web worker realtime preview)
+outage_started=0
+migration_started=0
+database_tmp=
+attachments_tmp=
+previous_containers=()
+
+# Invoked by the EXIT trap.
+# shellcheck disable=SC2329
+finish_deployment() {
+  local status=$1
+  if [[ -n "$database_tmp" ]]; then rm -f -- "$database_tmp"; fi
+  if [[ -n "$attachments_tmp" ]]; then rm -f -- "$attachments_tmp"; fi
+  if (( status != 0 && outage_started && !migration_started )); then
+    echo "Deployment stopped before migration. Restarting the previous containers." >&2
+    local previous_env
+    if ! previous_env=$(mktemp .env.recovery.XXXXXX) ||
+      ! install -m 600 "$secret_backup" "$previous_env" ||
+      ! mv -f -- "$previous_env" .env; then
+      echo "Failed to restore the previous environment from $secret_backup." >&2
+      if [[ -n "${previous_env:-}" ]]; then rm -f -- "$previous_env"; fi
+    fi
+    if (( ${#previous_containers[@]} > 0 )) && ! docker start "${previous_containers[@]}"; then
+      echo "Failed to restart one or more previous containers." >&2
+    fi
+  fi
+  return "$status"
+}
 # Retain two recent releases for rollback and every image referenced by a container.
 # Limit cleanup to this application's repository; never prune volumes or other images.
 cleanup_application_images() {
@@ -110,6 +138,10 @@ cleanup_application_images() {
 
 # Release disk space before pulling a new image or creating a backup.
 cleanup_application_images
+
+# Download the release while the current services are still running.
+PUSHDOCS_IMAGE="$image" "${compose[@]}" pull
+
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup_id="$timestamp-run-$run_number"
 secret_backup="$secret_backup_root/$backup_id.env"
@@ -117,23 +149,31 @@ install -d -m 700 "$backup_root" "$secret_backup_root"
 install -m 600 .env "$secret_backup"
 printf 'Saved the separate environment backup as %s\n' "$secret_backup"
 
+trap 'finish_deployment "$?"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 if [[ -n "$("${compose[@]}" ps --status running -q postgres 2>/dev/null)" ]]; then
   backup="$backup_root/$backup_id"
   install -d -m 700 "$backup"
 
   echo "Stopping application writers before backup."
-  "${compose[@]}" stop caddy web worker realtime preview
+  running_containers=$("${compose[@]}" ps --status running -q "${writers[@]}")
+  while IFS= read -r container; do
+    if [[ -n "$container" ]]; then previous_containers+=("$container"); fi
+  done <<< "$running_containers"
+  outage_started=1
+  "${compose[@]}" stop "${writers[@]}"
   "${compose[@]}" exec -T postgres pg_isready -U pushdocs -d pushdocs
 
   database_tmp="$backup/database.dump.tmp"
   attachments_tmp="$backup/attachments.tar.tmp"
-  trap 'rm -f "$database_tmp" "$attachments_tmp"' EXIT
   "${compose[@]}" exec -T postgres pg_dump -U pushdocs -d pushdocs -Fc > "$database_tmp"
   "${compose[@]}" run --rm --no-deps -T worker tar -C /data/attachments -cf - . > "$attachments_tmp"
   mv "$database_tmp" "$backup/database.dump"
   mv "$attachments_tmp" "$backup/attachments.tar"
   chmod 600 "$backup/database.dump" "$backup/attachments.tar"
-  trap - EXIT
   printf 'Created %s\n' "$backup"
 fi
 
@@ -148,8 +188,10 @@ set_setting PUSHDOCS_PREVIEW_PUBLIC_HOST 213.148.1.118
 set_setting PUSHDOCS_VPN_ENABLED "$vpn_enabled"
 
 "${compose[@]}" config --quiet
-"${compose[@]}" pull
 "${compose[@]}" up --detach --no-build --wait --wait-timeout 180 postgres
+# Once a migration can change the schema, restarting the old release requires
+# a compatibility check. Keep the backups available for operator recovery.
+migration_started=1
 "${compose[@]}" up --no-build --no-deps --exit-code-from migrate migrate
 if [[ "$vpn_enabled" == 1 ]]; then
   "${compose[@]}" --profile vpn up --detach --no-build --no-deps --wait --wait-timeout 180 \

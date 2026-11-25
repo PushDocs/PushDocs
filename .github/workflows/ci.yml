@@ -203,7 +203,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
     needs: [publish]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -216,6 +216,7 @@ jobs:
           PREVIEW_URL: ${{ vars.PUSHDOCS_PREVIEW_URL }}
           PUBLIC_ORIGIN: ${{ vars.PUSHDOCS_PUBLIC_ORIGIN }}
           RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
           SSH_USER: ${{ vars.SSH_USER }}
@@ -228,7 +229,7 @@ jobs:
             echo "The publish job did not return an immutable application image" >&2
             exit 1
           }
-          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ && "$RUN_NUMBER" =~ ^[0-9]+$ ]] || {
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ && "$RUN_NUMBER" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || {
             echo "GitHub did not provide a valid commit and run number" >&2
             exit 1
           }
@@ -280,6 +281,29 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
           )
           target="$SSH_USER@$SSH_HOST"
-          scp "${options[@]}" "$archive" "$target:pushdocs-deploy.tar.gz"
-          ssh "${options[@]}" "$target" \
-            "set -e; install -d -m 700 pushdocs; tar -xzf pushdocs-deploy.tar.gz -C pushdocs; rm pushdocs-deploy.tar.gz; cd pushdocs; chmod 700 scripts/install.sh scripts/deploy.sh; ./scripts/deploy.sh '$APPLICATION_IMAGE' '$PUBLIC_ORIGIN' '$PREVIEW_URL' '$RUN_NUMBER' '$COMMIT_SHA' '$VPN_ENABLED'"
+          unit="pushdocs-deploy-$RUN_NUMBER-$RUN_ATTEMPT"
+          remote_archive="$unit.tar.gz"
+          scp "${options[@]}" "$archive" "$target:$remote_archive"
+          ssh "${options[@]}" "$target" bash -s -- \
+            "'$unit'" "'$remote_archive'" "'$APPLICATION_IMAGE'" "'$PUBLIC_ORIGIN'" \
+            "'$PREVIEW_URL'" "'$RUN_NUMBER'" "'$COMMIT_SHA'" "'$VPN_ENABLED'" <<'REMOTE'
+          set -euo pipefail
+          unit=$1
+          archive=$HOME/$2
+          shift 2
+          deployment_root=$HOME/pushdocs
+          install -d -m 700 "$deployment_root"
+          status=0
+          systemd-run --quiet --wait --collect --unit="$unit" \
+            --working-directory="$deployment_root" --setenv=HOME="$HOME" \
+            --property=RuntimeMaxSec=40min \
+            /usr/bin/flock --no-fork .deploy-bundle.lock /bin/bash -euc '
+              archive=$1
+              shift
+              tar -xzf "$archive"
+              rm -- "$archive"
+              exec bash scripts/deploy.sh "$@"
+            ' deploy "$archive" "$@" || status=$?
+          journalctl --no-pager --output=cat --unit="$unit"
+          exit "$status"
+          REMOTE

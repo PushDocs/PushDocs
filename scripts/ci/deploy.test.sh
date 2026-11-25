@@ -39,6 +39,28 @@ cat > "$mock_bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$PUSHDOCS_DOCKER_LOG"
+if [[ "$*" == *'ps --status running -q postgres' ]]; then
+  echo 'test-postgres'
+fi
+if [[ "$*" == *'ps --status running -q caddy web worker realtime preview' ]]; then
+  printf '%s\n' old-caddy old-web
+fi
+if [[ "${PUSHDOCS_TEST_CONFIG_FAIL:-0}" == 1 && "$*" == *'config --quiet' ]]; then
+  exit 1
+fi
+if [[ "${PUSHDOCS_TEST_BACKUP_INTERRUPT:-0}" == 1 && "$*" == *' pg_dump '* ]]; then
+  kill -TERM "$PPID"
+  exit 1
+fi
+if [[ "$*" == *' pull' ]]; then
+  if [[ "${PUSHDOCS_IMAGE:-}" != "$PUSHDOCS_TEST_IMAGE" ]]; then
+    echo "Image pull did not select the next release" >&2
+    exit 2
+  fi
+  if [[ "${PUSHDOCS_TEST_PULL_FAIL:-0}" == 1 ]]; then
+    exit 1
+  fi
+fi
 if [[ "$*" == *'ps --quiet --status running' ]]; then
   echo 'test-container'
 fi
@@ -121,6 +143,20 @@ export BASH_ENV="$mock_bin/bash-env"
 export PUSHDOCS_DOCKER_LOG="$docker_log"
 export PUSHDOCS_BACKUP_DIR="$temporary_directory/backups"
 export PUSHDOCS_SECRET_BACKUP_DIR="$temporary_directory/secret-backups"
+export PUSHDOCS_TEST_IMAGE="$image"
+
+# A failed image pull must leave the running release and its image setting intact.
+if PUSHDOCS_TEST_PULL_FAIL=1 "$deployment_root/scripts/deploy.sh" \
+  "$image" https://docs.example.com '' 42 "$revision" 0; then
+  echo "Deployment continued after a failed image pull" >&2
+  exit 1
+fi
+if grep -Fq ' stop ' "$docker_log" || grep -q '^PUSHDOCS_IMAGE=' "$deployment_root/.env"; then
+  echo "Deployment changed the running release before the image pull succeeded" >&2
+  exit 1
+fi
+
+: > "$docker_log"
 "$deployment_root/scripts/deploy.sh" \
   "$image" https://docs.example.com '' 42 "$revision" 0
 
@@ -138,7 +174,7 @@ grep -Fq -- '--profile vpn stop vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-ga
 grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
 
 migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
-application_line=$(grep -n -F 'web worker realtime preview' "$docker_log" | cut -d: -f1)
+application_line=$(grep -n -F -- '--wait-timeout 180 web worker realtime preview' "$docker_log" | cut -d: -f1)
 (( migration_line < application_line ))
 
 : > "$docker_log"
@@ -151,7 +187,7 @@ grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker 
 
 migration_line=$(grep -n -F 'up --no-build --no-deps --exit-code-from migrate migrate' "$docker_log" | cut -d: -f1)
 gateway_line=$(grep -n -F 'vpn-gateway-1 vpn-gateway-2 vpn-gateway-3 vpn-gateway-4' "$docker_log" | cut -d: -f1)
-application_line=$(grep -n -F 'web worker realtime preview' "$docker_log" | cut -d: -f1)
+application_line=$(grep -n -F -- '--wait-timeout 180 web worker realtime preview' "$docker_log" | cut -d: -f1)
 (( migration_line < gateway_line && gateway_line < application_line ))
 
 # Keep the latest two distinct images, containers and unrelated repositories.
@@ -162,7 +198,28 @@ done
 ! grep -Eq 'image (prune|rm.*(--force|-f))|volume (prune|rm)' "$docker_log"
 cleanup_line=$(grep -n -m1 -F 'image rm ' "$docker_log" | cut -d: -f1)
 pull_line=$(grep -n -m1 -F ' pull' "$docker_log" | cut -d: -f1)
+stop_line=$(grep -n -m1 -F 'stop caddy web worker realtime preview' "$docker_log" | cut -d: -f1)
 (( cleanup_line < pull_line ))
+(( pull_line < stop_line ))
+
+# Before migration, both a failed preflight and a terminated backup recover the old release.
+cp "$deployment_root/.env" "$temporary_directory/previous.env"
+candidate_image="ghcr.io/pushdocs/pushdocs@sha256:$(printf '%064d' 2)"
+for failure in PUSHDOCS_TEST_CONFIG_FAIL PUSHDOCS_TEST_BACKUP_INTERRUPT; do
+  : > "$docker_log"
+  if env "$failure=1" PUSHDOCS_TEST_IMAGE="$candidate_image" "$deployment_root/scripts/deploy.sh" \
+    "$candidate_image" https://new.example.com '' 44 "$revision" 0; then
+    echo "Deployment continued after $failure" >&2
+    exit 1
+  fi
+  cmp "$temporary_directory/previous.env" "$deployment_root/.env"
+  grep -Fxq 'start old-caddy old-web' "$docker_log"
+  if grep -Fq -- '--exit-code-from migrate migrate' "$docker_log"; then
+    echo "Deployment started migration after $failure" >&2
+    exit 1
+  fi
+  [[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
+done
 
 # A failed migration must stop deployment before any application is started.
 : > "$docker_log"
@@ -171,7 +228,10 @@ if PUSHDOCS_TEST_MIGRATION_FAIL=1 "$deployment_root/scripts/deploy.sh" \
   echo "Deployment continued after a failed migration" >&2
   exit 1
 fi
-! grep -Fq 'up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"
+if grep -Eq '^start |up --detach --no-build --no-deps --wait --wait-timeout 180 web worker realtime preview' "$docker_log"; then
+  echo "Deployment started application containers after a failed migration" >&2
+  exit 1
+fi
 [[ $(cat "$deployment_root/.deployed-run-number") == 43 ]]
 
 # A runtime MPTCP regression must not be recorded as a successful deployment.

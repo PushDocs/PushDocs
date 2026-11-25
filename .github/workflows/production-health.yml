@@ -1,0 +1,62 @@
+name: Production health
+
+on:
+  schedule:
+    - cron: '3-59/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: production-health
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ALERT_ASSIGNEE: ${{ vars.PUSHDOCS_ALERT_ASSIGNEE }}
+      HEALTH_URL: ${{ vars.PUSHDOCS_PUBLIC_ORIGIN }}/api/health
+    steps:
+      - name: Probe production and update the incident
+        shell: bash
+        run: |
+          set -euo pipefail
+          incident_title='PushDocs production health check failed'
+          healthy=false
+          for attempt in 1 2 3; do
+            if result=$(curl --fail --silent --show-error --max-time 10 "$HEALTH_URL") &&
+              jq -e '.status == "ok" and .database == "ready"' <<< "$result" >/dev/null; then
+              healthy=true
+              break
+            fi
+            if [[ "$attempt" != 3 ]]; then sleep 10; fi
+          done
+
+          issues=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            | jq -r --arg title "$incident_title" \
+              '.[] | select(has("pull_request") | not) | select(.title == $title) | .number')
+          if [[ "$healthy" == true ]]; then
+            while IFS= read -r issue; do
+              if [[ -n "$issue" ]]; then
+                gh issue close "$issue" --comment "The production health endpoint is responding and the database is ready."
+              fi
+            done <<< "$issues"
+            exit 0
+          fi
+
+          if [[ -z "$issues" ]]; then
+            assignee=()
+            if [[ -n "$ALERT_ASSIGNEE" ]]; then assignee=(--assignee "$ALERT_ASSIGNEE"); fi
+            run_url="$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            gh issue create --title "$incident_title" "${assignee[@]}" \
+              --body "Three consecutive probes failed for $HEALTH_URL.
+
+          [See the monitoring run]($run_url)."
+          fi
+          echo "::error::PushDocs is unhealthy at $HEALTH_URL"
+          exit 1
