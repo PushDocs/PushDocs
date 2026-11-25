@@ -38,6 +38,9 @@ export interface BranchUpdatePolicy {
 }
 
 export const branchUpdateMessages = {
+  unavailableBranches: "Ветки недоступны для обновления из PushDocs.",
+  pendingChanges: "Сначала завершите текущие изменения в исходной ветке.",
+  busy: "Ветка уже обновляется. Дождитесь завершения операции.",
   unavailable:
     "Не удалось определить способ обновления ветки. Обновите данные из Git и проверьте настройки проекта.",
   changed:
@@ -84,6 +87,17 @@ export const branchUpdateLimits = {
 } as const;
 export const branchUpdateJobKind = "branch.update";
 export const branchUpdateWaitingStatus = "needs_resolution";
+
+// Existing conflict URLs accept review IDs; operation references have their own namespace.
+const branchUpdateConflictPrefix = "branch-update:";
+export function branchUpdateConflictReference(operationId: string) {
+  return `${branchUpdateConflictPrefix}${operationId}`;
+}
+export function branchUpdateConflictOperationId(reference: string) {
+  return reference.startsWith(branchUpdateConflictPrefix)
+    ? reference.slice(branchUpdateConflictPrefix.length)
+    : undefined;
+}
 
 export interface RebaseResolution {
   conflictId: string;

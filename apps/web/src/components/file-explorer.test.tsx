@@ -474,7 +474,7 @@ it("supports every toolbar, context-menu and tree keyboard action", async () => 
     expect(screen.getByLabelText("comparison failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Вложения" }));
     expect(onMedia).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Обновить из Git" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Обновить файлы" })).toBeNull();
 
     const input = screen.getByLabelText("Файлы для загрузки") as HTMLInputElement;
     const pickerClick = vi.spyOn(input, "click");

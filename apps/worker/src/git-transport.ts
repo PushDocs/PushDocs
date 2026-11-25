@@ -39,6 +39,13 @@ class GitCommandError extends Error {
 }
 
 export class BranchMergeConflictError extends Error {}
+class UnresolvedMergeConflict extends BranchMergeConflictError {}
+
+export class MergeNeedsResolution extends Error {
+  constructor(readonly snapshot: BranchConflictSnapshot) {
+    super("Слияние приостановлено. Разрешите конфликты на странице изменений.");
+  }
+}
 
 export class RebaseNeedsResolution extends Error {
   constructor(
@@ -987,7 +994,7 @@ export class GitTransport {
             ?.trim() ?? "";
       } catch (error) {
         if (error instanceof GitCommandError && error.exitCode === 1)
-          throw new BranchMergeConflictError(
+          throw new UnresolvedMergeConflict(
             "Ветки содержат конфликтующие изменения. Разрешите конфликт в Git и обновите ветку в PushDocs. Ветка в Git не изменена.",
           );
         throw error;
@@ -1013,6 +1020,7 @@ export class GitTransport {
     createdAt: string;
     prepared?: PreparedBranchUpdate;
     rebase?: RebaseProgress;
+    resolution?: { snapshot: BranchConflictSnapshot; files: BranchConflictResolution };
     operationId?: string;
     rootPath?: string;
   }): Promise<PreparedBranchUpdate> {
@@ -1059,14 +1067,36 @@ export class GitTransport {
     let sha = parentSha;
     const commits: PreparedBranchUpdate["commits"] = [];
     if (input.strategy === BranchUpdateStrategy.Merge) {
-      sha = (
-        await this.prepareMerge({
+      try {
+        sha = (
+          await this.prepareMerge({
+            branch: input.branch,
+            sourceBranch: input.sourceBranch,
+            createdAt: input.createdAt,
+            prepared: { branch: input.branch, parentSha, sourceSha, sha: saved?.sha ?? parentSha },
+            ...(input.resolution ? { resolution: input.resolution } : {}),
+          })
+        ).sha;
+      } catch (error) {
+        if (!(error instanceof UnresolvedMergeConflict) || input.resolution || saved) throw error;
+        const snapshot = await this.inspectConflicts({
           branch: input.branch,
           sourceBranch: input.sourceBranch,
-          createdAt: input.createdAt,
-          prepared: { branch: input.branch, parentSha, sourceSha, sha: saved?.sha ?? parentSha },
-        })
-      ).sha;
+          ...(input.rootPath ? { rootPath: input.rootPath } : {}),
+        });
+        if (
+          !snapshot.files.length ||
+          snapshot.parentSha !== parentSha ||
+          snapshot.sourceSha !== sourceSha
+        )
+          throw error;
+        if (!input.operationId) throw error;
+        snapshot.merge = {
+          operationId: input.operationId,
+          conflictId: `${parentSha}:${sourceSha}`,
+        };
+        throw new MergeNeedsResolution(snapshot);
+      }
     } else {
       let bases: string[];
       try {

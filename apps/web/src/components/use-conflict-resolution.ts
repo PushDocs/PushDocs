@@ -2,6 +2,7 @@
 
 import {
   BranchConflictChoice,
+  type BranchConflictSnapshot,
   BranchUpdateStrategy,
   branchUpdateWaitingStatus,
   conflictResolutionPolicyError,
@@ -57,6 +58,10 @@ function prepared(state: ResolutionState) {
     state.phase === ResolutionPhase.Submitting ||
     ("prepared" in state && state.prepared)
   );
+}
+
+function matchesBranches(snapshot: BranchConflictSnapshot, branch: string, targetBranch: string) {
+  return snapshot.branch === branch && snapshot.sourceBranch === targetBranch;
 }
 
 type ResolutionInput = {
@@ -141,7 +146,11 @@ export function useConflictResolution({
         if (merge?.mergeJobId) {
           const job = await gitOperationStatusAction(projectId, merge.mergeJobId);
           if (active.current !== token) return;
-          if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot?.rebase) {
+          if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot) {
+            if (!matchesBranches(job.conflictSnapshot, branch, targetBranch)) {
+              returnToChanges(pending);
+              return;
+            }
             const blocked = pending.filter(
               (item) => item.paths.length || item.mergeJobId !== merge.mergeJobId,
             );
@@ -158,7 +167,7 @@ export function useConflictResolution({
             phase: merge.mergeFailed ? ResolutionPhase.SendFailed : ResolutionPhase.Sending,
             jobId: merge.mergeJobId,
             prepared: false,
-            rebase: job.branchUpdateOperation,
+            rebase: Boolean(job.conflictSnapshot?.rebase),
           });
         } else if (!returnToChanges(pending)) {
           if (
@@ -195,7 +204,12 @@ export function useConflictResolution({
     const poller = new PollingLifecycle({
       request: () => gitOperationStatusAction(projectId, jobId),
       onResult: (job) => {
-        if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot?.rebase) {
+        if (job.status === branchUpdateWaitingStatus && job.conflictSnapshot) {
+          if (!matchesBranches(job.conflictSnapshot, branch, targetBranch)) {
+            setState({ phase: ResolutionPhase.Redirecting });
+            router.replace(projectChangesHref(projectId, branch));
+            return false;
+          }
           conflictInspectionStore.acceptRebase(
             { projectId, reviewId, branch, targetBranch },
             jobId,
@@ -226,6 +240,7 @@ export function useConflictResolution({
             setState({ phase: ResolutionPhase.Redirecting });
             router.replace(projectChangesHref(projectId, branch));
           } else setState({ phase: ResolutionPhase.Done, rebase: false });
+          router.refresh();
           return false;
         }
         return true;
@@ -279,12 +294,13 @@ export function useConflictResolution({
     setState({ phase: ResolutionPhase.Submitting });
     try {
       const pending = await check();
-      const blocked = snapshot?.rebase
-        ? pending.filter(
-            (item) =>
-              item.paths.length || item.mergeJobId !== inspection.id || item.branch !== branch,
-          )
-        : pending;
+      const blocked =
+        snapshot?.rebase || snapshot?.merge
+          ? pending.filter(
+              (item) =>
+                item.paths.length || item.mergeJobId !== inspection.id || item.branch !== branch,
+            )
+          : pending;
       if (active.current !== token || returnToChanges(blocked)) return;
       const id = await submitConflictResolutionAction(
         projectId,
@@ -292,7 +308,9 @@ export function useConflictResolution({
         inspection.snapshot.files.map((file) => choices[file.path]),
         ...(inspection.snapshot.rebase
           ? ([inspection.snapshot.rebase.conflictId] as const)
-          : ([] as const)),
+          : inspection.snapshot.merge
+            ? ([undefined, inspection.snapshot.merge.conflictId] as const)
+            : ([] as const)),
       );
       if (active.current === token) {
         if (snapshot?.rebase) clearDrafts();
@@ -314,7 +332,7 @@ export function useConflictResolution({
     if (
       !token ||
       commandPending.current ||
-      !snapshot?.rebase ||
+      (!snapshot?.rebase && !snapshot?.merge) ||
       !canWrite ||
       state.phase !== ResolutionPhase.Editing
     )
@@ -322,16 +340,15 @@ export function useConflictResolution({
     commandPending.current = true;
     setState({ phase: ResolutionPhase.Submitting });
     try {
-      await cancelRebaseUpdateAction(
-        projectId,
-        snapshot.rebase.operationId,
-        snapshot.rebase.conflictId,
-      );
+      const conflict = snapshot.rebase ?? snapshot.merge;
+      if (!conflict) return;
+      await cancelRebaseUpdateAction(projectId, conflict.operationId, conflict.conflictId);
       if (active.current !== token) return;
       clearDrafts();
       conflictInspectionStore.invalidate(projectId, reviewId);
       setState({ phase: ResolutionPhase.Redirecting });
       router.push(projectChangesHref(projectId, branch));
+      router.refresh();
     } catch (error) {
       if (active.current === token)
         setState({

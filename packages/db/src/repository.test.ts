@@ -7,12 +7,11 @@ import {
   branchUpdateLimits,
   type RebaseProgress,
 } from "@pushdocs/contracts";
-import { Kysely, PostgresDialect, sql } from "kysely";
-import type { Pool } from "pg";
-import { DataType, newDb } from "pg-mem";
+import { type Kysely, sql } from "kysely";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { resolvedBranchUpdatePolicy } from "../../../tests/fixtures/branch-update-policy";
+import { createMemoryDatabase } from "../../../tests/fixtures/database";
 import { decryptSecret } from "./crypto";
 import { checkDatabase, closeDatabase, createDatabase, getDatabase } from "./database";
 import { appendEvent } from "./events";
@@ -23,64 +22,6 @@ import { totpCode } from "./totp";
 
 let database: Kysely<Database>;
 let repository: PushDocsRepository;
-
-async function createMemoryDatabase(): Promise<Kysely<Database>> {
-  const memory = newDb({ noAstCoverageCheck: true });
-  memory.public.registerOperator({
-    implementation: (value, pattern) => !new RegExp(pattern).test(value),
-    left: DataType.text,
-    operator: "!~",
-    returns: DataType.bool,
-    right: DataType.text,
-  });
-  memory.public.registerFunction({
-    args: [DataType.text, DataType.text],
-    implementation: () => true,
-    name: "has_schema_privilege",
-    returns: DataType.bool,
-  });
-  memory.public.registerFunction({
-    args: [DataType.integer, DataType.integer],
-    implementation: () => null,
-    name: "col_description",
-    returns: DataType.text,
-  });
-  memory.public.registerFunction({
-    args: [DataType.text],
-    implementation: (value) => value,
-    name: "quote_ident",
-    returns: DataType.text,
-  });
-  memory.public.registerFunction({
-    args: [DataType.text, DataType.text],
-    implementation: () => null,
-    name: "pg_get_serial_sequence",
-    returns: DataType.text,
-  });
-  memory.public.registerFunction({
-    args: [DataType.integer],
-    implementation: () => 1,
-    name: "pg_advisory_xact_lock",
-    returns: DataType.integer,
-  });
-  memory.registerExtension("pgcrypto", (schema) => {
-    schema.registerFunction({
-      implementation: randomUUID,
-      impure: true,
-      name: "gen_random_uuid",
-      returns: DataType.uuid,
-    });
-  });
-  const adapter = memory.adapters.createPg();
-  const result = new Kysely<Database>({
-    dialect: new PostgresDialect({ pool: new adapter.Pool() as unknown as Pool }),
-  });
-  await migrateToLatest(result);
-  await sql`alter table change_set_conflicts drop constraint change_set_conflicts_constraint_1`.execute(
-    result,
-  );
-  return result;
-}
 
 beforeEach(async () => {
   vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -210,6 +151,168 @@ async function reviewUpdateFixture() {
   };
   return { ...fixture, review, input, prepared };
 }
+
+async function branchOnlyUpdateFixture(strategy = BranchUpdateStrategy.Merge) {
+  const f = await synchronizedProject();
+  await repository.replaceImportedDocuments(f.projectId, "docs/task", "task-head", [
+    {
+      path: "docs/intro.md",
+      content: "# Task",
+      contentHash: "task",
+      title: "Task",
+      locale: "default",
+      version: "current",
+    },
+  ]);
+  const input = {
+    projectId: f.projectId,
+    branch: "docs/task",
+    sourceBranch: "main",
+    expectedHeadSha: "task-head",
+    updatePolicy: resolvedBranchUpdatePolicy({ strategy, targetSha: "head-1" }),
+    repositoryKey: "repository-key",
+    userId: f.operatorId,
+  };
+  return { ...f, input };
+}
+
+it.each([BranchUpdateStrategy.Merge, BranchUpdateStrategy.Rebase])(
+  "queues one branch-only %s operation without a review",
+  async (strategy) => {
+    const f = await branchOnlyUpdateFixture(strategy);
+    const id = await repository.queueBranchUpdate(f.input);
+    expect(await repository.queueBranchUpdate(f.input)).toBe(id);
+    expect(await repository.listChangeRequests(f.projectId)).toEqual([]);
+    const operation = await repository.getBranchUpdateOperation(f.projectId, id);
+    expect(operation?.payload).toMatchObject({
+      branchOnly: true,
+      strategy,
+      expectedHeadSha: "task-head",
+      repositoryKey: "repository-key",
+    });
+    await expect(
+      repository.queueBranchUpdate({ ...f.input, expectedHeadSha: "new-head" }),
+    ).rejects.toThrow("уже обновляется");
+  },
+);
+
+it("persists and continues a branch-only merge with idempotent decisions and recovery", async () => {
+  const f = await branchOnlyUpdateFixture();
+  const id = await repository.queueBranchUpdate(f.input);
+  expect(await repository.getBranchUpdateOperation(f.projectId, "not-a-uuid")).toBeUndefined();
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 1 })
+    .where("id", "=", id)
+    .execute();
+  const snapshot: BranchConflictSnapshot = {
+    branch: "docs/task",
+    sourceBranch: "main",
+    parentSha: "task-head",
+    sourceSha: "head-1",
+    updatePolicy: f.input.updatePolicy,
+    merge: { operationId: id, conflictId: "merge-token" },
+    files: [
+      {
+        path: "docs/intro.md",
+        kind: "text",
+        baseContent: "Base",
+        oursContent: "Ours",
+        theirsContent: "Theirs",
+        oursExists: true,
+        theirsExists: true,
+      },
+    ],
+  };
+  await repository.pauseMergeUpdate(id, 1, snapshot, "repository-key");
+  expect(await repository.listBranchesNeedingAttention(f.projectId)).toContain("docs/task");
+  expect(await repository.getMcpOperation(f.projectId, id)).toMatchObject({
+    result: { needsConflictResolution: true, comparisonKind: "merge" },
+  });
+  expect(
+    (await repository.getMcpConflictInspection(f.projectId, id))?.externalReviewId,
+  ).toBeUndefined();
+  const continuation = {
+    projectId: f.projectId,
+    operationId: id,
+    conflictId: "merge-token",
+    userId: f.operatorId,
+    files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Ours }],
+  };
+  await expect(
+    repository.continueMergeUpdate({ ...continuation, conflictId: "stale" }),
+  ).rejects.toThrow("изменился");
+  expect(await repository.continueMergeUpdate(continuation)).toBe(id);
+  expect(await repository.continueMergeUpdate(continuation)).toBe(id);
+  await expect(
+    repository.continueMergeUpdate({
+      ...continuation,
+      files: [{ path: "docs/intro.md", choice: BranchConflictChoice.Theirs }],
+    }),
+  ).rejects.toThrow("другое решение");
+  await database.updateTable("jobs").set({ status: "failed" }).where("id", "=", id).execute();
+  expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toMatchObject({
+    id,
+  });
+  expect(await repository.retryReviewBranchUpdate(f.projectId, id, f.operatorId)).toBe(id);
+  expect((await repository.getBranchUpdateOperation(f.projectId, id))?.payload).toMatchObject({
+    resolutionSnapshot: snapshot,
+    resolutionFiles: continuation.files,
+  });
+});
+
+it("cancels a paused branch-only merge and releases its attention and reservation", async () => {
+  const f = await branchOnlyUpdateFixture();
+  const id = await repository.queueBranchUpdate(f.input);
+  await database
+    .updateTable("jobs")
+    .set({ status: "running", attempts: 1 })
+    .where("id", "=", id)
+    .execute();
+  await repository.pauseMergeUpdate(
+    id,
+    1,
+    {
+      branch: "docs/task",
+      sourceBranch: "main",
+      parentSha: "task-head",
+      sourceSha: "head-1",
+      files: [],
+      updatePolicy: f.input.updatePolicy,
+      merge: { operationId: id, conflictId: "token" },
+    },
+    "repository-key",
+  );
+  await repository.cancelRebaseUpdate(f.projectId, id, "token", f.operatorId);
+  expect(await repository.listBranchesNeedingAttention(f.projectId)).toEqual([]);
+  expect(await repository.getActiveReviewBranchUpdate(f.projectId, "docs/task")).toBeUndefined();
+  expect(await repository.getBranchUpdateOperation(f.projectId, id)).toBeUndefined();
+});
+
+it("blocks branch-only updates for saved drafts and protected branches", async () => {
+  const f = await branchOnlyUpdateFixture();
+  await database
+    .updateTable("branch_contexts")
+    .set({ is_protected: true })
+    .where("project_id", "=", f.projectId)
+    .where("full_ref", "=", "docs/task")
+    .execute();
+  await expect(repository.queueBranchUpdate(f.input)).rejects.toThrow("недоступны");
+  await database
+    .updateTable("branch_contexts")
+    .set({ is_protected: false })
+    .where("project_id", "=", f.projectId)
+    .where("full_ref", "=", "docs/task")
+    .execute();
+  await repository.createDraftDocument({
+    projectId: f.projectId,
+    branch: "docs/task",
+    path: "docs/new.md",
+    content: "# Draft",
+    userId: f.operatorId,
+  });
+  await expect(repository.queueBranchUpdate(f.input)).rejects.toThrow("текущие изменения");
+});
 
 async function failedReviewUpdateFixture(state: "closed" | "merged" = "merged") {
   const fixture = await reviewUpdateFixture();
@@ -3866,6 +3969,38 @@ describe("working tree projection", () => {
       "Branch not found",
     );
   });
+  it("rejects a replaced change set even when its revision matches", async () => {
+    const fixture = await synchronizedProject();
+    const input = {
+      projectId: fixture.projectId,
+      userId: fixture.operatorId,
+      branch: "main",
+      expectedRevision: 0,
+      files: [{ path: "docs/intro.md", content: "# Changed" }],
+    };
+    const saved = await repository.stageFiles(input);
+    await expect(
+      repository.stageFiles({
+        ...input,
+        expectedRevision: saved.revision,
+        expectedChangeSetId: "another-set",
+        files: [{ path: "docs/intro.md", content: "# Restored" }],
+      }),
+    ).rejects.toThrow(RevisionConflictError);
+    expect(
+      (await repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"))?.content,
+    ).toBe("# Changed");
+    await repository.stageFiles({
+      ...input,
+      expectedRevision: saved.revision,
+      expectedChangeSetId: saved.changeSetId,
+      files: [{ path: "docs/intro.md", content: "# Restored" }],
+    });
+    expect(
+      (await repository.getWorkingFile(fixture.projectId, "main", "docs/intro.md"))?.content,
+    ).toBe("# Restored");
+  });
+
   it("rejects malformed operations and collisions without partial application", async () => {
     const fixture = await synchronizedProject();
     const input = {

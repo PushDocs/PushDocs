@@ -12,6 +12,7 @@ import {
 } from "@pushdocs/content";
 import {
   type BranchConflictSnapshot,
+  BranchCreationStage,
   type BranchUpdatePolicy,
   BranchUpdateStrategy,
   branchConflictCache,
@@ -20,7 +21,6 @@ import {
   branchConflictResolutionSchema,
   branchUpdateJobKind,
   branchUpdateMessages,
-  branchUpdateStrategy,
   ConflictInspectionStage,
   isConflictMediaFile,
   jobAttempt,
@@ -37,6 +37,7 @@ import {
   createProvider,
   type GitProvider,
   loadBranchUpdatePolicy,
+  type ProviderBranch,
   type ProviderFileChange,
   ProviderHttpError,
 } from "@pushdocs/providers";
@@ -45,6 +46,7 @@ import {
   BranchMergeConflictError,
   GitTransport,
   type GitTransportOptions,
+  MergeNeedsResolution,
   RebaseNeedsResolution,
 } from "./git-transport";
 
@@ -87,6 +89,7 @@ export type WorkerRepository = Pick<
   | "savePreparedBranchMerge"
   | "savePreparedBranchUpdate"
   | "pauseRebaseUpdate"
+  | "pauseMergeUpdate"
   | "getActiveConflictMerge"
   | "saveConflictInspection"
   | "findConflictInspection"
@@ -290,12 +293,14 @@ export function createWorkerService(options: WorkerServiceOptions) {
     branchName: string,
     provider?: GitProvider,
     onDocumentsLoaded?: (completed: number, total: number, receivedBytes: number) => Promise<void>,
+    branchSnapshot?: ProviderBranch,
   ): Promise<void> {
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     await repository.withGitRefLock(
       `${target.base_url}:${target.provider_repository_id}:${branchName}`,
-      () => synchronizeBranchLocked(projectId, branchName, provider, onDocumentsLoaded),
+      () =>
+        synchronizeBranchLocked(projectId, branchName, provider, onDocumentsLoaded, branchSnapshot),
     );
   }
 
@@ -304,12 +309,16 @@ export function createWorkerService(options: WorkerServiceOptions) {
     branchName: string,
     provider?: GitProvider,
     onDocumentsLoaded?: (completed: number, total: number, receivedBytes: number) => Promise<void>,
+    branchSnapshot?: ProviderBranch,
   ): Promise<void> {
     await onDocumentsLoaded?.(0, 0, 0);
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Project sync target is unavailable or no longer granted");
     const client = provider ?? (await providerFor(target));
-    const branches = await client.listBranches(target.provider_repository_id);
+    // A successful creation response can precede visibility in the branch list.
+    const branches = branchSnapshot
+      ? [branchSnapshot]
+      : await client.listBranches(target.provider_repository_id);
     await repository.ensureBranches(projectId, branches);
     const branch = branches.find((item) => item.name === branchName);
     if (!branch) throw new BranchNotFoundError(branchName);
@@ -408,10 +417,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
 
   async function createBranch(
     payload: unknown,
-    onProgress: (progress: string, counts?: { completed: number; total: number }) => Promise<void>,
+    onProgress: (
+      progress: BranchCreationStage,
+      counts?: { completed: number; total: number },
+    ) => Promise<void>,
   ): Promise<void> {
     await checkMcpAuthorization(payload, "pushdocs:write");
-    await onProgress("checking-source");
+    await onProgress(BranchCreationStage.CheckingSource);
     const projectId = projectIdFromPayload(payload);
     const userId = stringFromPayload(payload, "userId");
     const branchName = stringFromPayload(payload, "branch");
@@ -425,18 +437,27 @@ export function createWorkerService(options: WorkerServiceOptions) {
     const source = branches.find((branch) => branch.name === sourceBranch);
     if (!source || source.sha !== sourceSha)
       throw new Error("Исходная ветка обновилась. Получите изменения и повторите создание.");
-    const existing = branches.find((branch) => branch.name === branchName);
-    if (existing && existing.sha !== sourceSha)
+    let createdBranch = branches.find((branch) => branch.name === branchName);
+    if (createdBranch && createdBranch.sha !== sourceSha)
       throw new Error(`Ветка ${branchName} уже существует и содержит другие изменения`);
-    await onProgress("creating-branch");
-    if (!existing) {
+    await onProgress(BranchCreationStage.CreatingBranch);
+    if (!createdBranch) {
       await checkMcpAuthorization(payload, "pushdocs:write");
       await repository.requireProjectAccess(userId, projectId, "branch:push");
-      await provider.createBranch(target.provider_repository_id, branchName, sourceSha);
+      createdBranch = await provider.createBranch(
+        target.provider_repository_id,
+        branchName,
+        sourceSha,
+      );
     }
-    await onProgress("importing-documents");
-    await synchronizeBranch(projectId, branchName, provider, (completed, total) =>
-      onProgress("importing-documents", { completed, total }),
+    await onProgress(BranchCreationStage.ImportingDocuments);
+    await synchronizeBranch(
+      projectId,
+      branchName,
+      provider,
+      (completed, total) =>
+        onProgress(BranchCreationStage.ImportingDocuments, { completed, total }),
+      createdBranch,
     );
   }
 
@@ -514,6 +535,35 @@ export function createWorkerService(options: WorkerServiceOptions) {
         }),
       },
       branches,
+    };
+  }
+
+  async function requireBranchUpdateContext(
+    payload: Record<string, unknown>,
+    provider: GitProvider,
+    target: ProjectSyncTarget,
+  ) {
+    if (payload.branchOnly !== true) {
+      const review = await requireConflictReview(payload, provider, target);
+      return { branches: review.branches, policy: review.details.branchUpdatePolicy, review };
+    }
+    if (
+      payload.reviewId ||
+      payload.externalReviewId ||
+      payload.repositoryKey !== branchConflictRepositoryKey(target) ||
+      stringFromPayload(payload, "sourceBranch") !== target.default_branch
+    )
+      throw new BranchMergeConflictError("Подключение или основная ветка проекта изменились.");
+    const branches = await provider.listBranches(target.provider_repository_id);
+    const incoming = branches.find((item) => item.name === target.default_branch);
+    if (!incoming) throw new BranchNotFoundError(target.default_branch);
+    return {
+      branches,
+      policy: await loadBranchUpdatePolicy(provider, target.provider_repository_id, {
+        rootPath: target.root_path,
+        targetSha: incoming.sha,
+      }),
+      review: undefined,
     };
   }
 
@@ -810,7 +860,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
     await repository.requireProjectAccess(userId, projectId, "branch:push");
     const activeUpdate = await repository.getActiveConflictMerge(projectId, branch);
     if (activeUpdate && activeUpdate.id !== operationId)
-      throw new BranchMergeConflictError("Ветка уже обновляется. Дождитесь завершения операции.");
+      throw new BranchMergeConflictError(branchUpdateMessages.busy);
     const target = await repository.getProjectSyncTarget(projectId);
     if (!target) throw new Error("Подключение проекта недоступно");
     const targetKey = mergeTargetKey(target);
@@ -959,10 +1009,13 @@ export function createWorkerService(options: WorkerServiceOptions) {
           await synchronize();
           return;
         }
-        if (rebase && payload.targetKey !== branchConflictRepositoryKey(target))
-          throw new BranchMergeConflictError("Подключение проекта изменилось во время rebase.");
-        const review = await requireConflictReview(payload, provider, target);
-        const branches = await provider.listBranches(target.provider_repository_id);
+        if (
+          (rebase || payload.resolutionSnapshot) &&
+          payload.targetKey !== branchConflictRepositoryKey(target)
+        )
+          throw new BranchMergeConflictError("Подключение проекта изменилось во время обновления.");
+        const context = await requireBranchUpdateContext(payload, provider, target);
+        const branches = context.branches;
         const destination = branches.find((item) => item.name === branch);
         const incoming = branches.find((item) => item.name === sourceBranch);
         if (!destination || !incoming || destination.protected || branch === target.default_branch)
@@ -970,39 +1023,39 @@ export function createWorkerService(options: WorkerServiceOptions) {
             "Исходная ветка недоступна для обновления из PushDocs.",
           );
         if (
-          !sameBranchUpdatePolicy(
-            payload.updatePolicy as typeof review.details.branchUpdatePolicy,
-            review.details.branchUpdatePolicy,
-          ) ||
-          branchUpdateStrategy(review.details) !== strategy
+          !sameBranchUpdatePolicy(payload.updatePolicy as typeof context.policy, context.policy) ||
+          context.policy.strategy !== strategy
         )
-          throw new BranchMergeConflictError(
-            review.details.branchUpdatePolicy.error ?? branchUpdateMessages.changed,
-          );
+          throw new BranchMergeConflictError(context.policy.error ?? branchUpdateMessages.changed);
         if (
           destination.sha !== (saved?.parentSha ?? payload.expectedHeadSha) ||
-          incoming.sha !== (saved?.sourceSha ?? review.details.branchUpdatePolicy.targetSha) ||
+          incoming.sha !== (saved?.sourceSha ?? context.policy.targetSha) ||
           (!saved &&
             !rebase &&
-            (review.headSha !== destination.sha ||
-              (!needsBranchUpdate(review.details) && !payload.refreshFromTarget)))
+            context.review &&
+            (context.review.headSha !== destination.sha ||
+              (!needsBranchUpdate(context.review.details) && !payload.refreshFromTarget)))
         )
           throw new BranchMergeConflictError(
             "Состояние PR / MR изменилось. Обновите данные из Git.",
           );
-        if (rebase?.resolutions.length) {
+        const mergeSnapshot = payload.resolutionSnapshot as BranchConflictSnapshot | undefined;
+        const mergeFiles = mergeSnapshot
+          ? branchConflictResolutionSchema.parse(payload.resolutionFiles)
+          : undefined;
+        if (rebase?.resolutions.length || mergeFiles) {
           const writer = await repository.requireProjectAccess(userId, projectId, "branch:push");
           const config = parseProjectConfig(
             await loadTextOrNull(
               provider,
               target.provider_repository_id,
-              rebase.parentSha,
+              rebase?.parentSha ?? stringFromPayload(payload, "expectedHeadSha"),
               repositoryPath(target.root_path, projectConfigPaths.config),
             ),
           );
           const root =
             target.root_path === "." ? "" : `${target.root_path.replace(/^\/+|\/+$/g, "")}/`;
-          for (const resolution of rebase.resolutions)
+          for (const resolution of rebase?.resolutions ?? [{ files: mergeFiles ?? [] }])
             for (const file of resolution.files) {
               if (!file.path.startsWith(root))
                 throw new BranchMergeConflictError("Файл находится вне проекта");
@@ -1021,35 +1074,44 @@ export function createWorkerService(options: WorkerServiceOptions) {
             ...(target.root_path === "." ? {} : { rootPath: target.root_path }),
             ...(saved ? { prepared: saved } : {}),
             ...(rebase ? { rebase } : {}),
+            ...(mergeSnapshot && mergeFiles
+              ? { resolution: { snapshot: mergeSnapshot, files: mergeFiles } }
+              : {}),
           });
         } catch (error) {
-          if (!(error instanceof RebaseNeedsResolution)) throw error;
+          if (!(error instanceof RebaseNeedsResolution) && !(error instanceof MergeNeedsResolution))
+            throw error;
           await checkMcpAuthorization(payload, "pushdocs:submit");
           await repository.requireProjectAccess(userId, projectId, "branch:push");
-          const current = await requireConflictReview(payload, provider, target);
+          const current = await requireBranchUpdateContext(payload, provider, target);
           if (
-            !sameBranchUpdatePolicy(
-              review.details.branchUpdatePolicy,
-              current.details.branchUpdatePolicy,
-            ) ||
+            !sameBranchUpdatePolicy(context.policy, current.policy) ||
             current.branches.find((item) => item.name === branch)?.sha !==
-              error.progress.parentSha ||
+              error.snapshot.parentSha ||
             current.branches.find((item) => item.name === sourceBranch)?.sha !==
-              error.progress.sourceSha
+              error.snapshot.sourceSha
           )
             throw new BranchMergeConflictError(
-              "Ветки или политика изменились во время подготовки rebase. Начните обновление заново.",
+              "Ветки или политика изменились во время подготовки. Начните обновление заново.",
             );
           const snapshot = error.snapshot;
-          snapshot.updatePolicy = current.details.branchUpdatePolicy;
+          snapshot.updatePolicy = current.policy;
           await restrictConflictSnapshot(snapshot, target, provider);
-          await repository.pauseRebaseUpdate(
-            jobId,
-            attempt,
-            error.progress,
-            snapshot,
-            branchConflictRepositoryKey(target),
-          );
+          if (error instanceof RebaseNeedsResolution)
+            await repository.pauseRebaseUpdate(
+              jobId,
+              attempt,
+              error.progress,
+              snapshot,
+              branchConflictRepositoryKey(target),
+            );
+          else
+            await repository.pauseMergeUpdate(
+              jobId,
+              attempt,
+              snapshot,
+              branchConflictRepositoryKey(target),
+            );
           return false;
         }
         if (
@@ -1069,13 +1131,8 @@ export function createWorkerService(options: WorkerServiceOptions) {
           branch === currentTarget.default_branch
         )
           throw new BranchMergeConflictError("Подключение или основная ветка проекта изменились.");
-        const finalReview = await requireConflictReview(payload, provider, currentTarget);
-        if (
-          !sameBranchUpdatePolicy(
-            review.details.branchUpdatePolicy,
-            finalReview.details.branchUpdatePolicy,
-          )
-        )
+        const finalContext = await requireBranchUpdateContext(payload, provider, currentTarget);
+        if (!sameBranchUpdatePolicy(context.policy, finalContext.policy))
           throw new BranchMergeConflictError(branchUpdateMessages.changed);
         const current = await provider.listBranches(target.provider_repository_id);
         const currentBranch = current.find((item) => item.name === branch);
@@ -1394,7 +1451,7 @@ export function createWorkerService(options: WorkerServiceOptions) {
             repository.updateJobProgress(
               job.id,
               job.attempts,
-              "importing-documents",
+              BranchCreationStage.ImportingDocuments,
               { completed, total },
               { receivedBytes, totalBytes: null },
             ),

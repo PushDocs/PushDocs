@@ -1,23 +1,29 @@
 // @vitest-environment jsdom
 
 import { parseProjectConfig } from "@pushdocs/content";
+import { BranchCreationStatusFailure } from "@pushdocs/contracts";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { BranchCreationOperationKind, branchCreationSessions } from "./branch-creation-session";
 import { draftKey, readDraft, writeDraft } from "./draft-storage";
 import { gitOperationStore } from "./git-operation-store";
 import { Workbench, type WorkbenchState } from "./workbench";
 
 const mocks = vi.hoisted(() => ({
   backgroundSync: vi.fn(),
+  branchStatus: vi.fn(),
   push: vi.fn(),
   refresh: vi.fn(),
   start: vi.fn(),
   status: vi.fn(),
   comments: vi.fn(),
+  freshness: vi.fn(),
 }));
+vi.mock("./use-branch-freshness", () => ({ useBranchFreshness: mocks.freshness }));
 vi.mock("./use-file-comments", () => ({ useFileComments: mocks.comments }));
 vi.mock("@/app/actions", () => ({
+  branchCreationStatusAction: mocks.branchStatus,
   startBackgroundBranchSyncAction: mocks.backgroundSync,
   startGitOperationAction: mocks.start,
   gitOperationStatusAction: mocks.status,
@@ -125,11 +131,23 @@ vi.mock("./file-comments", async (importOriginal) => ({
 let state: WorkbenchState;
 let requests: Array<Record<string, unknown>>;
 beforeEach(() => {
+  mocks.freshness.mockImplementation(
+    ({ headSha, remoteHeadSha }: { headSha?: string; remoteHeadSha?: string | null }) => ({
+      filesCurrent: remoteHeadSha === undefined ? false : headSha === remoteHeadSha,
+      includesDefaultBranch: true,
+      checking: false,
+      refresh: vi.fn(),
+    }),
+  );
   vi.useFakeTimers();
   mocks.comments.mockReturnValue({ comments: [], unreadCount: 0, error: "", refresh: vi.fn() });
   mocks.start.mockResolvedValue("job");
   mocks.backgroundSync.mockResolvedValue(null);
   mocks.status.mockResolvedValue({ status: "done" });
+  mocks.branchStatus.mockImplementation(async (...args: unknown[]) => ({
+    job: await mocks.status(...args),
+  }));
+  branchCreationSessions.clear();
   sessionStorage.clear();
   localStorage.clear();
   requests = [];
@@ -235,10 +253,11 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   gitOperationStore.clear();
+  branchCreationSessions.clear();
   vi.useRealTimers();
 });
 function mount(options: { metadataTabEnabled?: boolean } = {}) {
-  render(
+  return render(
     <Workbench
       projectId="project"
       projectName="Docs"
@@ -253,6 +272,32 @@ function mount(options: { metadataTabEnabled?: boolean } = {}) {
     />,
   );
 }
+it("opens the requested source line and saves before returning to the same changes context", async () => {
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="main"
+      initial={structuredClone(state)}
+      initialPath="docs/a.mdx"
+      initialLine={2}
+      returnToChanges={{ path: "docs/a.mdx", line: "2", search: "docs/" }}
+    />,
+  );
+  await act(async () => {});
+  const input = screen.getByLabelText("Исходник документа") as HTMLTextAreaElement;
+  expect(input.selectionStart).toBe(input.value.indexOf("<Widget"));
+  fireEvent.change(input, { target: { value: `${input.value}\nfixed` } });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("link", { name: /^Вернуться к изменениям/ }));
+  });
+  expect(requests[0]).toMatchObject({
+    files: [{ path: "docs/a.mdx", content: "# Первый\n<Widget />\nfixed" }],
+  });
+  expect(mocks.push).toHaveBeenCalledWith(
+    "/projects/project/changes?branch=main&path=docs%2Fa.mdx&line=2&search=docs%2F",
+  );
+});
 it("retries a network failure without claiming a revision conflict or losing text", async () => {
   mount();
   await act(async () => {});
@@ -524,7 +569,7 @@ it("refreshes Git data in the background and offers an explicit refresh in the e
   await act(async () => {});
   expect(mocks.backgroundSync).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
   expect(mocks.status).toHaveBeenCalledWith("project", "background-job");
-  expect(screen.getByRole("button", { name: "Обновить из Git" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Обновить файлы" })).toBeTruthy();
 });
 it("closes tabs after saving", async () => {
   mount();
@@ -857,6 +902,7 @@ it("creates a branch, handles provider errors, and allows closing the dialog", a
   await click("Создать и перейти");
   expect(requests[0]).toMatchObject({ action: "branch", sha: "12345678", name: "docs/new" });
   expect(mocks.status).toHaveBeenCalledWith("project", "branch-job");
+  await click("Закрыть");
   await click("Новая ветка");
   vi.mocked(fetch).mockRejectedValueOnce(new Error("Provider offline"));
   await click("Создать и перейти");
@@ -870,8 +916,44 @@ it("shows a branch creation failure returned by the worker", async () => {
   await click("Новая ветка");
   fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
   await click("Создать и перейти");
-  expect(screen.getByRole("alert").textContent).toContain("Ветка уже существует");
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByRole("alert").textContent).toContain("Ветка уже существует");
+  expect(within(dialog).getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
   expect(mocks.push).not.toHaveBeenCalled();
+});
+it("keeps a failed branch import in its dialog and retries loading without recreating the branch", async () => {
+  mocks.status.mockResolvedValueOnce({
+    status: "failed",
+    progress: "importing-documents",
+    last_error: "Branch docs/new was not found",
+  });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByRole("alert").textContent).toContain("docs/new уже создана");
+  expect(within(dialog).getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(mocks.push).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("main");
+  mocks.start.mockResolvedValueOnce("import-job");
+  mocks.status
+    .mockResolvedValueOnce({
+      status: "running",
+      progress: "importing-documents",
+      progressCounts: { completed: 12, total: 25 },
+    })
+    .mockResolvedValueOnce({ status: "done" });
+  await click("Повторить загрузку");
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "docs/new" });
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  expect(dialog.textContent).toContain("12 из 25 файлов загружено");
+  expect(mocks.push).not.toHaveBeenCalled();
+  await tick(2000);
+  expect(mocks.status).toHaveBeenLastCalledWith("project", "import-job");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
 });
 it("refreshes an updated source branch and retries branch creation", async () => {
   mocks.start.mockResolvedValueOnce("sync-job");
@@ -895,23 +977,31 @@ it("refreshes an updated source branch and retries branch creation", async () =>
     expect.objectContaining({ action: "branch", sha: "new-head", name: "docs/new" }),
   ]);
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
 });
 it("waits for branch import before opening its documents", async () => {
   mocks.status
-    .mockResolvedValueOnce({ status: "running" })
+    .mockResolvedValueOnce({
+      status: "running",
+      progress: "importing-documents",
+      progressCounts: { completed: 0, total: 25 },
+    })
     .mockResolvedValueOnce({ status: "done" });
   mount();
   await click("Новая ветка");
   fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
   await click("Создать и перейти");
+  expect(screen.getByRole("dialog").textContent).toContain("Ветка создана. Загружаем файлы");
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Закрыть" })).toHaveProperty("disabled", true);
   expect(mocks.push).not.toHaveBeenCalled();
   expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("main");
   await tick(2000);
   expect(sessionStorage.getItem("pushdocs:branch:project")).toBe("docs/new");
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
   expect(mocks.refresh).not.toHaveBeenCalled();
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
 });
 it("shows actual branch creation stages inside its dialog", async () => {
   mocks.status
@@ -939,11 +1029,31 @@ it("shows actual branch creation stages inside its dialog", async () => {
   await tick(2000);
   expect(screen.getByRole("dialog").textContent).toContain("Создаём ветку в Git");
   await tick(2000);
-  expect(screen.getByRole("dialog").textContent).toContain("Подготавливаем документы");
+  expect(screen.getByRole("dialog").textContent).toContain("Ветка создана. Загружаем файлы");
   expect(screen.getByRole("dialog").textContent).toContain("12 из 25 файлов загружено");
   expect(mocks.push).not.toHaveBeenCalled();
   await tick(2000);
   expect(screen.getByRole("dialog").textContent).toContain("Повторная попытка");
+  await tick(2000);
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+});
+
+it("keeps a slow branch import in its dialog beyond five minutes", async () => {
+  mocks.status.mockResolvedValue({
+    status: "running",
+    progress: "importing-documents",
+    progressCounts: { completed: 12, total: 25 },
+  });
+  mount();
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+  await tick(302_000);
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  expect(within(dialog).getByRole("status").textContent).toContain("12 из 25 файлов загружено");
+  expect(mocks.push).not.toHaveBeenCalled();
+  mocks.status.mockResolvedValue({ status: "done" });
   await tick(2000);
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
 });
@@ -959,6 +1069,286 @@ it("continues checking branch creation after a temporary polling failure", async
   expect(screen.getByRole("status").textContent).toContain("Нет связи");
   await tick(5000);
   expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+});
+
+async function createWorkingBranch() {
+  await click("Новая ветка");
+  fireEvent.change(screen.getByLabelText("Имя ветки"), { target: { value: "docs/new" } });
+  await click("Создать и перейти");
+}
+
+it.each([
+  [BranchCreationStatusFailure.AccessDenied, "Нет доступа к проекту"],
+  [BranchCreationStatusFailure.NotFound, "Операция не найдена"],
+  [BranchCreationStatusFailure.AuthenticationRequired, "Сессия истекла"],
+])(
+  "unblocks a permanent status failure without enqueuing a second branch: %s",
+  async (error, message) => {
+    state.ownerId = "actor";
+    mocks.branchStatus.mockResolvedValue({ error });
+    mount();
+    await createWorkingBranch();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("alert").textContent).toContain(message);
+    expect(screen.getByRole("button", { name: "Закрыть" })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: "Проверить статус" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    await tick(60_000);
+    expect(mocks.branchStatus).toHaveBeenCalledOnce();
+    mocks.branchStatus.mockResolvedValue({ job: { status: "done" } });
+    await click("Проверить статус");
+    expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+    expect(mocks.push).not.toHaveBeenCalled();
+    await click("Перейти в ветку");
+    expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+  },
+);
+
+it("stops a persistent connection failure and restores the same job after closing the modal", async () => {
+  state.ownerId = "actor";
+  mocks.branchStatus.mockRejectedValue(new Error("offline"));
+  mount();
+  await createWorkingBranch();
+  await tick(60_000);
+  expect(mocks.branchStatus).toHaveBeenCalledTimes(3);
+  expect(within(screen.getByRole("dialog")).getByRole("alert").textContent).toContain(
+    "Не удаётся проверить состояние операции",
+  );
+  await click("Закрыть");
+  mocks.branchStatus.mockResolvedValue({ job: { status: "done" } });
+  await click("Новая ветка");
+  expect(screen.getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("disposes scheduled creation polls when leaving the page", async () => {
+  state.ownerId = "actor";
+  mocks.branchStatus.mockResolvedValue({ job: { status: "running", progress: "creating-branch" } });
+  const view = mount();
+  await createWorkingBranch();
+  expect(mocks.branchStatus).toHaveBeenCalledOnce();
+  view.unmount();
+  await tick(60_000);
+  expect(mocks.branchStatus).toHaveBeenCalledOnce();
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("ignores late completion and restores progress after a page reload", async () => {
+  state.ownerId = "actor";
+  let finish: ((value: unknown) => void) | undefined;
+  mocks.branchStatus.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const view = mount();
+  await createWorkingBranch();
+  view.unmount();
+  await act(async () => finish?.({ job: { status: "done" } }));
+  await tick(60_000);
+  expect(mocks.push).not.toHaveBeenCalled();
+  expect(mocks.branchStatus).toHaveBeenCalledOnce();
+  branchCreationSessions.clear();
+  mocks.branchStatus.mockResolvedValue({
+    job: {
+      status: "running",
+      progress: "importing-documents",
+      progressCounts: { completed: 19, total: 25 },
+    },
+  });
+  mount();
+  await act(async () => {});
+  expect(screen.getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(screen.getByRole("dialog").textContent).toContain("19 из 25 файлов загружено");
+  expect(screen.getByRole("button", { name: "Закрыть" })).toHaveProperty("disabled", true);
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+  mocks.branchStatus.mockResolvedValue({ job: { status: "done" } });
+  await tick(2000);
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("joins a late enqueue confirmation after quickly leaving and returning", async () => {
+  state.ownerId = "actor";
+  const originalFetch = fetch;
+  let finish: ((value: Response) => void) | undefined;
+  const enqueue = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url, options) => {
+      if (typeof options?.body === "string" && JSON.parse(options.body).action === "branch")
+        return enqueue();
+      return originalFetch(url, options);
+    }),
+  );
+  mocks.branchStatus.mockResolvedValue({ job: { status: "running", progress: "creating-branch" } });
+  const view = mount();
+  await createWorkingBranch();
+  view.unmount();
+  mount();
+  await act(async () => finish?.(Response.json({ jobId: "late-job", name: "docs/new" })));
+  expect(enqueue).toHaveBeenCalledOnce();
+  expect(mocks.branchStatus).toHaveBeenCalledWith("project", "late-job");
+  expect(screen.getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("restores a source refresh without automatically submitting creation again", async () => {
+  state.ownerId = "actor";
+  mocks.start.mockResolvedValue("source-job");
+  let finish: ((value: unknown) => void) | undefined;
+  mocks.branchStatus
+    .mockResolvedValueOnce({
+      job: {
+        status: "failed",
+        last_error: "Исходная ветка обновилась. Получите изменения и повторите создание.",
+      },
+    })
+    .mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+  const view = mount();
+  await createWorkingBranch();
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
+  view.unmount();
+  await act(async () => finish?.({ job: { status: "done" } }));
+  state.sha = "new-head";
+  mocks.branchStatus.mockResolvedValue({ job: { status: "done" } });
+  mount();
+  await act(async () => {});
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Создать и перейти" })).toHaveProperty(
+    "disabled",
+    false,
+  );
+  expect(screen.getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("restores a failed import and retries loading instead of branch creation", async () => {
+  state.ownerId = "actor";
+  mocks.branchStatus.mockResolvedValue({
+    job: { status: "failed", progress: "importing-documents", last_error: "Git unavailable" },
+  });
+  const view = mount();
+  await createWorkingBranch();
+  view.unmount();
+  branchCreationSessions.clear();
+  mount();
+  await act(async () => {});
+  expect(screen.getByRole("button", { name: "Повторить загрузку" })).toBeTruthy();
+  mocks.branchStatus.mockResolvedValue({ job: { status: "done" } });
+  await click("Повторить загрузку");
+  expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "docs/new" });
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+});
+
+it("restores a saved operation safely under StrictMode", async () => {
+  state.ownerId = "actor";
+  branchCreationSessions.remember(
+    { ownerId: "actor", projectId: "project", sourceBranch: "main" },
+    {
+      jobId: "saved-job",
+      name: "docs/new",
+      sourceBranch: "main",
+      kind: BranchCreationOperationKind.Create,
+    },
+  );
+  mocks.branchStatus.mockResolvedValue({ job: { status: "running", progress: "creating-branch" } });
+  render(
+    <StrictMode>
+      <Workbench
+        projectId="project"
+        projectName="Docs"
+        branch="main"
+        initial={structuredClone(state)}
+      />
+    </StrictMode>,
+  );
+  await act(async () => {});
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(mocks.branchStatus).toHaveBeenCalledOnce();
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(0);
+  expect(mocks.push).not.toHaveBeenCalled();
+});
+
+it("acknowledges a completed operation only after its target branch is mounted", async () => {
+  state.ownerId = "actor";
+  const scope = { ownerId: "actor", projectId: "project", sourceBranch: "main" };
+  branchCreationSessions.remember(scope, {
+    jobId: "saved-job",
+    name: "docs/new",
+    sourceBranch: "main",
+    kind: BranchCreationOperationKind.Create,
+    ready: true,
+  });
+  render(
+    <Workbench
+      projectId="project"
+      projectName="Docs"
+      branch="docs/new"
+      initial={structuredClone(state)}
+    />,
+  );
+  await act(async () => {});
+  expect(branchCreationSessions.read(scope)).toBeUndefined();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(mocks.branchStatus).not.toHaveBeenCalled();
+});
+
+it("keeps a ready modal until navigation happens and can retry the transition", async () => {
+  state.ownerId = "actor";
+  mount();
+  await createWorkingBranch();
+  expect(mocks.push).toHaveBeenCalledOnce();
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).toContain("Ветка docs/new готова");
+  expect(within(dialog).getByRole("button", { name: "Перейти в ветку" })).toBeTruthy();
+  expect(
+    [...dialog.querySelectorAll("li[data-state]")].every(
+      (step) => step.getAttribute("data-state") === "done",
+    ),
+  ).toBe(true);
+  await click("Перейти в ветку");
+  expect(mocks.push).toHaveBeenCalledTimes(2);
+  expect(requests.filter((request) => request.action === "branch")).toHaveLength(1);
+});
+
+it("restores confirmed readiness without depending on the status service again", async () => {
+  state.ownerId = "actor";
+  branchCreationSessions.remember(
+    { ownerId: "actor", projectId: "project", sourceBranch: "main" },
+    {
+      jobId: "saved-job",
+      name: "docs/new",
+      sourceBranch: "main",
+      kind: BranchCreationOperationKind.Create,
+      ready: true,
+    },
+  );
+  branchCreationSessions.clear();
+  mocks.branchStatus.mockRejectedValue(new Error("offline"));
+  mount();
+  await act(async () => {});
+  expect(screen.getByLabelText("Имя ветки")).toHaveProperty("value", "docs/new");
+  expect(screen.getByRole("button", { name: "Перейти в ветку" })).toHaveProperty("disabled", false);
+  expect(mocks.branchStatus).not.toHaveBeenCalled();
+  expect(mocks.push).not.toHaveBeenCalled();
+  await click("Перейти в ветку");
+  expect(mocks.push).toHaveBeenCalledWith("/projects/project/documents?branch=docs%2Fnew");
+  expect(mocks.branchStatus).not.toHaveBeenCalled();
 });
 it("traps dialog focus and closes with Escape", async () => {
   mount();
@@ -1088,6 +1478,36 @@ it("keeps the selected document and branch when opening the files section", asyn
   );
   anchor.remove();
 });
+it("updates Git import availability through existing branch synchronization events", async () => {
+  state.remoteHeadSha = state.sha;
+  mount();
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "Обновить файлы" })).toBeNull();
+  expect(screen.getByText("Файлы актуальны")).toBeTruthy();
+  state.remoteHeadSha = "new-head";
+  await act(async () => {
+    window.dispatchEvent(
+      new CustomEvent("pushdocs:refresh", {
+        detail: { type: "branch.synchronized", projectId: "project", payload: { branch: "main" } },
+      }),
+    );
+  });
+  expect(screen.getByRole("button", { name: "Обновить файлы" })).toHaveProperty("disabled", false);
+  state.sha = "new-head";
+  await act(async () => {
+    window.dispatchEvent(
+      new CustomEvent("pushdocs:refresh", {
+        detail: { type: "branch.synchronized", projectId: "project", payload: { branch: "main" } },
+      }),
+    );
+  });
+  expect(screen.queryByRole("button", { name: "Обновить файлы" })).toBeNull();
+  expect(screen.getByText("Файлы актуальны")).toBeTruthy();
+  expect(mocks.freshness).toHaveBeenLastCalledWith(
+    expect.objectContaining({ headSha: "new-head", remoteHeadSha: "new-head" }),
+  );
+});
+
 it("refreshes a clean editor on events and silently retains unsaved typing", async () => {
   mount();
   const file = state.files[0];
@@ -2256,7 +2676,7 @@ it("reloads the selected document after an explicit Git refresh", async () => {
   first.content = "# Updated upstream";
   first.baseContent = "# Updated upstream";
   state.sha = "updated-head";
-  await click("Обновить из Git");
+  await click("Обновить файлы");
   expect(mocks.start).toHaveBeenCalledWith({ projectId: "project", branch: "main" });
   expect(
     screen.getByRole("textbox", { name: "Исходник документа" }).getAttribute("readonly"),
@@ -2304,7 +2724,7 @@ it("invalidates read-only file contents after refreshing from Git", async () => 
   await act(async () => {});
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Before refresh");
   contents = "# Updated in Git";
-  await click("Обновить из Git");
+  await click("Обновить файлы");
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("value", "# Updated in Git");
 });
 
@@ -2320,7 +2740,7 @@ it("saves pending text and pauses editing until Git refresh and document reload 
   fireEvent.change(screen.getByLabelText("Исходник документа"), {
     target: { value: "Saved before Git refresh" },
   });
-  await click("Обновить из Git");
+  await click("Обновить файлы");
   expect(requests[0]).toMatchObject({
     action: "files",
     files: [{ path: "docs/a.mdx", content: "Saved before Git refresh" }],
@@ -2336,6 +2756,7 @@ it("saves pending text and pauses editing until Git refresh and document reload 
 });
 
 it("restores the Git lock after navigation and keeps the merge menu in place", async () => {
+  mocks.freshness.mockReturnValue({ filesCurrent: false, includesDefaultBranch: false });
   let finish: ((job: { status: string }) => void) | undefined;
   mocks.status.mockReturnValue(new Promise((resolve) => (finish = resolve)));
   const props = {
@@ -2347,14 +2768,14 @@ it("restores the Git lock after navigation and keeps the merge menu in place", a
   };
   const first = render(<Workbench {...props} />);
   await act(async () => {});
-  await click("Обновить из Git");
-  expect(screen.getByText("Влить stable…")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Влить в main" })).toHaveProperty("disabled", true);
+  await click("Обновить файлы");
+  expect(screen.getByText("Обновить ветку…")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Обновить ветку" })).toHaveProperty("disabled", true);
   first.unmount();
   render(<Workbench {...props} />);
   await act(async () => {});
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", true);
-  expect(screen.getByText("Влить stable…")).toBeTruthy();
+  expect(screen.getByText("Обновить ветку…")).toBeTruthy();
   expect(mocks.start).toHaveBeenCalledOnce();
   await act(async () => finish?.({ status: "done" }));
   expect(screen.getByLabelText("Исходник документа")).toHaveProperty("readOnly", false);
@@ -2373,7 +2794,7 @@ it("does not replace the newly selected document with a late Git refresh respons
     if (!original) throw new Error("Missing fixture");
     return original(url, options);
   });
-  await click("Обновить из Git");
+  await click("Обновить файлы");
   await click("b.md");
   const response = structuredClone(state);
   const first = response.files[0];
@@ -2391,7 +2812,7 @@ it("also blocks attachment changes and deletion reversal while the Git operation
   state.uploads = [{ path: "photo.jpg" }];
   mount();
   await act(async () => {});
-  await click("Обновить из Git");
+  await click("Обновить файлы");
   expect(screen.getByRole("button", { name: "Отменить удаление" })).toHaveProperty(
     "disabled",
     true,

@@ -19,11 +19,14 @@ export {
   hasBranchConflicts,
   isConflictMediaFile,
 } from "./branch-conflicts";
+export { BranchCreationStage, BranchCreationStatusFailure } from "./branch-creation";
 export type { BranchReviewSummary, BranchSummary } from "./branch-summary";
 export {
   type BranchUpdatePolicy,
   BranchUpdatePolicySource,
   BranchUpdateStrategy,
+  branchUpdateConflictOperationId,
+  branchUpdateConflictReference,
   branchUpdateJobKind,
   branchUpdateLimits,
   branchUpdateMessages,
@@ -40,6 +43,7 @@ export {
   type RebaseResolution,
   sameBranchUpdatePolicy,
 } from "./branch-update";
+export { domainEvents } from "./events";
 export { jobAttempt, jobRetryPolicy } from "./job-retry";
 
 export {

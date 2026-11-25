@@ -182,7 +182,7 @@ it("opens the selected review source branch, including URL special characters", 
   expect(html.match(/href="https:\/\/git.example\/2"/g)).toHaveLength(1);
   expect(html).not.toContain("Отправить изменения");
   expect(html).toContain("Обновить данные MR");
-  expect(html).not.toContain("Обновить из Git");
+  expect(html).not.toContain("Обновить файлы");
   expect(html).not.toContain("disabled");
 });
 it("provides an explicit branch switch for readers too", async () => {
@@ -614,7 +614,7 @@ it("shows only open reviews without search or state filters", async () => {
       searchParams: Promise.resolve({ q: "42", state: "merged" }),
     }),
   );
-  expect(mocks.listReviews).toHaveBeenLastCalledWith("project", "open");
+  expect(mocks.listReviews).toHaveBeenLastCalledWith("project");
   expect(screen.queryByText("Найти MR")).toBeNull();
   expect(screen.queryByText("Все состояния")).toBeNull();
   expect(screen.getByRole("link", { name: /^Other/ })).toBeTruthy();
@@ -633,8 +633,48 @@ it("explains when there are no open reviews", async () => {
     }),
   );
   expect(screen.getByText("Нет открытых MR")).toBeTruthy();
-  expect(screen.getByText(/здесь появятся его состояние и результаты проверок/)).toBeTruthy();
+  expect(screen.getByText(/Здесь отображаются открытые MR проекта/)).toBeTruthy();
 });
+
+it.each([
+  { provider: "gitlab", label: "MR", state: "merged", result: "влит в" },
+  { provider: "github", label: "PR", state: "merged", result: "влит в" },
+  { provider: "gitlab", label: "MR", state: "closed", result: "закрыт без слияния" },
+])(
+  "shows the $state $label of the current branch without a creation prompt",
+  async ({ provider, label, state, result }) => {
+    mocks.project.mockResolvedValueOnce({
+      id: "project",
+      provider,
+      role: "editor",
+      defaultBranch: "stable",
+    });
+    mocks.listReviews.mockResolvedValueOnce([
+      ...mocks.reviews.filter((review) => review.state === "open"),
+      { ...mocks.reviews[2], state },
+    ] as never);
+    sessionStorage.setItem("pushdocs:branch:project", "docs/done");
+    render(
+      await ReviewsPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({}),
+      }),
+    );
+    const notice = within(screen.getByRole("note", { name: `${label} текущей ветки` }));
+    expect(notice.getByText("docs/done")).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toContain(result);
+    expect(notice.getByRole("link", { name: `Открыть ${label}` }).getAttribute("href")).toBe(
+      "https://git.example/3",
+    );
+    expect(notice.queryByText("К изменениям")).toBeNull();
+    expect(notice.queryByText(/нет открытого/)).toBeNull();
+    act(() => {
+      sessionStorage.setItem("pushdocs:branch:project", "other");
+      window.dispatchEvent(new Event("pushdocs:context"));
+    });
+    expect(screen.queryByRole("note")).toBeNull();
+  },
+);
 
 it("does not claim readiness or a running preview when checks are absent", async () => {
   vi.stubEnv("PUSHDOCS_PREVIEW_URL", "https://pr-{MR_NUMBER}.docs.example.test/");

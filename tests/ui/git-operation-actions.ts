@@ -45,3 +45,7 @@ export async function gitOperationStatusAction(projectId: string, jobId: string)
   if (!response.ok) throw new Error("Status failed");
   return response.json();
 }
+
+export async function branchCreationStatusAction(projectId: string, jobId: string) {
+  return { job: await gitOperationStatusAction(projectId, jobId) };
+}

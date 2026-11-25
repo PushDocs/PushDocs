@@ -12,7 +12,7 @@ import type {
 import {
   type BranchConflictSnapshot,
   type BranchUpdatePolicy,
-  type BranchUpdateStrategy,
+  BranchUpdateStrategy,
   branchConflictCache,
   branchConflictResolutionSchema,
   branchUpdateJobKind,
@@ -21,6 +21,7 @@ import {
   branchUpdateStrategy,
   branchUpdateWaitingStatus,
   conflictResolutionPolicyError,
+  domainEvents,
   hasBranchConflicts,
   jobAttempt,
   jobRetryPolicy,
@@ -71,7 +72,7 @@ function branchOperationRecovery(job: { kind: string; status: string; payload: u
     canResumeReviewBranchUpdate:
       reservedFailure &&
       job.kind === branchUpdateJobKind &&
-      !!(payload.preparedUpdate || payload.rebaseProgress),
+      !!(payload.preparedUpdate || payload.rebaseProgress || payload.resolutionSnapshot),
     canResumeConflictResolution:
       reservedFailure &&
       job.kind === "branch.merge" &&
@@ -734,7 +735,7 @@ export class PushDocsRepository extends SecurityRepository {
         payload: { branch: branchName, documentCount: documents.length, headSha },
         projectId,
         revision: 1,
-        type: "branch.synchronized",
+        type: domainEvents.branchSynchronized,
       });
     });
   }
@@ -1002,7 +1003,8 @@ export class PushDocsRepository extends SecurityRepository {
         (job.status !== "failed" ||
           payload.preparedMerge ||
           payload.preparedUpdate ||
-          payload.rebaseProgress)
+          payload.rebaseProgress ||
+          payload.resolutionSnapshot)
       );
     });
   }
@@ -1010,6 +1012,97 @@ export class PushDocsRepository extends SecurityRepository {
   async getActiveReviewBranchUpdate(projectId: string, branch: string) {
     const job = await this.getActiveConflictMerge(projectId, branch);
     return job?.kind === branchUpdateJobKind ? job : undefined;
+  }
+
+  async getBranchUpdateOperation(projectId: string, operationId: string) {
+    if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(operationId))
+      return undefined;
+    const job = await this.database
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "=", operationId)
+      .where("kind", "=", branchUpdateJobKind)
+      .where(sql<string>`payload->>'projectId'`, "=", projectId)
+      .executeTakeFirst();
+    return job && !(job.payload as Record<string, unknown>).reservationReleased ? job : undefined;
+  }
+
+  async queueBranchUpdate(input: {
+    projectId: string;
+    branch: string;
+    sourceBranch: string;
+    expectedHeadSha: string;
+    updatePolicy: BranchUpdatePolicy;
+    repositoryKey: string;
+    userId: string;
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
+    if (!input.updatePolicy.strategy || input.updatePolicy.error)
+      throw new RevisionConflictError(input.updatePolicy.error ?? branchUpdateMessages.unavailable);
+    const branch = normalizeBranchRef(input.branch);
+    const sourceBranch = normalizeBranchRef(input.sourceBranch);
+    return this.transaction(async (tx) => {
+      const project = await tx
+        .selectFrom("projects")
+        .select("default_branch")
+        .where("id", "=", input.projectId)
+        .executeTakeFirstOrThrow();
+      const context = await tx
+        .selectFrom("branch_contexts")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", branch)
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        !context ||
+        context.is_protected ||
+        branch === project.default_branch ||
+        sourceBranch !== project.default_branch
+      )
+        throw new RevisionConflictError(branchUpdateMessages.unavailableBranches);
+      const store = new PushDocsRepository(tx);
+      const active = await store.getActiveConflictMerge(input.projectId, branch);
+      if (active) {
+        const payload = active.payload as Record<string, unknown>;
+        if (
+          active.kind === branchUpdateJobKind &&
+          !payload.reviewId &&
+          payload.sourceBranch === sourceBranch &&
+          payload.expectedHeadSha === input.expectedHeadSha &&
+          payload.repositoryKey === input.repositoryKey &&
+          sameBranchUpdatePolicy(payload.updatePolicy as BranchUpdatePolicy, input.updatePolicy)
+        )
+          return active.id;
+        throw new RevisionConflictError(branchUpdateMessages.busy);
+      }
+      const blockers = await store.getBranchConflictBlockers(input.projectId, branch);
+      const merging = await tx
+        .selectFrom("jobs")
+        .select("id")
+        .where("kind", "=", "branch.merge")
+        .where("status", "in", ["queued", "running"])
+        .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+        .where(sql<string>`payload->>'branch'`, "=", branch)
+        .executeTakeFirst();
+      if (blockers.paths.length || blockers.busy || merging)
+        throw new RevisionConflictError(branchUpdateMessages.pendingChanges);
+      const job = await tx
+        .insertInto("jobs")
+        .values({
+          kind: branchUpdateJobKind,
+          payload: {
+            ...input,
+            branch,
+            sourceBranch,
+            strategy: input.updatePolicy.strategy,
+            branchOnly: true,
+          },
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      return job.id;
+    });
   }
 
   async getMcpBranchOperation(projectId: string, branch: string) {
@@ -1043,7 +1136,10 @@ export class PushDocsRepository extends SecurityRepository {
       const unavailable = "Подготовленное обновление недоступно для восстановления.";
       if (!job) throw new RevisionConflictError(unavailable);
       const payload = job.payload as Record<string, unknown>;
-      if (!(payload.preparedUpdate || payload.rebaseProgress) || payload.reservationReleased)
+      if (
+        !(payload.preparedUpdate || payload.rebaseProgress || payload.resolutionSnapshot) ||
+        payload.reservationReleased
+      )
         throw new RevisionConflictError(unavailable);
       // Concurrent resumes observe the same job without changing its running authorization.
       if (job.status === "queued" || job.status === "running") return job.id;
@@ -1060,7 +1156,9 @@ export class PushDocsRepository extends SecurityRepository {
             ...payload,
             userId,
             oauthGrantId,
-            ...(payload.rebaseProgress ? { retryBaseAttempt: job.attempts } : {}),
+            ...(payload.rebaseProgress || payload.resolutionSnapshot
+              ? { retryBaseAttempt: job.attempts }
+              : {}),
           },
         })
         .where("id", "=", job.id)
@@ -1156,7 +1254,7 @@ export class PushDocsRepository extends SecurityRepository {
         .where(sql<string>`payload->>'branch'`, "=", branch.full_ref)
         .executeTakeFirst();
       if (blockers.paths.length || blockers.busy || queuedMerge)
-        throw new RevisionConflictError("Сначала завершите текущие изменения в исходной ветке.");
+        throw new RevisionConflictError(branchUpdateMessages.pendingChanges);
       const job = await tx
         .insertInto("jobs")
         .values({
@@ -1231,6 +1329,131 @@ export class PushDocsRepository extends SecurityRepository {
         })
         .where("id", "=", jobId)
         .execute();
+    });
+  }
+
+  async pauseMergeUpdate(
+    jobId: string,
+    attempt: number,
+    snapshot: BranchConflictSnapshot,
+    targetKey: string,
+  ) {
+    await this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .select("payload")
+        .where("id", "=", jobId)
+        .where("kind", "=", branchUpdateJobKind)
+        .where("status", "=", "running")
+        .where("attempts", "=", attempt)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const payload = job.payload as Record<string, unknown>;
+      if (
+        payload.strategy !== BranchUpdateStrategy.Merge ||
+        snapshot.merge?.operationId !== jobId ||
+        snapshot.parentSha !== payload.expectedHeadSha ||
+        snapshot.branch !== payload.branch ||
+        snapshot.sourceBranch !== payload.sourceBranch ||
+        !sameBranchUpdatePolicy(payload.updatePolicy as BranchUpdatePolicy, snapshot.updatePolicy)
+      )
+        throw new RevisionConflictError("Состояние слияния не соответствует операции.");
+      await tx
+        .updateTable("jobs")
+        .set({
+          status: branchUpdateWaitingStatus,
+          locked_at: null,
+          last_error: null,
+          updated_at: new Date(),
+          payload: { ...payload, conflictSnapshot: snapshot, targetKey, retryBaseAttempt: attempt },
+        })
+        .where("id", "=", jobId)
+        .execute();
+    });
+  }
+
+  async continueMergeUpdate(input: {
+    projectId: string;
+    operationId: string;
+    conflictId: string;
+    files: BranchConflictResolution;
+    userId: string;
+    oauthGrantId?: string;
+  }) {
+    await this.requireProjectAccess(input.userId, input.projectId, "branch:push");
+    const files = branchConflictResolutionSchema
+      .parse(input.files)
+      .sort((a, b) => a.path.localeCompare(b.path));
+    return this.transaction(async (tx) => {
+      const job = await tx
+        .selectFrom("jobs")
+        .selectAll()
+        .where("id", "=", input.operationId)
+        .where("kind", "=", branchUpdateJobKind)
+        .where(sql<string>`payload->>'projectId'`, "=", input.projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const payload = job.payload as Record<string, unknown>;
+      const accepted = payload.resolutionSnapshot as BranchConflictSnapshot | undefined;
+      if (accepted?.merge?.conflictId === input.conflictId && !payload.reservationReleased) {
+        if (canonicalJson(payload.resolutionFiles) !== canonicalJson(files))
+          throw new RevisionConflictError("Для этого слияния уже принято другое решение.");
+        return job.id;
+      }
+      const snapshot = payload.conflictSnapshot as BranchConflictSnapshot | undefined;
+      if (
+        job.status !== branchUpdateWaitingStatus ||
+        payload.reservationReleased ||
+        snapshot?.merge?.conflictId !== input.conflictId ||
+        snapshot.merge.operationId !== job.id
+      )
+        throw new RevisionConflictError("Конфликт слияния изменился. Обновите данные операции.");
+      const policyError = mergeResolutionPolicyError(snapshot.updatePolicy);
+      if (policyError) throw new RevisionConflictError(policyError);
+      if (
+        !snapshot.files.length ||
+        snapshot.unsupportedReason ||
+        snapshot.files.some((file) => file.kind === "unsupported") ||
+        files.length !== snapshot.files.length ||
+        new Set(files.map((file) => file.path)).size !== files.length ||
+        files.some((file) => !snapshot.files.some((item) => item.path === file.path))
+      )
+        throw new RevisionConflictError("Выберите решение для каждого поддерживаемого файла.");
+      await tx
+        .selectFrom("branch_contexts")
+        .select("id")
+        .where("project_id", "=", input.projectId)
+        .where("full_ref", "=", snapshot.branch)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const blockers = await new PushDocsRepository(tx).getBranchConflictBlockers(
+        input.projectId,
+        snapshot.branch,
+        job.id,
+      );
+      if (blockers.paths.length || blockers.busy)
+        throw new RevisionConflictError(branchUpdateMessages.pendingChanges);
+      await tx
+        .updateTable("jobs")
+        .set({
+          status: "queued",
+          available_at: new Date(),
+          locked_at: null,
+          last_error: null,
+          updated_at: new Date(),
+          payload: {
+            ...payload,
+            userId: input.userId,
+            oauthGrantId: input.oauthGrantId,
+            resolutionSnapshot: snapshot,
+            resolutionFiles: files,
+            conflictSnapshot: undefined,
+            retryBaseAttempt: job.attempts,
+          },
+        })
+        .where("id", "=", job.id)
+        .execute();
+      return job.id;
     });
   }
 
@@ -1334,11 +1557,11 @@ export class PushDocsRepository extends SecurityRepository {
       const snapshot = payload.conflictSnapshot as BranchConflictSnapshot | undefined;
       if (
         job.status !== branchUpdateWaitingStatus ||
-        snapshot?.rebase?.conflictId !== conflictId ||
+        (snapshot?.rebase?.conflictId ?? snapshot?.merge?.conflictId) !== conflictId ||
         payload.preparedUpdate
       )
         throw new RevisionConflictError(
-          "Отменить rebase можно во время ожидания текущего конфликта.",
+          "Отменить обновление можно во время ожидания текущего конфликта.",
         );
       await tx
         .updateTable("jobs")
@@ -1346,7 +1569,9 @@ export class PushDocsRepository extends SecurityRepository {
           status: "failed",
           locked_at: null,
           updated_at: new Date(),
-          last_error: "Rebase отменён пользователем. Удалённая ветка не изменена.",
+          last_error: snapshot?.rebase
+            ? "Rebase отменён пользователем. Удалённая ветка не изменена."
+            : "Обновление отменено пользователем. Удалённая ветка не изменена.",
           payload: { ...payload, reservationReleased: true, cancelledConflictId: conflictId },
         })
         .where("id", "=", job.id)
@@ -1441,7 +1666,7 @@ export class PushDocsRepository extends SecurityRepository {
       );
   }
 
-  async getBranchConflictBlockers(projectId: string, branch: string) {
+  async getBranchConflictBlockers(projectId: string, branch: string, excludedOperationId?: string) {
     const [drafts, attachments, merge, context] = await Promise.all([
       this.listDraftFiles(projectId, branch),
       this.listAttachmentsForBranch(projectId, branch),
@@ -1477,7 +1702,7 @@ export class PushDocsRepository extends SecurityRepository {
           ...attachments.map((file) => file.repository_path),
         ]),
       ],
-      busy: Boolean(changes.length || upload || merge),
+      busy: Boolean(changes.length || upload || (merge && merge.id !== excludedOperationId)),
       mergeJobId: merge?.id,
       mergeFailed: merge?.status === "failed",
     };
@@ -1653,7 +1878,7 @@ export class PushDocsRepository extends SecurityRepository {
         snapshot.branch,
       );
       if (blockers.busy || blockers.paths.length)
-        throw new RevisionConflictError("Сначала завершите текущие изменения в исходной ветке.");
+        throw new RevisionConflictError(branchUpdateMessages.pendingChanges);
       const job = await tx
         .insertInto("jobs")
         .values({
@@ -1889,7 +2114,7 @@ export class PushDocsRepository extends SecurityRepository {
   async getMcpConflictInspection(projectId: string, inspectionId: string) {
     const job = await this.database
       .selectFrom("jobs")
-      .select(["payload", "status"])
+      .select(["payload", "status", "kind"])
       .where("id", "=", inspectionId)
       .where("kind", "in", ["branch.conflicts", branchUpdateJobKind])
       .where(sql<string>`payload->>'projectId'`, "=", projectId)
@@ -1898,7 +2123,16 @@ export class PushDocsRepository extends SecurityRepository {
     const payload = job.payload as Record<string, unknown>;
     return {
       status: job.status,
-      externalReviewId: String(payload.externalReviewId),
+      branchOnly:
+        job.kind === branchUpdateJobKind &&
+        payload.branchOnly === true &&
+        !payload.reviewId &&
+        !payload.externalReviewId,
+      branch: payload.branch,
+      sourceBranch: payload.sourceBranch,
+      repositoryKey: payload.repositoryKey,
+      externalReviewId:
+        typeof payload.externalReviewId === "string" ? payload.externalReviewId : undefined,
       targetKey: payload.targetKey,
       snapshot: payload.conflictSnapshot as BranchConflictSnapshot | undefined,
     };
@@ -1952,12 +2186,13 @@ export class PushDocsRepository extends SecurityRepository {
         : null,
       result: {
         branch,
-        ...(job.status === branchUpdateWaitingStatus &&
-        (payload.conflictSnapshot as BranchConflictSnapshot | undefined)?.rebase
+        ...(job.status === branchUpdateWaitingStatus && payload.conflictSnapshot
           ? {
               needsConflictResolution: true,
               inspectionId: operationId,
-              comparisonKind: "rebase",
+              comparisonKind: (payload.conflictSnapshot as BranchConflictSnapshot).rebase
+                ? "rebase"
+                : "merge",
               rebase: (payload.conflictSnapshot as BranchConflictSnapshot).rebase,
             }
           : {}),
@@ -2806,7 +3041,7 @@ export class PushDocsRepository extends SecurityRepository {
       .selectFrom("domain_events")
       .select("id")
       .where("entity_id", "=", branchId)
-      .where("type", "=", "branch.synchronized")
+      .where("type", "=", domainEvents.branchSynchronized)
       .executeTakeFirst();
     return Boolean(event);
   }
@@ -2893,6 +3128,7 @@ export class PushDocsRepository extends SecurityRepository {
           path: file.path,
           content: file.content ?? "",
           baseContent: existing?.content ?? "",
+          baseContentKnown: Boolean(existing) || !branch.repository_paths.includes(file.path),
           title: titleFromDraft(file.content, file.path),
           locale: existing?.locale ?? file.path.match(/^i18n\/([^/]+)/)?.[1] ?? "default",
           version: existing?.version ?? "current",
@@ -2984,6 +3220,7 @@ export class PushDocsRepository extends SecurityRepository {
       path,
       content: draft ? (draft.content ?? "") : (imported?.content ?? ""),
       baseContent: imported?.content ?? "",
+      baseContentKnown: Boolean(imported) || !branch.repository_paths.includes(path),
       loaded: true,
       title: draft
         ? titleFromDraft(draft.content, path)
@@ -3000,6 +3237,7 @@ export class PushDocsRepository extends SecurityRepository {
     userId: string;
     expectedRevision: number;
     expectedHeadSha?: string;
+    expectedChangeSetId?: string;
     files: Array<{ path: string; content?: string | null; revert?: boolean; createOnly?: boolean }>;
   }): Promise<{ changeSetId: string; revision: number }> {
     await this.requireProjectAccess(input.userId, input.projectId, "document:write");
@@ -3043,6 +3281,7 @@ export class PushDocsRepository extends SecurityRepository {
         .executeTakeFirst();
       if (
         (changeSet?.revision ?? 0) !== input.expectedRevision ||
+        (input.expectedChangeSetId !== undefined && changeSet?.id !== input.expectedChangeSetId) ||
         (changeSet && changeSet.status !== "open")
       )
         throw new RevisionConflictError("Набор изменений обновился. Перечитайте страницу.");

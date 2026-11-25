@@ -56,14 +56,16 @@ test.beforeAll(async () => {
       import "./apps/web/src/app/globals.css";
       import "./apps/web/src/app/workbench.css";
       import "./packages/ui/src/styles.css";
-      const props = {projectId:"project",reviewId:"review",branch:"docs/task",targetBranch:"main",defaultBranch:"main",ownerId:"user",canWrite:true,providerUrl:"https://git.example/review",reviewLabel:"MR"};
+      const withoutReview=location.search.includes("branch-update") || sessionStorage.getItem("fixture-branch-update")==="true";
+      if(withoutReview) { sessionStorage.setItem("fixture-branch-update","true"); if(sessionStorage.getItem("rebase-step")===null) sessionStorage.setItem("rebase-step","1"); }
+      const props = {projectId:"project",reviewId:withoutReview ? "branch-update:operation" : "review",branch:"docs/task",targetBranch:"main",defaultBranch:"main",ownerId:"user",canWrite:true,providerUrl:withoutReview ? undefined : "https://git.example/review",reviewLabel:"MR"};
       const isRebase=location.search.includes("rebase") || sessionStorage.getItem("fixture-rebase")==="true";
       const isPausedRebase=location.search.includes("paused-rebase");
       const closedReview=location.search.includes("closed");
       if(isPausedRebase && sessionStorage.getItem("rebase-step")===null) sessionStorage.setItem("rebase-step","1");
       if(isRebase) sessionStorage.setItem("fixture-rebase","true");
       function App() {
-        const [section,setSection] = useState(location.search.includes("resolve=") ? "resolver" : isRebase ? "changes" : location.search.includes("documents") ? "documents" : location.search.includes("review") ? "review" : "resolver");
+        const [section,setSection] = useState(location.search.includes("resolve=") ? "resolver" : isRebase || withoutReview ? "changes" : location.search.includes("documents") ? "documents" : location.search.includes("review") ? "review" : "resolver");
         const [,setVersion] = useState(0);
         useEffect(() => {
           const navigate = () => setSection("changes");
@@ -75,6 +77,7 @@ test.beforeAll(async () => {
           return () => { window.removeEventListener("fixture:navigate",navigate); window.removeEventListener("fixture:resolve",resolve); window.removeEventListener("fixture:refresh",refresh); };
         },[]);
         const step=Number(sessionStorage.getItem("rebase-step")||0);
+        if(withoutReview) return section === "resolver" ? <BranchConflictResolver {...props} /> : <div className="page"><h1>Изменения в ветке</h1>{step<3 ? <BranchConflictNotice {...props} currentBranch="docs/task" hasPendingChanges={false} /> : <p>Ветка обновлена</p>}</div>;
         if(isPausedRebase) return <div className="page changes-page">
           <header className="page-header"><div><h1>Изменения в ветке</h1></div><div className="changes-header-actions"><span className="branch-placeholder"><GitBranch aria-hidden size={15} />docs/task</span></div></header>
           <ol className="branch-workflow" aria-label="Этапы работы с веткой"><li className="complete"><span><Check aria-hidden size={13}/></span>Правки</li><li className="complete"><span><Check aria-hidden size={13}/></span>Коммит в ветку</li><li className="active" aria-current="step"><span>3</span>MR</li></ol>
@@ -115,20 +118,22 @@ test.beforeAll(async () => {
                   ? 'const router={replace(href){history.replaceState({},"",href);window.dispatchEvent(new Event("fixture:navigate"));},push(href){this.replace(href);},refresh(){window.dispatchEvent(new Event("fixture:refresh"));}};export function useRouter(){return router;}'
                   : `
           const isRebase=location.search.includes("rebase") || sessionStorage.getItem("fixture-rebase")==="true";
+          const withoutReview=location.search.includes("branch-update") || sessionStorage.getItem("fixture-branch-update")==="true";
           const step=()=>Number(sessionStorage.getItem("rebase-step")||0);
           const snapshot=${JSON.stringify(snapshot)};
           if(isRebase) snapshot.updatePolicy.strategy="rebase";
-          export async function prepareConflictResolutionAction() { return isRebase && step()>0 && step()<3 ? [{branch:"docs/task",paths:[],busy:true,mergeJobId:"rebase"}] : []; }
+          export async function prepareConflictResolutionAction() { return (isRebase || withoutReview) && step()>0 && step()<3 ? [{branch:"docs/task",paths:[],busy:true,mergeJobId:withoutReview ? "operation" : "rebase"}] : []; }
           let polls=0;
-          export async function inspectReviewConflictsAction() { window.inspectionStarts=(window.inspectionStarts||0)+1; await new Promise(r=>setTimeout(r, 700)); if(location.search.includes("failed") && window.inspectionStarts === 1) throw new Error("GitLab is not responding"); return "inspect"; }
+          export async function inspectReviewConflictsAction() { if(withoutReview) return "operation"; window.inspectionStarts=(window.inspectionStarts||0)+1; await new Promise(r=>setTimeout(r, 700)); if(location.search.includes("failed") && window.inspectionStarts === 1) throw new Error("GitLab is not responding"); return "inspect"; }
           export async function gitOperationStatusAction(project, id) {
+            if(id === "operation") { await new Promise(resolve=>setTimeout(resolve,300)); return step()<3 ? {status:"needs_resolution",conflictSnapshot:{...snapshot,...(isRebase ? {rebase:{operationId:"operation",conflictId:"conflict-"+step(),commitSha:"commit-"+step(),currentParentSha:"current",originalParentSha:"original",index:step(),total:2,title:"Edit "+step()}} : {merge:{operationId:"operation",conflictId:"merge-token"}})}} : {status:"done"}; }
             if(id === "rebase") { await new Promise(resolve=>setTimeout(resolve,500)); return step()<3 ? {status:"needs_resolution",conflictSnapshot:{...snapshot,rebase:{operationId:"rebase",conflictId:"conflict-"+step(),commitSha:"commit-"+step(),currentParentSha:"current",originalParentSha:"original",index:step(),total:2,title:"Edit "+step()}}} : {status:"done"}; }
             if(id === "inspect" && polls++ === 0) return {status:"running", progress:"comparing-conflicts",transferProgress:{receivedBytes:12500000,totalBytes:null}};
             return {status:"done", conflictSnapshot: id === "inspect" ? snapshot : null};
           }
           export async function startGitOperationAction() {window.updateStarts=(window.updateStarts||0)+1;sessionStorage.setItem("rebase-step","1");return "rebase";}
           export async function cancelRebaseUpdateAction(...args) {window.cancelledRebase=args;await new Promise(resolve=>setTimeout(resolve,300));sessionStorage.setItem("rebase-step","0");}
-          export async function submitConflictResolutionAction(project, inspection, files, conflictId) { window.submittedFiles=files; if(isRebase){sessionStorage.setItem("rebase-decisions",JSON.stringify([...(JSON.parse(sessionStorage.getItem("rebase-decisions")||"[]")),conflictId]));sessionStorage.setItem("rebase-step",String(step()+1));return "rebase";} return "publish"; }
+          export async function submitConflictResolutionAction(project, inspection, files, conflictId, mergeConflictId) { window.submittedFiles=files; window.submittedOperation={inspection,conflictId,mergeConflictId}; if(withoutReview && !isRebase){sessionStorage.setItem("rebase-step","3");return "operation";} if(isRebase){sessionStorage.setItem("rebase-decisions",JSON.stringify([...(JSON.parse(sessionStorage.getItem("rebase-decisions")||"[]")),conflictId]));sessionStorage.setItem("rebase-step",String(step()+1));return withoutReview ? "operation" : "rebase";} return "publish"; }
           export async function retryConflictResolutionAction() { return "publish"; }
         `,
           }));
@@ -156,6 +161,44 @@ test.beforeAll(async () => {
   };
 });
 test.afterAll(async () => fixture?.close());
+
+for (const strategy of ["merge", "rebase"]) {
+  test(`resolves a ${strategy} update through the existing Changes notice before creating an MR`, async ({
+    page,
+  }) => {
+    await page.goto(`${fixture.url}?branch-update${strategy === "rebase" ? "&rebase" : ""}`);
+    await expect(page.getByRole("heading", { name: "Исправьте конфликты" })).toBeVisible();
+    await page.getByRole("link", { name: "Исправить конфликты" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Разрешение конфликтов", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: "Вернуться к изменениям" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Открыть MR" })).toHaveCount(0);
+    const label = strategy === "rebase" ? "Оставить актуальную основу" : "Оставить ваш текст";
+    await page.getByRole("radio", { name: label }).first().check();
+    await page.reload();
+    await expect(page.getByRole("radio", { name: label }).first()).toBeChecked();
+    for (const radio of await page.getByRole("radio", { name: label }).all()) await radio.check();
+    await page
+      .getByRole("button", {
+        name:
+          strategy === "rebase" ? "Сохранить и продолжить" : "Отправить исправления в docs/task",
+      })
+      .click();
+    if (strategy === "rebase") {
+      await expect(page.getByRole("heading", { name: "Коммит 2 из 2" })).toBeVisible();
+      for (const radio of await page.getByRole("radio", { name: label }).all()) await radio.check();
+      await page.getByRole("button", { name: "Сохранить и продолжить" }).click();
+      await expect(page.getByText("Ветка обновлена", { exact: true })).toBeVisible();
+    } else
+      await expect(
+        page.getByRole("heading", { name: "Решение отправлено в docs/task" }),
+      ).toBeVisible();
+    expect(await page.evaluate(() => Reflect.get(window, "submittedOperation"))).toMatchObject({
+      inspection: "operation",
+    });
+  });
+}
 
 test("changes page cancels a paused rebase after its MR closes", async ({ page }, testInfo) => {
   await page.goto(`${fixture.url}?paused-rebase&closed`);

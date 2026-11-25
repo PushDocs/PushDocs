@@ -19,7 +19,7 @@
     "checks": "yarn check",
     "db:migrate": "yarn workspace @pushdocs/db migrate",
     "dev": "yarn workspace @pushdocs/web dev",
-    "dev:all": "turbo run dev --parallel",
+    "dev:all": "turbo run dev --parallel --ui=tui",
     "e2e": "playwright test",
     "format": "biome format --write .",
     "format:check": "biome format .",

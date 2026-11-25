@@ -1,4 +1,5 @@
-import { BranchUpdateStrategy } from "@pushdocs/contracts";
+import { BranchCreationStatusFailure, BranchUpdateStrategy } from "@pushdocs/contracts";
+import { AccessDeniedError } from "@pushdocs/domain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -67,6 +68,7 @@ const mocks = vi.hoisted(() => {
       enqueueBranchSync: vi.fn(),
       ensureBranchImport: vi.fn(),
       enqueueBranchMerge: vi.fn(),
+      queueBranchUpdate: vi.fn(),
       queueReviewBranchUpdate: vi.fn(),
       enqueueBranchSyncIfStale: vi.fn(),
       enqueueReviewCreation: vi.fn(),
@@ -125,7 +127,8 @@ vi.mock("@pushdocs/db", async (importOriginal) => {
     hashOpaqueToken: mocks.hashOpaqueToken,
   };
 });
-vi.mock("@pushdocs/providers", () => ({
+vi.mock("@pushdocs/providers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@pushdocs/providers")>()),
   createProvider: mocks.createProvider,
   normalizeRepositoryLocator: mocks.normalizeRepositoryLocator,
 }));
@@ -144,11 +147,12 @@ vi.mock("@/lib/server", () => ({
   sessionCookieName: "pushdocs_session",
 }));
 
-import { RevisionConflictError } from "@pushdocs/db";
+import { NotFoundError, RevisionConflictError } from "@pushdocs/db";
 import {
   acceptInvitationAction,
   beginTwoFactorAction,
   bootstrapAction,
+  branchCreationStatusAction,
   changePasswordAction,
   createCommentAction,
   createConnectionAction,
@@ -1387,6 +1391,42 @@ describe("document and review actions", () => {
     await expect(twoFactorStatusAction()).resolves.toBe(false);
   });
 
+  it("returns a serializable sign-in failure before reading branch operation data", async () => {
+    await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+      error: BranchCreationStatusFailure.AuthenticationRequired,
+    });
+    expect(mocks.repo.requireProjectAccess).not.toHaveBeenCalled();
+    expect(mocks.repo.getProjectJob).not.toHaveBeenCalled();
+  });
+
+  it.each([new NotFoundError("Project not found"), new AccessDeniedError("project:read")])(
+    "stops branch status checks when project access is lost: %s",
+    async (error) => {
+      mocks.optionalUser.mockResolvedValue(mocks.user);
+      mocks.repo.requireProjectAccess.mockRejectedValueOnce(error);
+      await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+        error: BranchCreationStatusFailure.AccessDenied,
+      });
+      expect(mocks.repo.getProjectJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("scopes branch status reads and distinguishes a missing job from a failed request", async () => {
+    mocks.optionalUser.mockResolvedValue(mocks.user);
+    mocks.repo.getProjectJob.mockResolvedValueOnce({ status: "running" });
+    await expect(branchCreationStatusAction(projectId, "job")).resolves.toEqual({
+      job: { status: "running" },
+    });
+    expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "project:read");
+    expect(mocks.repo.getProjectJob).toHaveBeenCalledWith(projectId, "job");
+    mocks.repo.getProjectJob.mockResolvedValueOnce(undefined);
+    await expect(branchCreationStatusAction(projectId, "missing")).resolves.toEqual({
+      error: BranchCreationStatusFailure.NotFound,
+    });
+    mocks.repo.requireProjectAccess.mockRejectedValueOnce(new Error("database offline"));
+    await expect(branchCreationStatusAction(projectId, "job")).rejects.toThrow("database offline");
+  });
+
   it("retries the existing submission using the signed-in actor", async () => {
     await retryChangeSetSubmissionAction(form({ projectId, changeSetId }));
     expect(mocks.repo.retryChangeSetSubmission).toHaveBeenCalledWith(
@@ -1733,16 +1773,39 @@ it("does not bypass verification when the security user no longer exists", async
   expect(mocks.repo.manageMember).not.toHaveBeenCalled();
 });
 
-it("queues the configured default branch merge without creating a review", async () => {
+it("queues a policy-aware default branch update without creating a review", async () => {
   mocks.repo.getProjectSettings.mockResolvedValue({ default_branch: "stable" });
+  mocks.repo.getProjectSyncTarget.mockResolvedValue({
+    connection_id: "connection",
+    provider_repository_id: "42",
+    root_path: ".",
+    base_url: "https://git.test",
+    clone_url: "https://git.test/acme/docs.git",
+    kind: "gitlab",
+  });
+  const client = mocks.createProvider();
+  client.listBranches.mockResolvedValue([
+    { name: "docs/task", sha: "working-head" },
+    { name: "stable", sha: "stable-head" },
+  ]);
+  Object.assign(client, {
+    readFile: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ version: 1, git: { updateStrategy: "rebase" } })),
+  });
   await startGitOperationAction({ projectId, branch: "docs/task", mergeDefault: true });
   expect(mocks.repo.requireProjectAccess).toHaveBeenCalledWith("user", projectId, "branch:push");
-  expect(mocks.repo.enqueueBranchMerge).toHaveBeenCalledWith({
-    projectId,
-    branch: "docs/task",
-    sourceBranch: "stable",
-    userId: "user",
-  });
+  expect(mocks.repo.queueBranchUpdate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      projectId,
+      branch: "docs/task",
+      sourceBranch: "stable",
+      userId: "user",
+      expectedHeadSha: "working-head",
+      updatePolicy: expect.objectContaining({ strategy: "rebase", targetSha: "stable-head" }),
+    }),
+  );
+  expect(mocks.repo.enqueueBranchMerge).not.toHaveBeenCalled();
   expect(mocks.repo.enqueueReviewCreation).not.toHaveBeenCalled();
   await expect(
     startGitOperationAction({ projectId, branch: "stable", mergeDefault: true }),

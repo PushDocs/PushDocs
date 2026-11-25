@@ -37,7 +37,7 @@ it("navigates between text diffs and keeps the source branch in the edit link", 
   fireEvent.click(screen.getByRole("button", { name: "Следующий файл" }));
   expect(screen.getByText("New article")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Открыть файл" }).getAttribute("href")).toBe(
-    "/projects/p/documents?branch=docs%2Ffix&path=docs%2Fnew.md",
+    "/projects/p/documents?branch=docs%2Ffix&path=docs%2Fnew.md&line=1&from=changes",
   );
   expect(screen.getByRole("button", { name: "Следующий файл" })).toHaveProperty("disabled", true);
   fireEvent.click(screen.getByRole("button", { name: "Предыдущий файл" }));
@@ -175,6 +175,26 @@ it("filters group counts, hides empty groups and restores the selected image aft
   expect(screen.getByText("After docs/a.md")).toBeTruthy();
 });
 
+it("returns to the selected file and preserves the search and line in editor links", () => {
+  render(
+    <ChangeReview
+      projectId="p"
+      branch="fix"
+      files={mixedFiles}
+      initialPath="docs/z.mdx"
+      initialQuery="docs/"
+      initialLine={3}
+    />,
+  );
+  expect(screen.getByRole("searchbox")).toHaveProperty("value", "docs/");
+  expect(screen.getByRole("option", { name: "docs/z.mdx M" }).getAttribute("aria-selected")).toBe(
+    "true",
+  );
+  expect(screen.getByRole("link", { name: "Открыть файл" }).getAttribute("href")).toBe(
+    "/projects/p/documents?branch=fix&path=docs%2Fz.mdx&line=3&from=changes&search=docs%2F",
+  );
+});
+
 const manyFiles = Array.from({ length: 10_000 }, (_, index) => ({
   path: `docs/section-${Math.floor(index / 100)}/file-${index}.md`,
   operation: "modify",
@@ -301,7 +321,7 @@ it("offers rollback only for editable changes, including admin-only configuratio
       projectId="p"
       branch="fix"
       files={[config]}
-      revertContext={{ revision: 1, ownerId: "user", canEditConfig: false }}
+      revertContext={{ revision: 1, headSha: "head", ownerId: "user", canEditConfig: false }}
     />,
   );
   expect(screen.queryByRole("button", { name: "Откатить изменения" })).toBeNull();
@@ -310,7 +330,7 @@ it("offers rollback only for editable changes, including admin-only configuratio
       projectId="p"
       branch="fix"
       files={[config]}
-      revertContext={{ revision: 1, ownerId: "user", canEditConfig: true }}
+      revertContext={{ revision: 1, headSha: "head", ownerId: "user", canEditConfig: true }}
     />,
   );
   expect(screen.getByRole("button", { name: "Откатить изменения" })).toBeTruthy();

@@ -109,6 +109,7 @@ export function conflictReport(
   return {
     mode: input.mode,
     comparisonKind: snapshot.rebase ? "rebase" : "merge",
+    ...(snapshot.merge ? { merge: snapshot.merge } : {}),
     ...(snapshot.rebase
       ? {
           rebase: snapshot.rebase,

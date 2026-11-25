@@ -150,6 +150,7 @@ export async function GET(request: Request, context: Context) {
         changeSetId: state.changeSet?.id,
         status: state.changeSet?.status ?? "open",
         sha: state.branch.head_commit_sha,
+        remoteHeadSha: state.branch.remote_head_sha,
         repositoryPaths: state.branch.repository_paths,
         config,
         branches,

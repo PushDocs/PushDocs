@@ -5,8 +5,11 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   acceptInvitationSchema,
+  BranchCreationStatusFailure,
   BranchUpdateStrategy,
   bootstrapSchema,
+  branchConflictRepositoryKey,
+  branchUpdateMessages,
   createCommentSchema,
   createComponentSchema,
   createConnectionSchema,
@@ -29,9 +32,11 @@ import {
   encryptSecret,
   hashInvitationToken,
   hashOpaqueToken,
+  NotFoundError,
   RevisionConflictError,
 } from "@pushdocs/db";
-import { normalizeRepositoryLocator } from "@pushdocs/providers";
+import { AccessDeniedError } from "@pushdocs/domain";
+import { loadBranchUpdatePolicy, normalizeRepositoryLocator } from "@pushdocs/providers";
 import { clearVpnAccess, validateVpnProfile, vpnProfileLimit } from "@pushdocs/vpn";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
@@ -681,12 +686,31 @@ export async function startGitOperationAction(input: {
     if (!project) throw new Error("Проект не найден");
     if (input.branch === project.default_branch)
       throw new Error("Выберите ветку задачи для слияния основной ветки");
-    return store.enqueueBranchMerge({
-      projectId: input.projectId,
-      branch: input.branch,
-      sourceBranch: project.default_branch,
-      userId: user.id,
-    });
+    const target = await store.getProjectSyncTarget(input.projectId);
+    if (!target) throw new Error("Подключение проекта недоступно");
+    const provider = await providerForConnection(target);
+    const branches = await provider.listBranches(target.provider_repository_id);
+    const branch = branches.find((item) => item.name === input.branch);
+    const source = branches.find((item) => item.name === project.default_branch);
+    if (!branch || !source || branch.protected)
+      return { error: branchUpdateMessages.unavailableBranches };
+    try {
+      return await store.queueBranchUpdate({
+        projectId: input.projectId,
+        branch: branch.name,
+        sourceBranch: source.name,
+        expectedHeadSha: branch.sha,
+        updatePolicy: await loadBranchUpdatePolicy(provider, target.provider_repository_id, {
+          rootPath: target.root_path,
+          targetSha: source.sha,
+        }),
+        repositoryKey: branchConflictRepositoryKey(target),
+        userId: user.id,
+      });
+    } catch (error) {
+      if (error instanceof RevisionConflictError) return { error: error.message };
+      throw error;
+    }
   }
   if (input.reviewsOnly) return store.enqueueReviewsSync(input.projectId);
   if (input.title)
@@ -723,6 +747,22 @@ export async function gitOperationStatusAction(projectId: string, jobId: string)
   const job = await repository().getProjectJob(projectId, jobId);
   if (!job) throw new Error("Операция не найдена");
   return job;
+}
+
+export async function branchCreationStatusAction(projectId: string, jobId: string) {
+  const user = await optionalUser();
+  if (!user) return { error: BranchCreationStatusFailure.AuthenticationRequired } as const;
+  const store = repository();
+  try {
+    await store.requireProjectAccess(user.id, projectId, "project:read");
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof AccessDeniedError)
+      return { error: BranchCreationStatusFailure.AccessDenied } as const;
+    throw error;
+  }
+  const job = await store.getProjectJob(projectId, jobId);
+  if (!job) return { error: BranchCreationStatusFailure.NotFound } as const;
+  return { job } as const;
 }
 
 export async function twoFactorStatusAction(): Promise<boolean> {

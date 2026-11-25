@@ -706,6 +706,42 @@ describe("repository locator normalization", () => {
   });
 });
 
+it.each(["gitlab", "github"] as const)(
+  "checks %s ancestry for branches ahead of, behind or diverged from the base",
+  async (kind) => {
+    const response = (sha: string) =>
+      kind === "gitlab" ? { id: sha } : { merge_base_commit: { sha } };
+    const fetch = vi.fn().mockResolvedValue(json(response("stable-head")));
+    vi.stubGlobal("fetch", fetch);
+    const provider =
+      kind === "gitlab"
+        ? new GitLabProvider("https://gitlab.test", "token")
+        : new GitHubProvider("https://github.com", "token");
+    // Own commits above stable do not require another update from stable.
+    expect(await provider.isAncestor("group/repo", "stable-head", "task-head")).toBe(true);
+    const url = new URL(String(fetch.mock.calls[0]?.[0]));
+    if (kind === "gitlab") {
+      expect(url.pathname).toBe("/api/v4/projects/group%2Frepo/repository/merge_base");
+      expect(url.searchParams.getAll("refs[]")).toEqual(["stable-head", "task-head"]);
+    } else {
+      expect(url.pathname).toBe("/repos/group/repo/compare/stable-head...task-head");
+      expect(url.searchParams.get("per_page")).toBe("1");
+    }
+    for (const mergeBase of ["task-head", "older-common-ancestor"]) {
+      fetch.mockResolvedValue(json(response(mergeBase)));
+      expect(await provider.isAncestor("group/repo", "stable-head", "task-head")).toBe(false);
+    }
+    fetch.mockResolvedValue(json({}));
+    await expect(provider.isAncestor("group/repo", "stable-head", "task-head")).rejects.toThrow(
+      "merge base",
+    );
+    fetch.mockResolvedValue(json({ message: "offline" }, 503));
+    await expect(provider.isAncestor("group/repo", "stable-head", "task-head")).rejects.toThrow(
+      "503",
+    );
+  },
+);
+
 it("compares GitLab changes from the merge base and handles renames", async () => {
   const fetchMock = vi.fn().mockResolvedValue(
     json({

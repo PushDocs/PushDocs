@@ -8,6 +8,7 @@ const repository = vi.hoisted(() => ({
   listChangeRequests: vi.fn().mockResolvedValue([
     {
       id: "mr",
+      state: "open",
       source_branch: "fix",
       target_branch: "release",
       title: "Update docs",
@@ -54,6 +55,7 @@ const repository = vi.hoisted(() => ({
   listConflicts: vi.fn().mockResolvedValue([]),
   getSubmissionStatus: vi.fn().mockResolvedValue(null),
   getActiveReviewBranchUpdate: vi.fn(),
+  getBranchUpdateOperation: vi.fn(),
   findOpenChangeRequestByBranch: vi
     .fn()
     .mockResolvedValue({ id: "mr", source_branch: "fix", state: "open", title: "Update docs" }),
@@ -96,10 +98,113 @@ vi.mock("@/components/submit-changes", async (importOriginal) => {
 });
 
 vi.mock("@/components/branch-import", () => ({ BranchImport: () => null }));
+vi.mock("@/components/use-branch-freshness", () => ({
+  useBranchFreshness: ({
+    headSha,
+    remoteHeadSha,
+  }: {
+    headSha?: string;
+    remoteHeadSha?: string | null;
+  }) => ({
+    filesCurrent: headSha ? (remoteHeadSha == null ? null : headSha === remoteHeadSha) : false,
+    includesDefaultBranch: true,
+    checking: false,
+    refresh: vi.fn(),
+  }),
+}));
 
 import { BranchConflictResolver } from "@/components/branch-conflicts";
 import { BranchImport } from "@/components/branch-import";
 import ChangesPage from "./page";
+
+it.each(["installed", "new-head", null])(
+  "shows only the appropriate import status or action for remote head %j",
+  async (remoteHeadSha) => {
+    const working = await repository.listChangedWorkingFiles("project", "fix");
+    repository.listChangedWorkingFiles.mockResolvedValueOnce({
+      ...working,
+      branch: {
+        ...working.branch,
+        head_commit_sha: "installed",
+        remote_head_sha: remoteHeadSha,
+      },
+    } as never);
+    const html = renderToStaticMarkup(
+      await ChangesPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ branch: "fix" }),
+      }),
+    );
+    expect(html.includes("Ветка актуальна")).toBe(remoteHeadSha === "installed");
+    expect(html.includes("Обновить файлы")).toBe(remoteHeadSha === "new-head");
+    expect(html.includes("Проверить обновления")).toBe(remoteHeadSha === null);
+  },
+);
+
+it.each(["merge", "rebase"])(
+  "shows the existing conflict notice for a %s operation before creating a review",
+  async (strategy) => {
+    repository.listDraftFiles.mockResolvedValueOnce([]);
+    repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+    repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(undefined);
+    repository.getActiveReviewBranchUpdate.mockResolvedValueOnce({
+      id: "operation",
+      status: "needs_resolution",
+      payload: { branch: "fix", sourceBranch: "stable", strategy, conflictSnapshot: { files: [] } },
+    });
+    const html = renderToStaticMarkup(
+      await ChangesPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ branch: "fix" }),
+      }),
+    );
+    expect(html).toContain("Исправьте конфликты");
+    expect(html).toContain("resolve=branch-update%3Aoperation");
+    expect(html).toContain("Исправить конфликты");
+    expect(html).not.toContain("Открыть MR");
+  },
+);
+
+it("opens the same resolver using the operation's actual branches without a review", async () => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(undefined);
+  repository.getBranchUpdateOperation.mockResolvedValueOnce({
+    id: "operation",
+    status: "needs_resolution",
+    payload: { branch: "fix", sourceBranch: "stable" },
+  });
+  const result = await ChangesPage({
+    params: Promise.resolve({ projectId: "project" }),
+    searchParams: Promise.resolve({ branch: "wrong", resolve: "branch-update:operation" }),
+  });
+  expect(result.type).toBe(BranchConflictResolver);
+  expect(result.props).toMatchObject({
+    branch: "fix",
+    targetBranch: "stable",
+    reviewId: "branch-update:operation",
+    providerUrl: undefined,
+  });
+});
+
+it("returns to normal changes when a completed operation link is reloaded", async () => {
+  repository.listDraftFiles.mockResolvedValueOnce([]);
+  repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+  repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(undefined);
+  repository.getBranchUpdateOperation.mockResolvedValueOnce({
+    id: "operation",
+    status: "done",
+    payload: { branch: "fix", sourceBranch: "stable" },
+  });
+  const html = renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ resolve: "branch-update:operation" }),
+    }),
+  );
+  expect(html).toContain("Изменения в ветке");
+  expect(html).not.toContain("Разрешение конфликтов");
+});
 
 it.each(["conflict", "dirty"])(
   "starts with an update action for a rebase branch reported as %s",
@@ -231,7 +336,7 @@ it.each(["need_rebase", "behind"])("prioritizes current changes before %s", asyn
   expect(html).not.toContain("Обновить ветку");
   expect(html).toContain("Отправить изменения");
   expect(html).not.toContain('href="https://git.example/mr"');
-  expect(html).toContain("Обновить из Git");
+  expect(html).toContain("Обновить файлы");
   expect(html).not.toContain("Получить из Git");
   expect(html).not.toContain("Исправить конфликты");
 });
@@ -349,7 +454,7 @@ it.each(["need_rebase", "conflict"])(
       }),
     );
     expect(html).toContain("Нет локальных правок");
-    expect(html).not.toContain("Обновить из Git");
+    expect(html).not.toContain("Обновить файлы");
     expect(html).not.toContain('href="https://git.example/mr"');
     expect(html.match(/href="\/projects\/project\/reviews\?review=mr"/g)).toHaveLength(1);
     expect(html.match(/Открыть документы/g)).toHaveLength(1);
@@ -587,4 +692,81 @@ it("opens changes for a successfully imported empty repository", async () => {
   );
   expect(html).toContain("Все изменения отправлены");
   expect(repository.hasImportedBranch).toHaveBeenLastCalledWith("branch");
+});
+
+it.each([
+  { provider: "gitlab", label: "MR", state: "merged", result: "влит" },
+  { provider: "github", label: "PR", state: "merged", result: "влит" },
+  { provider: "gitlab", label: "MR", state: "closed", result: "закрыт" },
+])(
+  "shows a $state $label instead of a creation form",
+  async ({ provider, label, state, result }) => {
+    repository.getProjectForUser.mockResolvedValueOnce({
+      id: "project",
+      defaultBranch: "stable",
+      provider,
+      role: "editor",
+    });
+    repository.listDraftFiles.mockResolvedValueOnce([]);
+    repository.listAttachmentsForBranch.mockResolvedValueOnce([]);
+    repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(null);
+    repository.listChangeRequests.mockResolvedValueOnce([
+      {
+        id: "merged",
+        external_id: "818",
+        source_branch: "fix",
+        target_branch: "stable",
+        state,
+        title: "Completed docs",
+        provider_url: "https://git.example/review/818",
+        // Readiness from before completion must not reopen conflict/update actions.
+        details: { source: { isFork: false }, readiness: { state: "blocked", reason: "conflict" } },
+      },
+    ]);
+    const html = renderToStaticMarkup(
+      await ChangesPage({
+        params: Promise.resolve({ projectId: "project" }),
+        searchParams: Promise.resolve({ branch: "fix" }),
+      }),
+    );
+    expect(html).toContain(`${label} ${result}`);
+    expect(html).toContain("Completed docs");
+    expect(html).toContain('href="https://git.example/review/818"');
+    expect(html).toContain("stable");
+    expect(html).not.toContain(`Создать ${label}`);
+    expect(html).not.toContain(`Название ${label}`);
+    expect(html).not.toContain("Все изменения отправлены");
+    expect(html).not.toContain("Исправить конфликты");
+    if (state === "merged") {
+      expect(html).toContain("empty-state--merged");
+      expect(html.match(/<li class="complete">/g)).toHaveLength(3);
+      expect(html).not.toContain('aria-current="step"');
+    } else {
+      expect(html).toContain('<li class="active" aria-current="step"><span>3</span>');
+    }
+  },
+);
+
+it("keeps new drafts sendable without treating a merged review as open", async () => {
+  repository.findOpenChangeRequestByBranch.mockResolvedValueOnce(null);
+  repository.listChangeRequests.mockResolvedValueOnce([
+    {
+      id: "merged",
+      external_id: "818",
+      source_branch: "fix",
+      target_branch: "stable",
+      state: "merged",
+      title: "Completed docs",
+      provider_url: "https://git.example/review/818",
+    },
+  ]);
+  const html = renderToStaticMarkup(
+    await ChangesPage({
+      params: Promise.resolve({ projectId: "project" }),
+      searchParams: Promise.resolve({ branch: "fix" }),
+    }),
+  );
+  expect(html).toContain("After server draft");
+  expect(html).toContain("Отправить изменения");
+  expect(submitChangesProps.mock.calls.at(-1)?.[0].reviewTitle).toBeUndefined();
 });

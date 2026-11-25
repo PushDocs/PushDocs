@@ -73,6 +73,7 @@ function runtime() {
       registerCompletionItemProvider,
     },
     editor: {
+      ShowLightbulbIconMode: { Off: "off" },
       createModel: vi.fn((value) => {
         text = value;
         return model;

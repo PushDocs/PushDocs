@@ -22,6 +22,7 @@ export enum ConflictLoadState {
 
 export type ConflictInspectionRequest = {
   projectId: string;
+  /** Review ID or a namespaced reference to a branch update operation. */
   reviewId: string;
   branch: string;
   targetBranch: string;

@@ -4,7 +4,12 @@ import { isEditableFile, parseProjectConfig } from "@pushdocs/content/config";
 import { applyEditorInput } from "@pushdocs/content/editing";
 import { attachmentSnippet, isMediaFile } from "@pushdocs/content/media";
 import { mediaAssetLocation } from "@pushdocs/content/media-paths";
-import { MediaInsertionMode, type ProjectConfig, projectConfigPaths } from "@pushdocs/contracts";
+import {
+  BranchCreationStage,
+  MediaInsertionMode,
+  type ProjectConfig,
+  projectConfigPaths,
+} from "@pushdocs/contracts";
 import { Select } from "@pushdocs/ui";
 import {
   ArrowRight,
@@ -29,8 +34,18 @@ import {
   startGitOperationAction,
 } from "@/app/actions";
 import { defaultFileSearchOptions } from "@/lib/file-search";
-import { projectChangesHref } from "@/lib/project-paths";
+import { type ChangesLocation, projectChangesHref } from "@/lib/project-paths";
+import { realtimeEvents } from "@/lib/realtime-events";
 import { AssetVideo } from "./asset-video";
+import {
+  BranchCreationCancelled,
+  BranchCreationJobFailed,
+  BranchCreationObserver,
+  type BranchCreationOperation,
+  BranchCreationOperationKind,
+  BranchCreationReadError,
+  branchCreationSessions,
+} from "./branch-creation-session";
 import { BranchOperations } from "./branch-operations";
 import {
   CollaborationError,
@@ -81,6 +96,7 @@ export interface WorkbenchState {
   revision: number;
   status: string;
   sha: string;
+  remoteHeadSha?: string | null;
   repositoryPaths: string[];
   config: ProjectConfig;
   branches: Array<{ full_ref: string; is_protected?: boolean }>;
@@ -100,6 +116,8 @@ type Dialog =
   | "media"
   | null;
 
+const defaultBranchCreationName = "docs/";
+
 export function Workbench({
   projectId,
   projectName,
@@ -107,6 +125,8 @@ export function Workbench({
   branch,
   initial,
   initialPath,
+  initialLine,
+  returnToChanges,
   initialPanel,
   headerAction,
   branchConflictNotice,
@@ -119,6 +139,8 @@ export function Workbench({
   branch: string;
   initial: WorkbenchState;
   initialPath?: string;
+  initialLine?: number;
+  returnToChanges?: ChangesLocation;
   initialPanel?: "media" | "branch";
   headerAction?: ReactNode;
   branchConflictNotice?: ReactNode;
@@ -233,7 +255,9 @@ export function Workbench({
       searchInput.current?.select();
     }
   }, [search.panel]);
-  const [jump, setJump] = useState<{ line: number; token: number }>();
+  const [jump, setJump] = useState<{ line: number; token: number } | undefined>(
+    initialLine ? { line: initialLine, token: 0 } : undefined,
+  );
   const [closedTabs, setClosedTabs] = useState<string[]>([]);
   const [explorerWidth, setExplorerWidth] = useState(280);
   const draftId = draftKey(projectId, branch, selected, state.ownerId);
@@ -266,7 +290,18 @@ export function Workbench({
   const [needsMerge, setNeedsMerge] = useState(false);
   const blocked = useRef(false);
   const [notice, setNotice] = useState("");
-  const [branchStage, setBranchStage] = useState<string | null>(null);
+  const [branchError, setBranchError] = useState("");
+  const [branchName, setBranchName] = useState(defaultBranchCreationName);
+  const [branchOperation, setBranchOperation] = useState<BranchCreationOperation>();
+  const [branchStatusFailed, setBranchStatusFailed] = useState(false);
+  const [branchReady, setBranchReady] = useState(false);
+  const branchObserver = useRef<BranchCreationObserver | null>(null);
+  const branchScope = useMemo(
+    () => ({ ownerId: initial.ownerId, projectId, sourceBranch: branch }),
+    [initial.ownerId, projectId, branch],
+  );
+  const [branchImportName, setBranchImportName] = useState<string | null>(null);
+  const [branchStage, setBranchStage] = useState<BranchCreationStage | null>(null);
   const [branchCounts, setBranchCounts] = useState<{ completed: number; total: number } | null>(
     null,
   );
@@ -285,6 +320,11 @@ export function Workbench({
   const active = state.files.find(
     (file) => file.path === selected && (!uploaded || file.status === "delete"),
   );
+  useEffect(() => {
+    if (initialLine && selected === initialPath && active?.loaded !== false)
+      setJump({ line: initialLine, token: 0 });
+  }, [initialLine, initialPath, selected, active?.loaded]);
+  const changesHref = projectChangesHref(projectId, { branch, ...returnToChanges });
   const article =
     active && /\.mdx?$/i.test(selected)
       ? selected
@@ -494,13 +534,14 @@ export function Workbench({
   }, [selected, active, uploaded, remoteFiles, endpoint, branch, branchStatuses]);
 
   const load = useCallback(
-    async (guard = false) => {
+    async (guard = false, signal?: AbortSignal) => {
       const response = await fetch(
         `${endpoint}?${new URLSearchParams({ branch, ...(selected ? { selected } : {}) })}`,
-        { cache: "no-store" },
+        { cache: "no-store", ...(signal ? { signal } : {}) },
       );
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
+      if (signal?.aborted) throw new BranchCreationCancelled();
       /* v8 ignore next -- guards the narrow interval while an async reload races a local edit. */
       if (guard && (inFlight.current || latest.current !== saved.current)) return stateRef.current;
       stateRef.current = next;
@@ -782,8 +823,8 @@ export function Workbench({
           .catch(() => setNotice("Нет связи с сервером."));
       }
     };
-    window.addEventListener("pushdocs:refresh", refresh);
-    return () => window.removeEventListener("pushdocs:refresh", refresh);
+    window.addEventListener(realtimeEvents.refresh, refresh);
+    return () => window.removeEventListener(realtimeEvents.refresh, refresh);
   }, [load, selected, branch, projectId]);
 
   useEffect(() => {
@@ -899,6 +940,42 @@ export function Workbench({
       previous?.focus();
     };
   }, [dialog]);
+
+  const restoreBranchCreationRef = useRef(restoreBranchCreation);
+  restoreBranchCreationRef.current = restoreBranchCreation;
+
+  useEffect(() => {
+    const operation = branchCreationSessions.read(branchScope);
+    if (operation?.ready && operation.name === branch) {
+      branchCreationSessions.forget(branchScope, operation.jobId);
+      return;
+    }
+    if (operation || branchCreationSessions.pending(branchScope)) setDialog("branch");
+  }, [branchScope, branch]);
+
+  useEffect(() => {
+    if (dialog !== "branch") return;
+    const observer = new BranchCreationObserver();
+    branchObserver.current = observer;
+    inFlight.current = false;
+    setBusy(false);
+    setBranchError("");
+    setBranchImportName(null);
+    setBranchStatusFailed(false);
+    setBranchReady(false);
+    setBranchOperation(undefined);
+    setBranchName(defaultBranchCreationName);
+    setBranchStage(null);
+    setBranchCounts(null);
+    setNotice("");
+    const operation = branchCreationSessions.read(branchScope);
+    const pending = branchCreationSessions.pending(branchScope);
+    if (operation || pending) void restoreBranchCreationRef.current(observer, pending ?? operation);
+    return () => {
+      observer.dispose();
+      if (branchObserver.current === observer) branchObserver.current = null;
+    };
+  }, [dialog, branchScope]);
 
   async function openFile(filePath: string) {
     if (!(await save())) return false;
@@ -1060,64 +1137,155 @@ export function Workbench({
     });
   }
 
-  async function waitForBranchCreation(jobId: string) {
-    const deadline = Date.now() + 300_000;
-    while (Date.now() < deadline) {
-      let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
-      try {
-        job = await gitOperationStatusAction(projectId, jobId);
-      } catch {
-        setNotice("Нет связи с сервером. Проверяем создание ветки…");
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        continue;
-      }
-      if (job.status === "failed")
-        throw new Error(job.last_error || "Не удалось создать ветку. Повторите попытку.");
-      if (job.status === "done") return;
-      setBranchCounts(job.status === "running" ? job.progressCounts : null);
-      if (job.status === "queued") {
-        setBranchStage(null);
-        setNotice(
-          job.last_error
-            ? "Повторная попытка: ожидаем свободный обработчик…"
-            : "Ожидаем свободный обработчик…",
-        );
-      } else {
-        setBranchStage(job.progress);
-        const messages: Record<string, string> = {
-          "checking-source": "Проверяем исходную ветку…",
-          "creating-branch": "Создаём ветку в Git…",
-          "importing-documents": "Подготавливаем документы…",
-        };
-        setNotice(messages[job.progress ?? ""] ?? "Обрабатываем создание ветки…");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    /* v8 ignore next -- the five-minute production deadline is not advanced in UI unit tests. */
-    throw new Error("Создание ветки ещё выполняется. Обновите страницу позже.");
+  async function waitForBranchCreation(
+    observer: BranchCreationObserver,
+    operation: BranchCreationOperation,
+  ) {
+    observer.check();
+    setBranchOperation(operation);
+    setBranchName(operation.name);
+    const sourceSync = operation.kind === BranchCreationOperationKind.SourceSync;
+    if (operation.kind === BranchCreationOperationKind.Import) setBranchImportName(operation.name);
+    await observer
+      .wait(
+        projectId,
+        operation.jobId,
+        (job) => {
+          if (!sourceSync && job.progress === BranchCreationStage.ImportingDocuments)
+            setBranchImportName(operation.name);
+          setBranchCounts(job.status === "running" ? job.progressCounts : null);
+          if (sourceSync) {
+            setNotice(`Обновляем ${operation.sourceBranch} перед созданием ветки…`);
+            return;
+          }
+          if (job.status === "queued") {
+            setBranchStage(null);
+            setNotice(
+              job.last_error
+                ? "Повторная попытка: ожидаем свободный обработчик…"
+                : "Ожидаем свободный обработчик…",
+            );
+          } else {
+            const stage = Object.values(BranchCreationStage).find(
+              (stage) => stage === job.progress,
+            );
+            setBranchStage(stage ?? null);
+            const messages: Record<BranchCreationStage, string> = {
+              [BranchCreationStage.CheckingSource]: "Проверяем исходную ветку…",
+              [BranchCreationStage.CreatingBranch]: "Создаём ветку в Git…",
+              [BranchCreationStage.ImportingDocuments]: "Ветка создана. Загружаем файлы…",
+            };
+            setNotice(stage ? messages[stage] : "Обрабатываем создание ветки…");
+          }
+        },
+        () => setNotice("Нет связи с сервером. Проверяем состояние операции…"),
+      )
+      .catch((cause: unknown) => {
+        if (cause instanceof BranchCreationJobFailed) cause.operation = operation;
+        throw cause;
+      });
+    observer.check();
   }
 
-  async function refreshSourceBranchForCreation() {
-    setNotice(`Обновляем ${branch} перед созданием ветки…`);
-    const jobId = await startGitOperationAction({ projectId, branch });
-    if (typeof jobId !== "string") throw new Error(jobId.error);
-    const deadline = Date.now() + 300_000;
-    while (Date.now() < deadline) {
-      let job: Awaited<ReturnType<typeof gitOperationStatusAction>>;
-      try {
-        job = await gitOperationStatusAction(projectId, jobId);
-      } catch {
-        setNotice(`Нет связи с сервером. Проверяем обновление ${branch}…`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        continue;
+  function branchCreationError(
+    observer: BranchCreationObserver,
+    cause: unknown,
+    operation?: BranchCreationOperation,
+  ) {
+    if (observer.signal.aborted || cause instanceof BranchCreationCancelled) return;
+    if (cause instanceof BranchCreationJobFailed) operation = cause.operation ?? operation;
+    if (cause instanceof BranchCreationReadError) setBranchStatusFailed(true);
+    if (cause instanceof BranchCreationJobFailed && operation) {
+      if (
+        operation.kind !== BranchCreationOperationKind.SourceSync &&
+        (operation.kind === BranchCreationOperationKind.Import ||
+          cause.job.progress === BranchCreationStage.ImportingDocuments)
+      ) {
+        setBranchImportName(operation.name);
+      } else {
+        branchCreationSessions.forget(branchScope, operation.jobId);
+        setBranchOperation(undefined);
       }
-      if (job.status === "failed")
-        throw new Error(job.last_error || `Не удалось обновить ${branch}. Повторите попытку.`);
-      if (job.status === "done") return (await load()).sha;
-      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-    /* v8 ignore next -- the five-minute production deadline is not advanced in UI unit tests. */
-    throw new Error(`Обновление ${branch} ещё выполняется. Повторите попытку позже.`);
+    setNotice("");
+    setBranchError(cause instanceof Error ? cause.message : "Не удалось создать ветку");
+  }
+
+  function openCreatedBranch(observer: BranchCreationObserver, operation: BranchCreationOperation) {
+    observer.check();
+    const ready = { ...operation, ready: true };
+    branchCreationSessions.remember(branchScope, ready);
+    setBranchOperation(ready);
+    setBranchReady(true);
+    setNotice(`Ветка ${operation.name} готова. Открываем документы…`);
+    try {
+      rememberProjectBranch(projectId, operation.name);
+      observer.check();
+      router.push(`/projects/${projectId}/documents?branch=${encodeURIComponent(operation.name)}`);
+    } catch {
+      if (!observer.signal.aborted) {
+        setNotice("");
+        setBranchError("Ветка готова, но не удалось перейти. Повторите переход.");
+      }
+    }
+  }
+
+  async function restoreBranchCreation(
+    observer: BranchCreationObserver,
+    pending: BranchCreationOperation | Promise<BranchCreationOperation> | undefined,
+  ) {
+    setBusy(true);
+    inFlight.current = true;
+    let operation: BranchCreationOperation | undefined;
+    try {
+      operation = await pending;
+      observer.check();
+      if (!operation) return;
+      setBranchOperation(operation);
+      setBranchName(operation.name);
+      if (!operation.ready) await waitForBranchCreation(observer, operation);
+      if (operation.kind === BranchCreationOperationKind.SourceSync) {
+        if (operation.sourceBranch === branch) await load(false, observer.signal);
+        observer.check();
+        branchCreationSessions.forget(branchScope, operation.jobId);
+        setBranchOperation(undefined);
+        setNotice(`Исходная ветка ${operation.sourceBranch} обновлена. Можно повторить создание.`);
+      } else {
+        const ready = { ...operation, ready: true };
+        branchCreationSessions.remember(branchScope, ready);
+        setBranchOperation(ready);
+        setBranchReady(true);
+        setNotice(`Ветка ${operation.name} готова. Можно перейти к документам.`);
+      }
+    } catch (cause) {
+      branchCreationError(observer, cause, operation);
+    } finally {
+      if (!observer.signal.aborted) {
+        inFlight.current = false;
+        setBusy(false);
+      }
+    }
+  }
+
+  async function refreshSourceBranchForCreation(observer: BranchCreationObserver, name: string) {
+    setNotice(`Обновляем ${branch} перед созданием ветки…`);
+    const operation = await branchCreationSessions.enqueue(
+      branchScope,
+      name,
+      BranchCreationOperationKind.SourceSync,
+      async () => {
+        const jobId = await startGitOperationAction({ projectId, branch });
+        if (typeof jobId !== "string") throw new Error(jobId.error);
+        return { jobId, name };
+      },
+    );
+    observer.check();
+    await waitForBranchCreation(observer, operation);
+    const refreshed = await load(false, observer.signal);
+    observer.check();
+    branchCreationSessions.forget(branchScope, operation.jobId);
+    setBranchOperation(undefined);
+    return refreshed.sha;
   }
 
   async function submitDialog(event: React.FormEvent<HTMLFormElement>) {
@@ -1131,29 +1299,66 @@ export function Workbench({
       return;
     }
     if (dialog === "branch") {
-      setBranchStage(null);
-      setBranchCounts(null);
+      const observer = branchObserver.current;
+      if (!observer || inFlight.current) return;
+      setBranchError("");
+      if ((branchOperation && !branchImportName && !branchReady) || branchStatusFailed) {
+        setBranchStatusFailed(false);
+        await restoreBranchCreation(observer, branchOperation);
+        return;
+      }
       setNotice("Сохраняем текущие правки…");
       /* v8 ignore next -- the branch dialog retains input after the same tested save failure path. */
       if (!(await save())) {
-        setNotice("");
+        if (!observer.signal.aborted) setNotice("");
+        return;
+      }
+      if (observer.signal.aborted || inFlight.current) return;
+      if (branchReady && branchOperation) {
+        openCreatedBranch(observer, branchOperation);
         return;
       }
       setBusy(true);
+      inFlight.current = true;
       setBranchStage(null);
+      setBranchCounts(null);
       setNotice("Отправляем задачу на сервер…");
+      let operation: BranchCreationOperation | undefined;
       try {
         let sourceSha = stateRef.current.sha;
-        let result: Awaited<ReturnType<typeof command>> | undefined;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (branchImportName) {
+          operation = await branchCreationSessions.enqueue(
+            branchScope,
+            branchImportName,
+            BranchCreationOperationKind.Import,
+            async () => {
+              const jobId = await startGitOperationAction({ projectId, branch: branchImportName });
+              if (typeof jobId !== "string") throw new Error(jobId.error);
+              return { jobId, name: branchImportName };
+            },
+          );
+          observer.check();
+          await waitForBranchCreation(observer, operation);
+        }
+        for (let attempt = 0; !operation && attempt < 2; attempt += 1) {
           try {
-            result = await command({ action: "branch", name: path, sha: sourceSha });
-            await waitForBranchCreation(result.jobId);
+            operation = await branchCreationSessions.enqueue(
+              branchScope,
+              path,
+              BranchCreationOperationKind.Create,
+              () => command({ action: "branch", name: path, sha: sourceSha }),
+            );
+            observer.check();
+            await waitForBranchCreation(observer, operation);
             break;
           } catch (cause) {
+            observer.check();
             const message = cause instanceof Error ? cause.message : String(cause);
             if (attempt === 0 && message.startsWith("Исходная ветка обновилась")) {
-              sourceSha = await refreshSourceBranchForCreation();
+              if (operation) branchCreationSessions.forget(branchScope, operation.jobId);
+              operation = undefined;
+              sourceSha = await refreshSourceBranchForCreation(observer, path);
+              observer.check();
               setNotice(`Создаём ветку ${path} от обновлённой ${branch}…`);
               continue;
             }
@@ -1161,16 +1366,15 @@ export function Workbench({
           }
         }
         /* v8 ignore next -- both attempts either assign a result or throw. */
-        if (!result) throw new Error("Не удалось создать ветку");
-        setNotice(`Ветка ${result.name} создана. Открываем документы…`);
-        rememberProjectBranch(projectId, result.name);
-        router.push(`/projects/${projectId}/documents?branch=${encodeURIComponent(result.name)}`);
-        setDialog(null);
+        if (!operation) throw new Error("Не удалось создать ветку");
+        openCreatedBranch(observer, operation);
       } catch (cause) {
-        setNotice("");
-        setError(cause instanceof Error ? cause.message : "Не удалось создать ветку");
+        branchCreationError(observer, cause, operation);
       } finally {
-        setBusy(false);
+        if (!observer.signal.aborted) {
+          inFlight.current = false;
+          setBusy(false);
+        }
       }
     } else if (dialog === "folder") {
       if (await mutate({ action: "folder", path })) setRevealDirectory(path);
@@ -1254,6 +1458,8 @@ export function Workbench({
           <BranchOperations
             projectId={projectId}
             branch={branch}
+            headSha={state.sha}
+            remoteHeadSha={state.remoteHeadSha}
             defaultBranch={defaultBranch}
             canMerge={
               state.role !== "reader" &&
@@ -1285,13 +1491,13 @@ export function Workbench({
           {headerAction}
           <Link
             className="wb-primary"
-            href={projectChangesHref(projectId, branch)}
+            href={changesHref}
             onClick={async (event) => {
               event.preventDefault();
-              if (await save()) router.push(projectChangesHref(projectId, branch));
+              if (await save()) router.push(changesHref);
             }}
           >
-            К изменениям (
+            {returnToChanges ? "Вернуться к изменениям" : "К изменениям"} (
             {
               new Set([
                 ...state.files.filter((file) => file.status !== "clean").map((file) => file.path),
@@ -1394,7 +1600,7 @@ export function Workbench({
           </div>
         </div>
       ) : null}
-      {notice && !(dialog === "branch" && busy) ? (
+      {notice && dialog !== "branch" ? (
         <div className="wb-notice" role="status">
           {notice}
           <button type="button" onClick={() => setNotice("")}>
@@ -2202,16 +2408,26 @@ export function Workbench({
                           ? "Имя файла"
                           : "Путь файла"}
                     <input
+                      key={dialog}
                       name="path"
                       required
+                      disabled={dialog === "branch" && (busy || branchOperation !== undefined)}
+                      value={dialog === "branch" ? branchName : undefined}
+                      onChange={
+                        dialog === "branch"
+                          ? (event) => setBranchName(event.target.value)
+                          : undefined
+                      }
                       defaultValue={
-                        dialog === "new" || dialog === "folder"
-                          ? `${createDirectory ? `${createDirectory}/` : ""}${dialog === "new" ? "new-file.mdx" : "new-folder"}`
-                          : dialog === "rename"
-                            ? selected.split("/").at(-1)
-                            : dialog === "move"
-                              ? selected
-                              : "docs/"
+                        dialog === "branch"
+                          ? undefined
+                          : dialog === "new" || dialog === "folder"
+                            ? `${createDirectory ? `${createDirectory}/` : ""}${dialog === "new" ? "new-file.mdx" : "new-folder"}`
+                            : dialog === "rename"
+                              ? selected.split("/").at(-1)
+                              : dialog === "move"
+                                ? selected
+                                : undefined
                       }
                     />
                   </label>
@@ -2275,21 +2491,44 @@ export function Workbench({
                     <input name="locale" defaultValue={state.config.defaultLocale} required />
                   </label>
                 ) : null}
-                {dialog === "branch" && busy ? (
+                {dialog === "branch" && branchError ? (
+                  <div className="wb-alert" role="alert">
+                    {branchImportName && !branchStatusFailed && !branchReady ? (
+                      <div className="wb-alert-copy">
+                        <span>
+                          Ветка {branchImportName} уже создана. Не удалось загрузить файлы.
+                          Повторите загрузку в этом окне.
+                        </span>
+                        <details className="wb-alert-details">
+                          <summary>Подробнее</summary>
+                          <p>{branchError}</p>
+                        </details>
+                      </div>
+                    ) : (
+                      branchError
+                    )}
+                  </div>
+                ) : null}
+                {dialog === "branch" && !busy && !branchReady && notice ? (
+                  <p role="status">{notice}</p>
+                ) : null}
+                {dialog === "branch" && (busy || branchReady) ? (
                   <div className="wb-branch-progress" role="status" aria-live="polite">
                     <strong>{notice}</strong>
-                    {branchStage === "importing-documents" && branchCounts ? (
+                    {branchStage === BranchCreationStage.ImportingDocuments && branchCounts ? (
                       <span>
                         {branchCounts.completed} из {branchCounts.total} файлов загружено
                       </span>
                     ) : null}
                     <ol aria-label="Этапы создания ветки">
                       {[
-                        ["checking-source", "Проверка исходной ветки"],
-                        ["creating-branch", "Создание ветки в Git"],
-                        ["importing-documents", "Подготовка документов"],
+                        [BranchCreationStage.CheckingSource, "Проверка исходной ветки"],
+                        [BranchCreationStage.CreatingBranch, "Создание ветки в Git"],
+                        [BranchCreationStage.ImportingDocuments, "Загрузка файлов"],
                       ].map(([stage, label], index, stages) => {
-                        const activeIndex = stages.findIndex(([key]) => key === branchStage);
+                        const activeIndex = branchReady
+                          ? stages.length
+                          : stages.findIndex(([key]) => key === branchStage);
                         return (
                           <li
                             key={stage}
@@ -2307,7 +2546,11 @@ export function Workbench({
                         );
                       })}
                     </ol>
-                    <small>После подготовки документов откроем новую ветку автоматически.</small>
+                    <small>
+                      {branchReady
+                        ? "Перейдите в готовую ветку, когда будете готовы."
+                        : "После подготовки документов откроем новую ветку автоматически."}
+                    </small>
                   </div>
                 ) : null}
                 <button
@@ -2321,7 +2564,9 @@ export function Workbench({
                 >
                   {busy
                     ? dialog === "branch"
-                      ? "Создаём ветку…"
+                      ? branchImportName
+                        ? "Загружаем файлы…"
+                        : "Создаём ветку…"
                       : "Выполняем…"
                     : dialog === "delete"
                       ? "Подтвердить удаление"
@@ -2332,7 +2577,13 @@ export function Workbench({
                           : dialog === "folder"
                             ? "Создать папку"
                             : dialog === "branch"
-                              ? "Создать и перейти"
+                              ? branchReady
+                                ? "Перейти в ветку"
+                                : branchStatusFailed || (branchOperation && !branchImportName)
+                                  ? "Проверить статус"
+                                  : branchImportName
+                                    ? "Повторить загрузку"
+                                    : "Создать и перейти"
                               : "Применить"}
                 </button>
               </form>

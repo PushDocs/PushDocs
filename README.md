@@ -18,7 +18,7 @@ The repository contains a working MVP:
 - PushDocs does not send email. Administrators share invitation links through a messenger. Each link is bound to one email address, can be accepted once and expires within 24 hours.
 - A GitLab connection can store an encrypted inline OpenVPN profile when VPN support is enabled for the installation. Provider requests and Git HTTPS traffic then pass through an isolated VPN gateway. The installation supports four active VPN profiles.
 - One installation can import and manage several projects. Each project has its own members and roles.
-- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header offers **Обновить из Git** to refresh the selected branch, including the default branch. Editors can use **Влить <default branch>…** on an unprotected task branch before or after creating a PR or MR when the project update policy selects merge. This fetches both branches, merges and pushes with an exact branch lease, then reloads the imported documents. Drafts remain in PushDocs. Conflicting Git branches are left unchanged and must be resolved in Git before retrying.
+- The worker imports the default branch and discovers every remote branch. A user can load another branch without replacing the active branch context. The Documents header checks freshness on entry and after branch synchronization events. It shows **Ветка актуальна** when the files and base branch are current, a check icon when freshness is unknown, and only the update actions that are needed. Editors can use **Обновить ветку…** when commits from the default branch are missing from an unprotected task branch, before or after creating a PR or MR. The project policy selects merge or rebase. Saved changes must be sent to Git or explicitly discarded before updating. Conflicts pause the operation without changing the remote branch and appear through the existing Changes sidebar indicator and conflict notice. The same conflict editor resolves them without requiring a PR or MR; rebase continues one commit at a time. The completed result is pushed with an exact branch lease and the imported documents are reloaded.
 - Editors can create and edit Markdown or MDX documents. Drafts use revision checks and autosave to prevent one browser tab from silently overwriting another.
 - Editors can upload images, MP4, PDF, ZIP, CSV and TXT files. PushDocs includes documents and attachments in one commit.
 - Readers can comment on documents. Comment and status updates reach open pages through server-sent events.
@@ -59,6 +59,16 @@ Choose one mode and follow its commands below. Requires Docker with Compose v2; 
 | --- | --- | --- |
 | Development | Run through Yarn with automatic reload; PostgreSQL runs in Docker | http://localhost:3000 |
 | Docker | All services run in containers | http://localhost:8080 |
+
+If Docker Desktop reports `open sysctl net.mptcp.enabled ... no such file or directory`, its Linux kernel may be built without MPTCP. For local starts, add `-f compose.yml -f compose.no-mptcp.yml` to the Compose command:
+
+~~~sh
+docker compose -f compose.yml -f compose.no-mptcp.yml up -d --wait postgres
+# Or start all application containers:
+docker compose -f compose.yml -f compose.no-mptcp.yml up -d --wait
+~~~
+
+Use this override only on kernels without MPTCP. The server configuration and deployment checks keep MPTCP disabled as before.
 
 ### First run
 
